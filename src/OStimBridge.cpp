@@ -249,6 +249,69 @@ namespace OStimTogether
             return result;
         }
 
+        struct STRProxyPoseApplyResult
+        {
+            RE::NiPoint3 refBefore{};
+            RE::NiPoint3 refAfter{};
+            RE::NiPoint3 rootBefore{};
+            RE::NiPoint3 rootAfter{};
+            bool hadRootBefore{ false };
+            bool hadRootAfter{ false };
+        };
+
+        STRProxyPoseApplyResult ForceSTRProxyPose(
+            RE::Actor* actor,
+            const RE::NiPoint3& target,
+            float heading)
+        {
+            STRProxyPoseApplyResult result{};
+
+            if (!IsLikelySTRRemotePlayerProxy(actor)) {
+                return result;
+            }
+
+            auto* reference =
+                static_cast<RE::TESObjectREFR*>(actor);
+
+            result.refBefore =
+                reference->GetPosition();
+
+            if (auto* root3D = actor->Get3D()) {
+                result.hadRootBefore = true;
+                result.rootBefore =
+                    root3D->world.translate;
+            }
+
+            // Actor::SetPosition is virtual and is intercepted/neutralized
+            // for STR's dynamic player proxies. v0.19.4 proved this directly:
+            // every guard tick reported corrected=1 while GetPosition() was
+            // unchanged immediately afterwards. Use the non-virtual
+            // TESObjectREFR path, then write the reference transform last so
+            // the current frame cannot retain STR's interpolated sample.
+            StopReferenceTranslation(reference);
+            reference->SetPosition(target);
+            actor->SetPosition(target, true);
+            reference->SetPosition(target);
+            reference->data.location = target;
+
+            SetReferenceAngleZ(reference, heading);
+            actor->SetRotationZ(heading);
+            reference->data.angle.z = heading;
+
+            reference->Update3DPosition(true);
+
+            result.refAfter =
+                reference->GetPosition();
+
+            if (auto* root3D = actor->Get3D()) {
+                result.hadRootAfter = true;
+                result.rootAfter =
+                    root3D->world.translate;
+            }
+
+            return result;
+        }
+
         const char* ResultName(
             OStimModAPI::Scene::APIResult result)
         {
@@ -1099,6 +1162,12 @@ namespace OStimTogether
         _pendingInitialAnimationReplay.erase(
             threadID);
 
+        _strProxyPoseGuardAfter.erase(
+            threadID);
+
+        _lastSTRProxyPoseGuardLog.erase(
+            threadID);
+
         const auto reverse =
             _localToRemote.find(threadID);
 
@@ -1252,8 +1321,8 @@ namespace OStimTogether
         _sceneCenters.clear();
         _authoritativeActorPoses.clear();
         _pendingWallStarts.clear();
-        _localSTRProxyGuardAfter.clear();
-        _lastLocalSTRProxyGuardLog.clear();
+        _strProxyPoseGuardAfter.clear();
+        _lastSTRProxyPoseGuardLog.clear();
         _pendingInitialAnimationReplay.clear();
         _lastAnimationRefresh.clear();
         _lastDirectEventLog.clear();
@@ -1430,7 +1499,7 @@ namespace OStimTogether
             });
     }
 
-    void OStimBridge::RefreshLocalSTRProxyGuards(
+    void OStimBridge::RefreshSTRProxyPoseGuards(
         std::chrono::steady_clock::time_point now)
     {
         std::vector<std::pair<
@@ -1442,10 +1511,10 @@ namespace OStimTogether
                 _remoteMirrorMutex);
 
             guards.reserve(
-                _localSTRProxyGuardAfter.size());
+                _strProxyPoseGuardAfter.size());
 
             for (const auto& entry :
-                 _localSTRProxyGuardAfter) {
+                 _strProxyPoseGuardAfter) {
                 guards.push_back(entry);
             }
         }
@@ -1458,9 +1527,11 @@ namespace OStimTogether
                 continue;
             }
 
+            const bool isMirror =
+                IsRemoteMirrorThread(threadID);
+
             if (!_threads ||
                 !_threadControl ||
-                IsRemoteMirrorThread(threadID) ||
                 !_threadControl->IsThreadValid(
                     static_cast<std::uint32_t>(threadID))) {
                 stale.push_back(threadID);
@@ -1476,22 +1547,43 @@ namespace OStimTogether
             }
 
             SceneCenter center{};
-            if (!TryComputeSceneCenter(
-                    thread,
-                    center,
-                    false)) {
-                continue;
+            std::vector<ActorPose> mirrorPoses;
+
+            if (isMirror) {
+                std::scoped_lock lock(
+                    _remoteMirrorMutex);
+
+                const auto posesIt =
+                    _authoritativeActorPoses.find(threadID);
+
+                if (posesIt !=
+                    _authoritativeActorPoses.end()) {
+                    mirrorPoses = posesIt->second;
+                }
+            } else {
+                if (!TryComputeSceneCenter(
+                        thread,
+                        center,
+                        false)) {
+                    continue;
+                }
             }
 
             std::uint32_t guarded = 0;
-            std::uint32_t corrected = 0;
+            std::uint32_t forced = 0;
             float maxDistanceSq = 0.0F;
             float maxHeadingDelta = 0.0F;
+            float maxRefAfterDistanceSq = 0.0F;
+            float maxRootAfterDistanceSq = 0.0F;
 
             RE::FormID sampleActorID = 0;
             RE::NiPoint3 sampleBefore{};
             RE::NiPoint3 sampleTarget{};
             RE::NiPoint3 sampleAfter{};
+            RE::NiPoint3 sampleRootBefore{};
+            RE::NiPoint3 sampleRootAfter{};
+            bool sampleHadRootBefore = false;
+            bool sampleHadRootAfter = false;
 
             const auto actorCount =
                 thread->getActorCount();
@@ -1511,13 +1603,22 @@ namespace OStimTogether
                 }
 
                 ActorPose pose{};
-                if (!TryComputeActorPose(
-                        thread,
-                        i,
-                        center,
-                        pose,
-                        false)) {
-                    continue;
+                if (isMirror) {
+                    if (i >= mirrorPoses.size() ||
+                        !mirrorPoses[i].IsFinite()) {
+                        continue;
+                    }
+
+                    pose = mirrorPoses[i];
+                } else {
+                    if (!TryComputeActorPose(
+                            thread,
+                            i,
+                            center,
+                            pose,
+                            false)) {
+                        continue;
+                    }
                 }
 
                 ++guarded;
@@ -1543,32 +1644,46 @@ namespace OStimTogether
                 maxHeadingDelta =
                     std::max(maxHeadingDelta, headingDelta);
 
-                // Cancel any late OStim TranslateTo first. STR can continue
-                // updating its network state, but while this local OStim
-                // thread is alive the rendered scene uses the settled OStim
-                // actor pose. A small deadband avoids redundant 3D updates.
-                StopReferenceTranslation(actor);
+                // Run once per rendered game frame, even if the sampled
+                // reference already happens to equal the target. STR may
+                // otherwise publish another interpolation sample later in
+                // the same frame and recreate the visible sawtooth.
+                const auto applied =
+                    ForceSTRProxyPose(
+                        actor,
+                        target,
+                        pose.r);
 
-                constexpr float kPositionDeadbandSq =
-                    0.0625F;  // 0.25 Skyrim units
-                constexpr float kHeadingDeadband =
-                    0.0025F;
+                ++forced;
 
-                if (distanceSq > kPositionDeadbandSq ||
-                    headingDelta > kHeadingDeadband) {
-                    actor->SetPosition(target, true);
-                    actor->SetRotationZ(pose.r);
+                const auto refAfterDistanceSq =
+                    applied.refAfter.
+                        GetSquaredDistance(target);
 
-                    static_cast<RE::TESObjectREFR*>(actor)->
-                        Update3DPosition(true);
+                const auto rootAfterDistanceSq =
+                    applied.hadRootAfter ?
+                        applied.rootAfter.
+                            GetSquaredDistance(target) :
+                        0.0F;
 
-                    ++corrected;
-                }
+                maxRefAfterDistanceSq =
+                    std::max(
+                        maxRefAfterDistanceSq,
+                        refAfterDistanceSq);
+
+                maxRootAfterDistanceSq =
+                    std::max(
+                        maxRootAfterDistanceSq,
+                        rootAfterDistanceSq);
 
                 sampleActorID = actor->GetFormID();
-                sampleBefore = before;
+                sampleBefore = applied.refBefore;
                 sampleTarget = target;
-                sampleAfter = actor->GetPosition();
+                sampleAfter = applied.refAfter;
+                sampleRootBefore = applied.rootBefore;
+                sampleRootAfter = applied.rootAfter;
+                sampleHadRootBefore = applied.hadRootBefore;
+                sampleHadRootAfter = applied.hadRootAfter;
             }
 
             bool writeLog = false;
@@ -1577,7 +1692,7 @@ namespace OStimTogether
                     _remoteMirrorMutex);
 
                 auto& last =
-                    _lastLocalSTRProxyGuardLog[threadID];
+                    _lastSTRProxyPoseGuardLog[threadID];
 
                 if (last.time_since_epoch().count() == 0 ||
                     now - last >=
@@ -1589,13 +1704,14 @@ namespace OStimTogether
 
             if (writeLog && guarded > 0) {
                 SKSE::log::info(
-                    "OSTNET LOCAL STR PROXY GUARD thread={} node={} guarded={} corrected={} actor={:08X} before=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) after=({:.3f},{:.3f},{:.3f}) maxDist2={:.4f} maxHeadingDelta={:.5f} owner=OStimUntilStop",
+                    "OSTNET STR PROXY POSE GUARD thread={} mirror={} node={} guarded={} forced={} actor={:08X} refBefore=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) refAfter=({:.3f},{:.3f},{:.3f}) rootBefore={}({:.3f},{:.3f},{:.3f}) rootAfter={}({:.3f},{:.3f},{:.3f}) maxBeforeDist2={:.4f} maxRefAfterDist2={:.6f} maxRootAfterDist2={:.6f} maxHeadingDelta={:.5f} owner=OStimTogetherUntilStop",
                     threadID,
+                    isMirror ? 1 : 0,
                     thread->getCurrentNode() &&
                             thread->getCurrentNode()->getNodeID() ?
                         thread->getCurrentNode()->getNodeID() : "",
                     guarded,
-                    corrected,
+                    forced,
                     sampleActorID,
                     sampleBefore.x,
                     sampleBefore.y,
@@ -1606,7 +1722,17 @@ namespace OStimTogether
                     sampleAfter.x,
                     sampleAfter.y,
                     sampleAfter.z,
+                    sampleHadRootBefore ? 1 : 0,
+                    sampleRootBefore.x,
+                    sampleRootBefore.y,
+                    sampleRootBefore.z,
+                    sampleHadRootAfter ? 1 : 0,
+                    sampleRootAfter.x,
+                    sampleRootAfter.y,
+                    sampleRootAfter.z,
                     maxDistanceSq,
+                    maxRefAfterDistanceSq,
+                    maxRootAfterDistanceSq,
                     maxHeadingDelta);
             }
         }
@@ -1616,8 +1742,8 @@ namespace OStimTogether
                 _remoteMirrorMutex);
 
             for (const auto threadID : stale) {
-                _localSTRProxyGuardAfter.erase(threadID);
-                _lastLocalSTRProxyGuardLog.erase(threadID);
+                _strProxyPoseGuardAfter.erase(threadID);
+                _lastSTRProxyPoseGuardLog.erase(threadID);
             }
         }
     }
@@ -2672,7 +2798,7 @@ namespace OStimTogether
                 SceneStart(thread);
         }
 
-        RefreshLocalSTRProxyGuards(now);
+        RefreshSTRProxyPoseGuards(now);
 
         if (mirrors.empty()) {
             return;
@@ -2894,7 +3020,7 @@ namespace OStimTogether
 
             std::uint32_t aligned = 0;
 
-            std::uint32_t delegatedToSTR = 0;
+            std::uint32_t delegatedToProxyPoseGuard = 0;
 
             for (std::uint32_t i = 0;
                  i < actorCount;
@@ -2917,7 +3043,7 @@ namespace OStimTogether
 
                 if (!alignLocally) {
                     if (!isLocalSelf) {
-                        ++delegatedToSTR;
+                        ++delegatedToProxyPoseGuard;
                     }
                     continue;
                 }
@@ -2987,13 +3113,13 @@ namespace OStimTogether
 
             if (writeLog) {
                 SKSE::log::info(
-                    "OSTNET MIRROR STATE localThread={} currentNode={} alignedLocal={}/{} delegatedSTR={} authoritativeSelf={} selfIndex={} speedIndex={}",
+                    "OSTNET MIRROR STATE localThread={} currentNode={} alignedLocal={}/{} proxyPoseGuard={} authoritativeSelf={} selfIndex={} speedIndex={}",
                     localThread,
                     node && node->getNodeID() ?
                         node->getNodeID() : "",
                     aligned,
                     actorCount,
-                    delegatedToSTR,
+                    delegatedToProxyPoseGuard,
                     authoritativeSelfApplied ? 1 : 0,
                     mirror.localSelfIndex,
                     _threadControl->
@@ -3169,17 +3295,16 @@ namespace OStimTogether
                 continue;
             }
 
-            // v0.18.17: only the locally-owned scene has the problematic
-            // remote STR proxy (Elir on Player1). Register that dynamic
-            // actor with RaceMenu before OStim continues into its initial
-            // ChangeNode/3D lifecycle. Mirror-side remote proxies are left
-            // untouched because their visuals are already correct.
-            if (!isMirror) {
-                if (IsLikelySTRRemotePlayerProxy(
-                        gameActor)) {
-                    hasLocalSTRProxy = true;
-                }
+            if (IsLikelySTRRemotePlayerProxy(
+                    gameActor)) {
+                hasLocalSTRProxy = true;
+            }
 
+            // Register the locally-owned scene's dynamic proxy with
+            // RaceMenu before OStim continues into its initial ChangeNode/3D
+            // lifecycle. The mirror uses the same proxy pose guard below,
+            // but does not need a second overlay registration lifecycle.
+            if (!isMirror) {
                 RaceMenuOverlayBridge::
                     GetSingleton().
                     PrepareSTRProxyForOStim(
@@ -3227,39 +3352,40 @@ namespace OStimTogether
             ScheduleLocalSTRProxyPositionRelease(
                 static_cast<std::int32_t>(threadID),
                 "START");
+        }
 
-            if (hasLocalSTRProxy) {
-                auto* currentNode =
-                    thread->getCurrentNode();
-                const auto* currentNodeID =
-                    currentNode ?
-                        currentNode->getNodeID() :
-                        nullptr;
-                const bool wall =
-                    currentNodeID &&
-                    std::string_view(currentNodeID).find("wall") !=
-                        std::string_view::npos;
-                const auto delay =
-                    wall ?
-                        std::chrono::milliseconds(1100) :
-                        std::chrono::milliseconds(200);
+        if (hasLocalSTRProxy) {
+            auto* currentNode =
+                thread->getCurrentNode();
+            const auto* currentNodeID =
+                currentNode ?
+                    currentNode->getNodeID() :
+                    nullptr;
+            const bool wall =
+                currentNodeID &&
+                std::string_view(currentNodeID).find("wall") !=
+                    std::string_view::npos;
+            const auto delay =
+                wall ?
+                    std::chrono::milliseconds(1100) :
+                    std::chrono::milliseconds(200);
 
-                {
-                    std::scoped_lock lock(
-                        _remoteMirrorMutex);
-                    _localSTRProxyGuardAfter[
-                        static_cast<std::int32_t>(threadID)] =
-                        std::chrono::steady_clock::now() + delay;
-                    _lastLocalSTRProxyGuardLog.erase(
-                        static_cast<std::int32_t>(threadID));
-                }
-
-                SKSE::log::info(
-                    "OSTNET LOCAL STR PROXY GUARD armed thread={} node={} delayMs={} owner=OStimUntilStop",
-                    threadID,
-                    currentNodeID ? currentNodeID : "",
-                    delay.count());
+            {
+                std::scoped_lock lock(
+                    _remoteMirrorMutex);
+                _strProxyPoseGuardAfter[
+                    static_cast<std::int32_t>(threadID)] =
+                    std::chrono::steady_clock::now() + delay;
+                _lastSTRProxyPoseGuardLog.erase(
+                    static_cast<std::int32_t>(threadID));
             }
+
+            SKSE::log::info(
+                "OSTNET STR PROXY POSE GUARD armed thread={} mirror={} node={} delayMs={} owner=OStimTogetherUntilStop",
+                threadID,
+                isMirror ? 1 : 0,
+                currentNodeID ? currentNodeID : "",
+                delay.count());
         }
     }
 
@@ -3427,9 +3553,9 @@ namespace OStimTogether
                 _remoteMirrorMutex);
             _pendingWallStarts.erase(
                 threadID);
-            _localSTRProxyGuardAfter.erase(
+            _strProxyPoseGuardAfter.erase(
                 threadID);
-            _lastLocalSTRProxyGuardLog.erase(
+            _lastSTRProxyPoseGuardLog.erase(
                 threadID);
         }
 

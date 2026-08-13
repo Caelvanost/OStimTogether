@@ -654,6 +654,8 @@ namespace OStimTogether
             std::uint32_t invalid{ 0 };
             std::uint32_t liveProperties{ 0 };
             std::uint32_t proxySexCopies{ 0 };
+            std::uint32_t textureProperties{ 0 };
+            std::uint32_t visibleAlphaProperties{ 0 };
             std::unordered_set<std::string> nodeNames;
         };
 
@@ -733,6 +735,18 @@ namespace OStimTogether
                     default:
                         ++result.invalid;
                         continue;
+                    }
+
+                    if (key == kParamShaderTexture &&
+                        type == 'S' &&
+                        !value.stringValue.empty()) {
+                        ++result.textureProperties;
+                    }
+
+                    if (key == kParamShaderAlpha &&
+                        type == 'F' &&
+                        value.floatValue > 0.01F) {
+                        ++result.visibleAlphaProperties;
                     }
 
                     if (storeOverrides) {
@@ -1154,6 +1168,7 @@ namespace OStimTogether
                 skippedTextureSets);
 
         std::unordered_set<std::string> markedSlots;
+        std::vector<std::string> markedTextures;
 
         for (const auto& prop : allProps) {
             if (prop.type != 'S' ||
@@ -1176,6 +1191,14 @@ namespace OStimTogether
                     "{}|{}",
                     prop.female ? 1 : 0,
                     prop.node));
+
+            if (markedTextures.size() < 8 &&
+                std::find(
+                    markedTextures.begin(),
+                    markedTextures.end(),
+                    *decoded) == markedTextures.end()) {
+                markedTextures.push_back(*decoded);
+            }
         }
 
         std::vector<std::string> tokens;
@@ -1224,14 +1247,15 @@ namespace OStimTogether
         }
 
         SKSE::log::info(
-            "OSTNET ADDON OVR CAPTURE actor={:08X} marker=\"{}\" allProps={} markedSlots={} props={} chunks={} skippedTextureSets={}",
+            "OSTNET ADDON OVR CAPTURE actor={:08X} marker=\"{}\" allProps={} markedSlots={} props={} chunks={} skippedTextureSets={} textures=[{}]",
             actor->GetFormID(),
             textureMarker,
             allProps.size(),
             markedSlots.size(),
             tokens.size(),
             chunks.size(),
-            skippedTextureSets);
+            skippedTextureSets,
+            JoinNames(markedTextures));
 
         return chunks;
     }
@@ -1439,11 +1463,13 @@ namespace OStimTogether
                                         nodeNamesCopy);
 
                                     SKSE::log::info(
-                                        "OSTNET ADDON OVR LIVE REAPPLY phase={} channel={} actor={:08X} liveProperties={} directNodes={} invalid={}",
+                                        "OSTNET ADDON OVR LIVE REAPPLY phase={} channel={} actor={:08X} liveProperties={} textures={} visibleAlpha={} directNodes={} invalid={}",
                                         phase,
                                         channelCopy,
                                         actorFormID,
                                         live.liveProperties,
+                                        live.textureProperties,
+                                        live.visibleAlphaProperties,
                                         directNodes,
                                         live.invalid);
                                 }
@@ -1468,12 +1494,14 @@ namespace OStimTogether
             "T1200");
 
         SKSE::log::info(
-            "OSTNET ADDON OVR APPLY channel={} actor={:08X} stored={} invalid={} liveProperties={} proxySexCopies={} directNodes={} hasOverlays={} rebuild={}",
+            "OSTNET ADDON OVR APPLY channel={} actor={:08X} stored={} invalid={} liveProperties={} textures={} visibleAlpha={} proxySexCopies={} directNodes={} hasOverlays={} rebuild={}",
             channel,
             actor->GetFormID(),
             applied.stored,
             applied.invalid,
             applied.liveProperties,
+            applied.textureProperties,
+            applied.visibleAlphaProperties,
             applied.proxySexCopies,
             directApplied,
             overlay->HasOverlays(actor) ? 1 : 0,

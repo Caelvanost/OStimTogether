@@ -856,16 +856,16 @@ namespace OStimTogether
             // Position ownership:
             //
             // role=player is the sender's real PlayerCharacter. On this
-            // client it is an STR remote proxy, so STR must remain the
-            // sole position authority. Reasserting OStim alignment on the
-            // same proxy every 25 ms creates the visible back-and-forth
-            // oscillation seen on furniture.
+            // client it is an STR remote proxy. Do not use OStim's generic
+            // alignment keepalive for it; OStimBridge instead applies the
+            // authoritative network pose through the dedicated per-frame
+            // STR proxy guard for the lifetime of the scene.
             //
             // Every other participant remains locally aligned. This
             // includes NPCs and RESOLVE SELF -> 00000014.
             // Position authority in v0.18.1c:
             //
-            // sender role=player proxy -> STR owns it
+            // sender role=player proxy -> dedicated pose guard
             // normal NPC              -> OStim Together keepalive
             // RESOLVE SELF 0x14       -> pre-anchor before builder->start(),
             //                            then OStim owns normal alignment
@@ -894,7 +894,7 @@ namespace OStimTogether
                     "OStimPreAnchor" :
                     (alignLocally ?
                         "OStimTogether" :
-                        "STR");
+                        "OStimTogetherPoseGuard");
 
             SKSE::log::info(
                 "OSTNET POSITION OWNER idx={} name=\"{}\" role={} owner={}",

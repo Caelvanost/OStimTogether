@@ -150,11 +150,12 @@ namespace OStimTogether
             std::int32_t localThreadID,
             std::string_view reason);
 
-        // During a locally-owned scene, use OStim's settled actor pose as the
-        // visual position authority for dynamic STR player proxies. The
-        // guard exists only for the lifetime of that local OStim thread and
-        // is removed at STOP, immediately returning ownership to STR.
-        void RefreshLocalSTRProxyGuards(
+        // During any synchronized scene, use the authoritative OStim actor
+        // pose as the visual position authority for dynamic STR player
+        // proxies. The guard exists only for the lifetime of that OStim
+        // thread and is removed at STOP, immediately returning ownership to
+        // STR.
+        void RefreshSTRProxyPoseGuards(
             std::chrono::steady_clock::time_point now);
 
         void QueueAuthoritativeWallStart(
@@ -197,10 +198,10 @@ namespace OStimTogether
 
         // Per mirror thread, one entry per OStim actor index.
         //
-        // true  = OStim Together reasserts OStim alignment every 25 ms.
+        // true  = OStim Together reasserts generic OStim alignment.
         // false = continuous alignment is delegated elsewhere.
         //
-        // Sender role=player proxy -> STR.
+        // Sender role=player proxy -> dedicated per-frame pose guard.
         // NPCs -> OStim Together alignment keepalive.
         // Real local PlayerCharacter SELF -> authoritative one-shot pose
         // after START/NODE; never continuous position forcing.
@@ -233,14 +234,14 @@ namespace OStimTogether
         std::unordered_map<std::int32_t, PendingWallStart>
             _pendingWallStarts;
 
-        // Local (non-mirror) OStim threads containing a dynamic STR player
+        // Local and mirror OStim threads containing a dynamic STR player
         // proxy. The timestamp is a short startup grace period; after it,
-        // VisualKeepAlive stabilizes the proxy at OStim's computed actor pose
-        // every 25 ms until that thread stops.
+        // VisualKeepAlive stabilizes the proxy at the authoritative OStim
+        // actor pose once per game frame until that thread stops.
         std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point>
-            _localSTRProxyGuardAfter;
+            _strProxyPoseGuardAfter;
         std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point>
-            _lastLocalSTRProxyGuardLog;
+            _lastSTRProxyPoseGuardLog;
 
         // The initial OStim animation can start before the mirror's local
         // PlayerCharacter visual root has settled. Replay the CURRENT speed

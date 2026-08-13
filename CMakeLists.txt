@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     OStimTogether
-    VERSION 0.19.4
+    VERSION 0.19.5
     LANGUAGES CXX
 )
 

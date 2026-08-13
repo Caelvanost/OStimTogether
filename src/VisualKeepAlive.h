@@ -23,5 +23,6 @@ namespace OStimTogether
 
         std::jthread _worker;
         std::atomic_bool _running{ false };
+        std::atomic_bool _refreshQueued{ false };
     };
 }
