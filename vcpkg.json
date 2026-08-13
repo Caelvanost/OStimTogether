@@ -1,6 +1,6 @@
 {
   "name": "ostim-together",
-  "version-string": "0.19.2",
+  "version-string": "0.19.3",
   "dependencies": [
     "commonlibsse-ng"
   ]

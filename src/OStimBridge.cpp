@@ -3088,7 +3088,7 @@ namespace OStimTogether
     void OStimBridge::HandleSpeed(
         OStim::Thread* thread)
     {
-        if (!thread || !_threadControl) {
+        if (!thread) {
             return;
         }
 
@@ -3096,32 +3096,65 @@ namespace OStimTogether
         const bool isMirror =
             _creatingRemoteMirror.load() ||
             IsRemoteMirrorThread(threadID);
-        const auto speed =
-            _threadControl->GetCurrentSpeed(threadID);
 
         SKSE::log::info(
-            "OStim thread SPEED id={} speed={} mirror={}",
+            "OStim thread SPEED EVENT id={} mirror={}",
             threadID,
-            speed,
             isMirror ? 1 : 0);
 
         if (isMirror) {
             SKSE::log::info(
-                "OSTNET MIRROR suppress TX SPEED localThread={} speed={}",
-                threadID,
-                speed);
+                "OSTNET MIRROR suppress TX SPEED localThread={}",
+                threadID);
             return;
         }
 
-        NetworkProbe::GetSingleton()
-            .SceneSpeed(thread, speed);
+        // OStim can invoke this listener while it still owns its internal
+        // thread lock. Calling GetCurrentSpeed() here re-enters that lock and
+        // deadlocks the game at scene launch. Defer all ModAPI access until
+        // after the listener has returned.
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            SKSE::log::warn(
+                "OSTNET SPEED defer unavailable thread={}",
+                threadID);
+            return;
+        }
 
-        // SetSpeed() replays the current animation. In OStim builds where
-        // that replay renews lockAtPosition()/TranslateTo on the STR proxy,
-        // release it after the queued animation tasks have settled.
-        ScheduleLocalSTRProxyPositionRelease(
-            threadID,
-            "SPEED");
+        tasks->AddTask(
+            [threadID]() {
+                auto& bridge = OStimBridge::GetSingleton();
+
+                if (!bridge._threadControl ||
+                    !bridge._threads ||
+                    bridge.IsRemoteMirrorThread(threadID)) {
+                    return;
+                }
+
+                auto* currentThread =
+                    bridge._threads->getThread(threadID);
+                if (!currentThread) {
+                    return;
+                }
+
+                const auto speed =
+                    bridge._threadControl->GetCurrentSpeed(threadID);
+
+                SKSE::log::info(
+                    "OSTNET SPEED DEFERRED thread={} speed={}",
+                    threadID,
+                    speed);
+
+                NetworkProbe::GetSingleton()
+                    .SceneSpeed(currentThread, speed);
+
+                // SetSpeed() replays the current animation. In OStim builds
+                // where that replay renews TranslateTo on the STR proxy,
+                // release it after the queued tasks have settled.
+                bridge.ScheduleLocalSTRProxyPositionRelease(
+                    threadID,
+                    "SPEED");
+            });
     }
 
     void OStimBridge::HandleStop(

@@ -1,5 +1,5 @@
 # OStim Together
 
-Current development version: **0.19.2**.
+Current development version: **0.19.3**.
 
-See [README-v0.19.2.md](README-v0.19.2.md).
+See [README-v0.19.3.md](README-v0.19.3.md).

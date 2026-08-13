@@ -1,6 +1,6 @@
 ScriptName OStimTogetherOCum extends Quest
 
-; OStim Together v0.19.2 - optional OCum Ascended integration
+; OStim Together v0.19.3 - optional OCum Ascended integration
 ;
 ; This script intentionally contains ALL OCum-specific knowledge.
 ; OStimTogether.dll only sees opaque addon channels / texture markers /
@@ -25,7 +25,7 @@ Function RegisterIntegration()
     endif
 
     RegisterForModEvent("ocum_applied_cum", "OnOCumApplied")
-    Debug.Trace("[OStimTogetherOCum] v0.19.2 registered for ocum_applied_cum")
+    Debug.Trace("[OStimTogetherOCum] v0.19.3 registered for ocum_applied_cum")
 EndFunction
 
 ; OCum Ascended sends this custom event immediately before it applies the

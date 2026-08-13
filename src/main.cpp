@@ -98,7 +98,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     SKSE::Init(skse);
 
     SKSE::log::info(
-        "OStim Together v0.19.2 loading");
+        "OStim Together v0.19.3 loading");
 
     auto* messaging =
         SKSE::GetMessagingInterface();
