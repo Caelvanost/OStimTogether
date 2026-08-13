@@ -17,7 +17,7 @@ vcpkg_installed/
 *.pdb
 *.pex
 
-# Release archives
+# Release archives and Vortex installation packages
 *.zip
 *.rar
 *.7z
