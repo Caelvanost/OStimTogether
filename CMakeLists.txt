@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     OStimTogether
-    VERSION 0.20.0
+    VERSION 0.20.1
     LANGUAGES CXX
 )
 
@@ -25,6 +25,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/DefaultOutfitGuard.h
         src/NetworkProbe.cpp
         src/NetworkProbe.h
+        src/StrServerDiscovery.cpp
+        src/StrServerDiscovery.h
         src/UdpTransport.cpp
         src/UdpTransport.h
         src/ActorResolver.cpp
@@ -67,4 +69,4 @@ target_compile_definitions(${PROJECT_NAME}
 )
 
 
-target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 version)
+target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 version bcrypt)

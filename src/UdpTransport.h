@@ -38,12 +38,13 @@ namespace OStimTogether
             const UdpTransport&) = delete;
 
         void ReceiverLoop();
-        void DiscoveryLoop(
+        void MaintenanceLoop(
             std::stop_token stopToken);
 
         void SendHello();
         void SendHelloTo(
-            const sockaddr_in& destination);
+            const sockaddr_in& destination,
+            bool useObservedSourcePort);
 
         bool HandleDiscoveryPacket(
             std::string_view packet,
@@ -62,7 +63,35 @@ namespace OStimTogether
         void ExpirePeers();
 
         std::vector<sockaddr_in>
-            SnapshotPeers();
+            SnapshotDestinations(
+                const sockaddr_in* excluded = nullptr);
+
+        void RelayGameplayPacket(
+            std::string_view packet,
+            const sockaddr_in& source);
+
+        bool SendPacketTo(
+            std::string_view packet,
+            const sockaddr_in& destination,
+            std::string_view operation);
+
+        std::optional<sockaddr_in>
+            ResolveRemotePeer(
+                const Config::RemotePeer& peer) const;
+
+        void RefreshSkyrimTogetherAutoConfig(
+            bool force);
+
+        std::vector<sockaddr_in>
+            SnapshotConfiguredPeers() const;
+
+        std::string GetSharedSecretSnapshot() const;
+        std::string SignPacket(
+            std::string packet) const;
+        bool AuthenticatePacket(
+            std::string_view packet) const;
+        std::string MarkRelayed(
+            std::string_view packet) const;
 
         std::string GetLocalClientName() const;
         static std::string SanitizeField(
@@ -73,6 +102,9 @@ namespace OStimTogether
                 std::string_view packet,
                 std::string_view key);
 
+        static std::string RemoveAuthField(
+            std::string_view packet);
+
         static std::string AddressToString(
             const sockaddr_in& address);
 
@@ -80,17 +112,22 @@ namespace OStimTogether
         SOCKET _socket{ INVALID_SOCKET };
 
         sockaddr_in _broadcast{};
-        sockaddr_in _manualPeer{};
-        bool _hasManualPeer{ false };
+        std::vector<sockaddr_in> _configuredPeers;
 
         std::jthread _receiver;
-        std::jthread _discovery;
+        std::jthread _maintenance;
 
         std::atomic_bool _running{ false };
         std::mutex _sendMutex;
 
         mutable std::mutex _peerMutex;
         std::unordered_map<std::string, Peer> _peers;
+
+        mutable std::mutex _configuredPeerMutex;
+        mutable std::mutex _authMutex;
+        std::string _sharedSecret;
+        std::chrono::steady_clock::time_point
+            _lastStrAutoConfigRefresh{};
 
         std::string _instanceID;
     };
