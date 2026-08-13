@@ -110,6 +110,28 @@ namespace OStimTogether
                 object);
         }
 
+        bool IsLikelySTRRemotePlayerProxy(
+            RE::Actor* actor)
+        {
+            if (!actor || actor->IsPlayerRef()) {
+                return false;
+            }
+
+            auto* base = actor->GetActorBase();
+            if (!base) {
+                return false;
+            }
+
+            constexpr RE::FormID kDynamicMask =
+                0xFF000000;
+
+            return
+                (actor->GetFormID() & kDynamicMask) ==
+                    kDynamicMask &&
+                (base->GetFormID() & kDynamicMask) ==
+                    kDynamicMask;
+        }
+
         void TranslateReferenceTo(
             RE::TESObjectREFR* object,
             const RE::NiPoint3& target,
@@ -1273,6 +1295,119 @@ namespace OStimTogether
             earlyCenter.y,
             earlyCenter.z,
             earlyCenter.r);
+    }
+
+    void OStimBridge::ScheduleLocalSTRProxyPositionRelease(
+        std::int32_t localThreadID,
+        std::string_view reason)
+    {
+        const std::string reasonCopy(reason);
+
+        // START listener timing is slightly earlier than NODE timing:
+        // OStim may queue its initial ChangeNode only after the listener
+        // returns. Three game-task hops are therefore intentional. They
+        // place StopTranslation after ChangeNode -> lockAtPosition() for both
+        // START and NODE without polling or continuously fighting STR.
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            return;
+        }
+
+        tasks->AddTask(
+            [localThreadID, reasonCopy]() {
+                auto* hop2 = SKSE::GetTaskInterface();
+                if (!hop2) {
+                    return;
+                }
+
+                hop2->AddTask(
+                    [localThreadID, reasonCopy]() {
+                        auto* hop3 = SKSE::GetTaskInterface();
+                        if (!hop3) {
+                            return;
+                        }
+
+                        hop3->AddTask(
+                            [localThreadID, reasonCopy]() {
+                                auto& bridge =
+                                    OStimBridge::GetSingleton();
+
+                                if (!bridge._threads ||
+                                    bridge.IsRemoteMirrorThread(
+                                        localThreadID)) {
+                                    return;
+                                }
+
+                                auto* thread =
+                                    bridge._threads->getThread(
+                                        localThreadID);
+                                if (!thread) {
+                                    return;
+                                }
+
+                                std::uint32_t released = 0;
+                                const auto actorCount =
+                                    thread->getActorCount();
+
+                                for (std::uint32_t i = 0;
+                                     i < actorCount;
+                                     ++i) {
+                                    auto* threadActor =
+                                        thread->getActor(i);
+                                    auto* actor = threadActor ?
+                                        static_cast<RE::Actor*>(
+                                            threadActor->
+                                                getGameActor()) :
+                                        nullptr;
+
+                                    if (!IsLikelySTRRemotePlayerProxy(
+                                            actor)) {
+                                        continue;
+                                    }
+
+                                    const auto before =
+                                        actor->GetPosition();
+
+                                    StopReferenceTranslation(actor);
+
+                                    const auto after =
+                                        actor->GetPosition();
+
+                                    ++released;
+
+                                    SKSE::log::info(
+                                        "OSTNET STR PROXY POSITION RELEASE reason={} thread={} node={} idx={} actor={:08X} base={:08X} before=({:.3f},{:.3f},{:.3f}) after=({:.3f},{:.3f},{:.3f}) action=stop-ostim-translation owner=STR",
+                                        reasonCopy,
+                                        localThreadID,
+                                        thread->getCurrentNode() &&
+                                                thread->getCurrentNode()->
+                                                    getNodeID() ?
+                                            thread->getCurrentNode()->
+                                                getNodeID() :
+                                            "",
+                                        i,
+                                        actor->GetFormID(),
+                                        actor->GetActorBase() ?
+                                            actor->GetActorBase()->
+                                                GetFormID() :
+                                            0,
+                                        before.x,
+                                        before.y,
+                                        before.z,
+                                        after.x,
+                                        after.y,
+                                        after.z);
+                                }
+
+                                if (released > 0) {
+                                    SKSE::log::info(
+                                        "OSTNET STR PROXY POSITION OWNER thread={} released={} owner=STR continuousPin=0",
+                                        localThreadID,
+                                        released);
+                                }
+                            });
+                    });
+            });
     }
 
     void OStimBridge::ScheduleAuthoritativeSelfPoseOnce(
@@ -2813,6 +2948,12 @@ namespace OStimTogether
                     });
             }
         }
+
+        if (!isMirror) {
+            ScheduleLocalSTRProxyPositionRelease(
+                static_cast<std::int32_t>(threadID),
+                "START");
+        }
     }
 
     void OStimBridge::HandleNode(
@@ -2838,6 +2979,14 @@ namespace OStimTogether
 
             return;
         }
+
+        // The locally-owned thread can contain an STR remote player proxy
+        // (for example Elir on Player1). OStim's lockAtPosition() has already
+        // queued a persistent TranslateTo target for this node. Release that
+        // target after OStim settles so STR remains the sole position owner.
+        ScheduleLocalSTRProxyPositionRelease(
+            static_cast<std::int32_t>(threadID),
+            "NODE");
 
         // OStim ChangeNode() queues lockAtPosition() before notifying
         // node listeners. Defer our packet by one game task so the local

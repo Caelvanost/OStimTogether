@@ -128,6 +128,16 @@ namespace OStimTogether
             std::int32_t localThreadID,
             std::string_view reason);
 
+        // Locally-owned OStim scenes can include a Skyrim Together remote
+        // player proxy. OStim's lockAtPosition() starts a persistent
+        // TranslateTo target on that proxy while STR is simultaneously
+        // updating its transform, producing visible back-and-forth jitter.
+        // Release only that persistent OStim translation after START/NODE;
+        // never teleport or continuously pin the remote proxy.
+        void ScheduleLocalSTRProxyPositionRelease(
+            std::int32_t localThreadID,
+            std::string_view reason);
+
         void QueueAuthoritativeWallStart(
             OStim::Thread* thread);
 
