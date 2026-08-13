@@ -648,6 +648,145 @@ namespace OStimTogether
             return applied;
         }
 
+        struct EncodedOverlayApplyResult
+        {
+            std::uint32_t stored{ 0 };
+            std::uint32_t invalid{ 0 };
+            std::uint32_t liveProperties{ 0 };
+            std::uint32_t proxySexCopies{ 0 };
+            std::unordered_set<std::string> nodeNames;
+        };
+
+        EncodedOverlayApplyResult ApplyEncodedOverlayProperties(
+            RE::Actor* actor,
+            SKEE::IOverrideInterface* overrides,
+            std::string_view encodedProps,
+            bool storeOverrides)
+        {
+            EncodedOverlayApplyResult result{};
+
+            if (!actor || !overrides || encodedProps.empty()) {
+                return result;
+            }
+
+            auto* actorBase = actor->GetActorBase();
+            const bool haveProxySex = actorBase != nullptr;
+            const bool proxyFemale =
+                haveProxySex &&
+                actorBase->GetSex() == RE::SEX::kFemale;
+
+            for (const auto& raw : Split(encodedProps, ';')) {
+                const auto fields = Split(raw, ',');
+                if (fields.size() != 6) {
+                    ++result.invalid;
+                    continue;
+                }
+
+                try {
+                    const bool sourceFemale =
+                        std::stoul(fields[0]) != 0;
+                    const auto nodeDecoded =
+                        HexDecode(fields[1]);
+
+                    if (!nodeDecoded || nodeDecoded->empty()) {
+                        ++result.invalid;
+                        continue;
+                    }
+
+                    const auto key =
+                        static_cast<std::uint16_t>(
+                            std::stoul(fields[2]));
+                    const auto index =
+                        static_cast<std::uint8_t>(
+                            std::stoul(fields[3]));
+                    const char type =
+                        fields[4].empty() ?
+                            'N' : fields[4][0];
+
+                    ApplyVariant value;
+                    value.type = type;
+
+                    switch (type) {
+                    case 'I':
+                        value.intValue =
+                            static_cast<SKEE::i32>(
+                                std::stol(fields[5]));
+                        break;
+                    case 'F':
+                        value.floatValue =
+                            std::stof(fields[5]);
+                        break;
+                    case 'B':
+                        value.boolValue =
+                            fields[5] == "1";
+                        break;
+                    case 'S': {
+                        const auto decoded =
+                            HexDecode(fields[5]);
+                        if (!decoded) {
+                            ++result.invalid;
+                            continue;
+                        }
+                        value.stringValue = *decoded;
+                        break;
+                    }
+                    default:
+                        ++result.invalid;
+                        continue;
+                    }
+
+                    if (storeOverrides) {
+                        overrides->AddNodeOverride(
+                            actor,
+                            sourceFemale,
+                            nodeDecoded->c_str(),
+                            key,
+                            index,
+                            value);
+
+                        // STR's dynamic TESNPC can briefly expose a sex bit
+                        // that differs from the source player while its base
+                        // is being hydrated. Keep a copy under the live proxy
+                        // sex as well so later RaceMenu rebuilds find it.
+                        if (haveProxySex &&
+                            proxyFemale != sourceFemale) {
+                            overrides->AddNodeOverride(
+                                actor,
+                                proxyFemale,
+                                nodeDecoded->c_str(),
+                                key,
+                                index,
+                                value);
+                            ++result.proxySexCopies;
+                        }
+
+                        ++result.stored;
+                    }
+
+                    // AddNodeOverride persists state but does not guarantee
+                    // that a dynamic proxy's already-created third-person
+                    // geometry receives it. SetNodeProperty targets the live
+                    // 3D node directly and deliberately avoids the unsafe
+                    // GetNodeProperty path.
+                    overrides->SetNodeProperty(
+                        actor,
+                        false,
+                        nodeDecoded->c_str(),
+                        key,
+                        index,
+                        value,
+                        true);
+
+                    ++result.liveProperties;
+                    result.nodeNames.insert(*nodeDecoded);
+                } catch (...) {
+                    ++result.invalid;
+                }
+            }
+
+            return result;
+        }
+
         std::string JoinNames(
             const std::vector<std::string>& names)
         {
@@ -1181,84 +1320,12 @@ namespace OStimTogether
             overlay->AddOverlays(actor, false);
         }
 
-        std::uint32_t applied = 0;
-        std::uint32_t invalid = 0;
-        std::unordered_set<std::string> nodeNames;
-
-        for (const auto& raw : Split(encodedProps, ';')) {
-            const auto fields = Split(raw, ',');
-            if (fields.size() != 6) {
-                ++invalid;
-                continue;
-            }
-
-            try {
-                const bool female =
-                    std::stoul(fields[0]) != 0;
-
-                const auto nodeDecoded =
-                    HexDecode(fields[1]);
-
-                if (!nodeDecoded) {
-                    ++invalid;
-                    continue;
-                }
-
-                const auto key =
-                    static_cast<std::uint16_t>(
-                        std::stoul(fields[2]));
-                const auto index =
-                    static_cast<std::uint8_t>(
-                        std::stoul(fields[3]));
-                const char type =
-                    fields[4].empty() ?
-                        'N' : fields[4][0];
-
-                ApplyVariant value;
-                value.type = type;
-
-                switch (type) {
-                case 'I':
-                    value.intValue =
-                        static_cast<SKEE::i32>(
-                            std::stol(fields[5]));
-                    break;
-                case 'F':
-                    value.floatValue =
-                        std::stof(fields[5]);
-                    break;
-                case 'B':
-                    value.boolValue =
-                        fields[5] == "1";
-                    break;
-                case 'S': {
-                    const auto decoded =
-                        HexDecode(fields[5]);
-                    if (!decoded) {
-                        ++invalid;
-                        continue;
-                    }
-                    value.stringValue = *decoded;
-                    break;
-                }
-                default:
-                    ++invalid;
-                    continue;
-                }
-
-                overrides->AddNodeOverride(
-                    actor,
-                    female,
-                    nodeDecoded->c_str(),
-                    key,
-                    index,
-                    value);
-                nodeNames.insert(*nodeDecoded);
-                ++applied;
-            } catch (...) {
-                ++invalid;
-            }
-        }
+        const auto applied =
+            ApplyEncodedOverlayProperties(
+                actor,
+                overrides,
+                encodedProps,
+                true);
 
         // Store first, then ask RaceMenu to rebuild the physical overlay
         // geometry.  This is deliberately generic and bounded.  The old
@@ -1269,7 +1336,7 @@ namespace OStimTogether
             ApplyNodeOverridesToLive3D(
                 actor,
                 overrides,
-                nodeNames);
+                applied.nodeNames);
 
         bool rebuild = false;
         {
@@ -1300,12 +1367,14 @@ namespace OStimTogether
         const auto actorFormID =
             actor->GetFormID();
         const std::string channelCopy(channel);
-        const auto nodeNamesCopy = nodeNames;
+        const std::string encodedPropsCopy(encodedProps);
+        const auto nodeNamesCopy = applied.nodeNames;
 
         const auto scheduleReapply =
             [this,
              actorFormID,
              channelCopy,
+             encodedPropsCopy,
              nodeNamesCopy](
                 std::chrono::milliseconds delay,
                 const char* phase) {
@@ -1313,6 +1382,7 @@ namespace OStimTogether
                     [this,
                      actorFormID,
                      channelCopy,
+                     encodedPropsCopy,
                      nodeNamesCopy,
                      delay,
                      phase = std::string(phase)]() {
@@ -1326,6 +1396,7 @@ namespace OStimTogether
                             [this,
                              actorFormID,
                              channelCopy,
+                             encodedPropsCopy,
                              nodeNamesCopy,
                              phase]() {
                                 auto* form =
@@ -1351,13 +1422,30 @@ namespace OStimTogether
                                 }
 
                                 if (overrides2) {
+                                    const auto live =
+                                        ApplyEncodedOverlayProperties(
+                                            actor2,
+                                            overrides2,
+                                            encodedPropsCopy,
+                                            false);
+
                                     overrides2->SetNodeProperties(
                                         actor2,
                                         true);
-                                    ApplyNodeOverridesToLive3D(
+                                    const auto directNodes =
+                                        ApplyNodeOverridesToLive3D(
                                         actor2,
                                         overrides2,
                                         nodeNamesCopy);
+
+                                    SKSE::log::info(
+                                        "OSTNET ADDON OVR LIVE REAPPLY phase={} channel={} actor={:08X} liveProperties={} directNodes={} invalid={}",
+                                        phase,
+                                        channelCopy,
+                                        actorFormID,
+                                        live.liveProperties,
+                                        directNodes,
+                                        live.invalid);
                                 }
 
                                 SKSE::log::info(
@@ -1375,13 +1463,18 @@ namespace OStimTogether
         scheduleReapply(
             std::chrono::milliseconds(500),
             "T500");
+        scheduleReapply(
+            std::chrono::milliseconds(1200),
+            "T1200");
 
         SKSE::log::info(
-            "OSTNET ADDON OVR APPLY channel={} actor={:08X} applied={} invalid={} directApplied={} hasOverlays={} rebuild={}",
+            "OSTNET ADDON OVR APPLY channel={} actor={:08X} stored={} invalid={} liveProperties={} proxySexCopies={} directNodes={} hasOverlays={} rebuild={}",
             channel,
             actor->GetFormID(),
-            applied,
-            invalid,
+            applied.stored,
+            applied.invalid,
+            applied.liveProperties,
+            applied.proxySexCopies,
             directApplied,
             overlay->HasOverlays(actor) ? 1 : 0,
             rebuild ? 1 : 0);

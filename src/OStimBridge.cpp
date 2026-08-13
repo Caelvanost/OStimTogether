@@ -292,7 +292,8 @@ namespace OStimTogether
 
     bool OStimBridge::TryComputeSceneCenter(
         OStim::Thread* thread,
-        SceneCenter& outCenter)
+        SceneCenter& outCenter,
+        bool logDiagnostics)
     {
         outCenter = {};
 
@@ -440,25 +441,27 @@ namespace OStimTogether
         outCenter =
             center;
 
-        SKSE::log::info(
-            "OSTNET SCENE CENTER thread={} playerIndex={} node={} center=({:.3f},{:.3f},{:.3f},{:.5f}) player=({:.3f},{:.3f},{:.3f},{:.5f}) localOffset=({:.3f},{:.3f},{:.3f},{:.3f})",
-            thread->getThreadID(),
-            playerIndex,
-            node->getNodeID() ?
-                node->getNodeID() : "",
-            center.x,
-            center.y,
-            center.z,
-            center.r,
-            playerPos.x,
-            playerPos.y,
-            playerPos.z,
-            playerRot,
-            localX,
-            localY,
-            localZ,
-            alignment.rotation +
-                graphOffset.r);
+        if (logDiagnostics) {
+            SKSE::log::info(
+                "OSTNET SCENE CENTER thread={} playerIndex={} node={} center=({:.3f},{:.3f},{:.3f},{:.5f}) player=({:.3f},{:.3f},{:.3f},{:.5f}) localOffset=({:.3f},{:.3f},{:.3f},{:.3f})",
+                thread->getThreadID(),
+                playerIndex,
+                node->getNodeID() ?
+                    node->getNodeID() : "",
+                center.x,
+                center.y,
+                center.z,
+                center.r,
+                playerPos.x,
+                playerPos.y,
+                playerPos.z,
+                playerRot,
+                localX,
+                localY,
+                localZ,
+                alignment.rotation +
+                    graphOffset.r);
+        }
 
         return true;
     }
@@ -467,7 +470,8 @@ namespace OStimTogether
         OStim::Thread* thread,
         std::uint32_t actorIndex,
         const SceneCenter& center,
-        ActorPose& outPose)
+        ActorPose& outPose,
+        bool logDiagnostics)
     {
         outPose = {};
 
@@ -525,25 +529,27 @@ namespace OStimTogether
              graphOffset.r) *
             kDegreesToRadians;
 
-        SKSE::log::info(
-            "OSTNET 74C OFFSET thread={} node={} idx={} graphOffset=({:.3f},{:.3f},{:.3f},{:.3f}) alignment=({:.3f},{:.3f},{:.3f},{:.3f}) combined=({:.3f},{:.3f},{:.3f},{:.3f})",
-            thread->getThreadID(),
-            node->getNodeID() ?
-                node->getNodeID() : "",
-            actorIndex,
-            graphOffset.x,
-            graphOffset.y,
-            graphOffset.z,
-            graphOffset.r,
-            alignment.offsetX,
-            alignment.offsetY,
-            alignment.offsetZ,
-            alignment.rotation,
-            localX,
-            localY,
-            localZ,
-            alignment.rotation +
-                graphOffset.r);
+        if (logDiagnostics) {
+            SKSE::log::info(
+                "OSTNET 74C OFFSET thread={} node={} idx={} graphOffset=({:.3f},{:.3f},{:.3f},{:.3f}) alignment=({:.3f},{:.3f},{:.3f},{:.3f}) combined=({:.3f},{:.3f},{:.3f},{:.3f})",
+                thread->getThreadID(),
+                node->getNodeID() ?
+                    node->getNodeID() : "",
+                actorIndex,
+                graphOffset.x,
+                graphOffset.y,
+                graphOffset.z,
+                graphOffset.r,
+                alignment.offsetX,
+                alignment.offsetY,
+                alignment.offsetZ,
+                alignment.rotation,
+                localX,
+                localY,
+                localZ,
+                alignment.rotation +
+                    graphOffset.r);
+        }
 
         const float sinR =
             std::sin(center.r);
@@ -579,21 +585,23 @@ namespace OStimTogether
 
         outPose = pose;
 
-        SKSE::log::info(
-            "OSTNET AUTHORITATIVE POSE thread={} node={} idx={} pose=({:.3f},{:.3f},{:.3f},{:.5f}) localOffset=({:.3f},{:.3f},{:.3f},{:.3f})",
-            thread->getThreadID(),
-            node->getNodeID() ?
-                node->getNodeID() : "",
-            actorIndex,
-            pose.x,
-            pose.y,
-            pose.z,
-            pose.r,
-            localX,
-            localY,
-            localZ,
-            alignment.rotation +
-                graphOffset.r);
+        if (logDiagnostics) {
+            SKSE::log::info(
+                "OSTNET AUTHORITATIVE POSE thread={} node={} idx={} pose=({:.3f},{:.3f},{:.3f},{:.5f}) localOffset=({:.3f},{:.3f},{:.3f},{:.3f})",
+                thread->getThreadID(),
+                node->getNodeID() ?
+                    node->getNodeID() : "",
+                actorIndex,
+                pose.x,
+                pose.y,
+                pose.z,
+                pose.r,
+                localX,
+                localY,
+                localZ,
+                alignment.rotation +
+                    graphOffset.r);
+        }
 
         return true;
     }
@@ -1244,6 +1252,8 @@ namespace OStimTogether
         _sceneCenters.clear();
         _authoritativeActorPoses.clear();
         _pendingWallStarts.clear();
+        _localSTRProxyGuardAfter.clear();
+        _lastLocalSTRProxyGuardLog.clear();
         _pendingInitialAnimationReplay.clear();
         _lastAnimationRefresh.clear();
         _lastDirectEventLog.clear();
@@ -1418,6 +1428,198 @@ namespace OStimTogether
                             });
                     });
             });
+    }
+
+    void OStimBridge::RefreshLocalSTRProxyGuards(
+        std::chrono::steady_clock::time_point now)
+    {
+        std::vector<std::pair<
+            std::int32_t,
+            std::chrono::steady_clock::time_point>> guards;
+
+        {
+            std::scoped_lock lock(
+                _remoteMirrorMutex);
+
+            guards.reserve(
+                _localSTRProxyGuardAfter.size());
+
+            for (const auto& entry :
+                 _localSTRProxyGuardAfter) {
+                guards.push_back(entry);
+            }
+        }
+
+        std::vector<std::int32_t> stale;
+
+        for (const auto& [threadID, guardAfter] :
+             guards) {
+            if (now < guardAfter) {
+                continue;
+            }
+
+            if (!_threads ||
+                !_threadControl ||
+                IsRemoteMirrorThread(threadID) ||
+                !_threadControl->IsThreadValid(
+                    static_cast<std::uint32_t>(threadID))) {
+                stale.push_back(threadID);
+                continue;
+            }
+
+            auto* thread =
+                _threads->getThread(threadID);
+
+            if (!thread) {
+                stale.push_back(threadID);
+                continue;
+            }
+
+            SceneCenter center{};
+            if (!TryComputeSceneCenter(
+                    thread,
+                    center,
+                    false)) {
+                continue;
+            }
+
+            std::uint32_t guarded = 0;
+            std::uint32_t corrected = 0;
+            float maxDistanceSq = 0.0F;
+            float maxHeadingDelta = 0.0F;
+
+            RE::FormID sampleActorID = 0;
+            RE::NiPoint3 sampleBefore{};
+            RE::NiPoint3 sampleTarget{};
+            RE::NiPoint3 sampleAfter{};
+
+            const auto actorCount =
+                thread->getActorCount();
+
+            for (std::uint32_t i = 0;
+                 i < actorCount;
+                 ++i) {
+                auto* threadActor =
+                    thread->getActor(i);
+                auto* actor = threadActor ?
+                    static_cast<RE::Actor*>(
+                        threadActor->getGameActor()) :
+                    nullptr;
+
+                if (!IsLikelySTRRemotePlayerProxy(actor)) {
+                    continue;
+                }
+
+                ActorPose pose{};
+                if (!TryComputeActorPose(
+                        thread,
+                        i,
+                        center,
+                        pose,
+                        false)) {
+                    continue;
+                }
+
+                ++guarded;
+
+                const auto before =
+                    actor->GetPosition();
+                const RE::NiPoint3 target{
+                    pose.x,
+                    pose.y,
+                    pose.z
+                };
+
+                const auto distanceSq =
+                    before.GetSquaredDistance(target);
+                const auto headingDelta =
+                    std::abs(
+                        NormalizeRadians(
+                            actor->GetAngleZ() -
+                            pose.r));
+
+                maxDistanceSq =
+                    std::max(maxDistanceSq, distanceSq);
+                maxHeadingDelta =
+                    std::max(maxHeadingDelta, headingDelta);
+
+                // Cancel any late OStim TranslateTo first. STR can continue
+                // updating its network state, but while this local OStim
+                // thread is alive the rendered scene uses the settled OStim
+                // actor pose. A small deadband avoids redundant 3D updates.
+                StopReferenceTranslation(actor);
+
+                constexpr float kPositionDeadbandSq =
+                    0.0625F;  // 0.25 Skyrim units
+                constexpr float kHeadingDeadband =
+                    0.0025F;
+
+                if (distanceSq > kPositionDeadbandSq ||
+                    headingDelta > kHeadingDeadband) {
+                    actor->SetPosition(target, true);
+                    actor->SetRotationZ(pose.r);
+
+                    static_cast<RE::TESObjectREFR*>(actor)->
+                        Update3DPosition(true);
+
+                    ++corrected;
+                }
+
+                sampleActorID = actor->GetFormID();
+                sampleBefore = before;
+                sampleTarget = target;
+                sampleAfter = actor->GetPosition();
+            }
+
+            bool writeLog = false;
+            {
+                std::scoped_lock lock(
+                    _remoteMirrorMutex);
+
+                auto& last =
+                    _lastLocalSTRProxyGuardLog[threadID];
+
+                if (last.time_since_epoch().count() == 0 ||
+                    now - last >=
+                        std::chrono::milliseconds(500)) {
+                    last = now;
+                    writeLog = true;
+                }
+            }
+
+            if (writeLog && guarded > 0) {
+                SKSE::log::info(
+                    "OSTNET LOCAL STR PROXY GUARD thread={} node={} guarded={} corrected={} actor={:08X} before=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) after=({:.3f},{:.3f},{:.3f}) maxDist2={:.4f} maxHeadingDelta={:.5f} owner=OStimUntilStop",
+                    threadID,
+                    thread->getCurrentNode() &&
+                            thread->getCurrentNode()->getNodeID() ?
+                        thread->getCurrentNode()->getNodeID() : "",
+                    guarded,
+                    corrected,
+                    sampleActorID,
+                    sampleBefore.x,
+                    sampleBefore.y,
+                    sampleBefore.z,
+                    sampleTarget.x,
+                    sampleTarget.y,
+                    sampleTarget.z,
+                    sampleAfter.x,
+                    sampleAfter.y,
+                    sampleAfter.z,
+                    maxDistanceSq,
+                    maxHeadingDelta);
+            }
+        }
+
+        if (!stale.empty()) {
+            std::scoped_lock lock(
+                _remoteMirrorMutex);
+
+            for (const auto threadID : stale) {
+                _localSTRProxyGuardAfter.erase(threadID);
+                _lastLocalSTRProxyGuardLog.erase(threadID);
+            }
+        }
     }
 
     void OStimBridge::ScheduleAuthoritativeSelfPoseOnce(
@@ -2470,6 +2672,8 @@ namespace OStimTogether
                 SceneStart(thread);
         }
 
+        RefreshLocalSTRProxyGuards(now);
+
         if (mirrors.empty()) {
             return;
         }
@@ -2943,6 +3147,8 @@ namespace OStimTogether
                 threadID);
         }
 
+        bool hasLocalSTRProxy = false;
+
         for (std::uint32_t i = 0;
              i < actorCount;
              ++i) {
@@ -2969,6 +3175,11 @@ namespace OStimTogether
             // ChangeNode/3D lifecycle. Mirror-side remote proxies are left
             // untouched because their visuals are already correct.
             if (!isMirror) {
+                if (IsLikelySTRRemotePlayerProxy(
+                        gameActor)) {
+                    hasLocalSTRProxy = true;
+                }
+
                 RaceMenuOverlayBridge::
                     GetSingleton().
                     PrepareSTRProxyForOStim(
@@ -3016,6 +3227,39 @@ namespace OStimTogether
             ScheduleLocalSTRProxyPositionRelease(
                 static_cast<std::int32_t>(threadID),
                 "START");
+
+            if (hasLocalSTRProxy) {
+                auto* currentNode =
+                    thread->getCurrentNode();
+                const auto* currentNodeID =
+                    currentNode ?
+                        currentNode->getNodeID() :
+                        nullptr;
+                const bool wall =
+                    currentNodeID &&
+                    std::string_view(currentNodeID).find("wall") !=
+                        std::string_view::npos;
+                const auto delay =
+                    wall ?
+                        std::chrono::milliseconds(1100) :
+                        std::chrono::milliseconds(200);
+
+                {
+                    std::scoped_lock lock(
+                        _remoteMirrorMutex);
+                    _localSTRProxyGuardAfter[
+                        static_cast<std::int32_t>(threadID)] =
+                        std::chrono::steady_clock::now() + delay;
+                    _lastLocalSTRProxyGuardLog.erase(
+                        static_cast<std::int32_t>(threadID));
+                }
+
+                SKSE::log::info(
+                    "OSTNET LOCAL STR PROXY GUARD armed thread={} node={} delayMs={} owner=OStimUntilStop",
+                    threadID,
+                    currentNodeID ? currentNodeID : "",
+                    delay.count());
+            }
         }
     }
 
@@ -3046,7 +3290,9 @@ namespace OStimTogether
         // The locally-owned thread can contain an STR remote player proxy
         // (for example Elir on Player1). OStim's lockAtPosition() has already
         // queued a persistent TranslateTo target for this node. Release that
-        // target after OStim settles so STR remains the sole position owner.
+        // target after OStim settles. The active-scene guard then keeps the
+        // dynamic proxy on OStim's computed pose until STOP returns ownership
+        // to STR.
         ScheduleLocalSTRProxyPositionRelease(
             static_cast<std::int32_t>(threadID),
             "NODE");
@@ -3180,6 +3426,10 @@ namespace OStimTogether
             std::scoped_lock lock(
                 _remoteMirrorMutex);
             _pendingWallStarts.erase(
+                threadID);
+            _localSTRProxyGuardAfter.erase(
+                threadID);
+            _lastLocalSTRProxyGuardLog.erase(
                 threadID);
         }
 

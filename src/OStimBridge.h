@@ -27,13 +27,15 @@ namespace OStimTogether
         // center used by OStim from the already aligned local player.
         bool TryComputeSceneCenter(
             OStim::Thread* thread,
-            SceneCenter& outCenter);
+            SceneCenter& outCenter,
+            bool logDiagnostics = true);
 
         bool TryComputeActorPose(
             OStim::Thread* thread,
             std::uint32_t actorIndex,
             const SceneCenter& center,
-            ActorPose& outPose);
+            ActorPose& outPose,
+            bool logDiagnostics = true);
 
         std::int32_t StartRemoteMirror(
             std::string_view sender,
@@ -142,14 +144,18 @@ namespace OStimTogether
             std::string_view reason);
 
         // Locally-owned OStim scenes can include a Skyrim Together remote
-        // player proxy. OStim's lockAtPosition() starts a persistent
-        // TranslateTo target on that proxy while STR is simultaneously
-        // updating its transform, producing visible back-and-forth jitter.
-        // Release only that persistent OStim translation after START/NODE;
-        // never teleport or continuously pin the remote proxy.
+        // player proxy. Release OStim's queued TranslateTo after START/NODE
+        // while the bounded active-scene guard is waiting to take over.
         void ScheduleLocalSTRProxyPositionRelease(
             std::int32_t localThreadID,
             std::string_view reason);
+
+        // During a locally-owned scene, use OStim's settled actor pose as the
+        // visual position authority for dynamic STR player proxies. The
+        // guard exists only for the lifetime of that local OStim thread and
+        // is removed at STOP, immediately returning ownership to STR.
+        void RefreshLocalSTRProxyGuards(
+            std::chrono::steady_clock::time_point now);
 
         void QueueAuthoritativeWallStart(
             OStim::Thread* thread);
@@ -226,6 +232,15 @@ namespace OStimTogether
         // keep the existing immediate post-align path.
         std::unordered_map<std::int32_t, PendingWallStart>
             _pendingWallStarts;
+
+        // Local (non-mirror) OStim threads containing a dynamic STR player
+        // proxy. The timestamp is a short startup grace period; after it,
+        // VisualKeepAlive stabilizes the proxy at OStim's computed actor pose
+        // every 25 ms until that thread stops.
+        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point>
+            _localSTRProxyGuardAfter;
+        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point>
+            _lastLocalSTRProxyGuardLog;
 
         // The initial OStim animation can start before the mirror's local
         // PlayerCharacter visual root has settled. Replay the CURRENT speed
