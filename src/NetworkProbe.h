@@ -12,6 +12,9 @@ namespace OStimTogether
 
         void SceneStart(OStim::Thread* thread);
         void SceneNode(OStim::Thread* thread);
+        void SceneSpeed(
+            OStim::Thread* thread,
+            std::int32_t speed);
         void SceneStop(OStim::Thread* thread);
 
     private:

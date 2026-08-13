@@ -1024,6 +1024,39 @@ namespace OStimTogether
             return;
         }
 
+        if (payload.starts_with("SPEED|")) {
+            const auto threadID =
+                ParseThreadID(payload);
+            const auto speedValue =
+                Field(payload, "speed");
+
+            if (!threadID || !speedValue) {
+                SKSE::log::warn(
+                    "OSTNET MIRROR SPEED invalid packet sender={}",
+                    sender);
+                return;
+            }
+
+            try {
+                const auto speed =
+                    static_cast<std::int32_t>(
+                        std::stol(*speedValue));
+
+                OStimBridge::GetSingleton()
+                    .SetRemoteMirrorSpeed(
+                        sender,
+                        *threadID,
+                        speed);
+            } catch (...) {
+                SKSE::log::warn(
+                    "OSTNET MIRROR SPEED invalid value sender={} value={}",
+                    sender,
+                    *speedValue);
+            }
+
+            return;
+        }
+
         if (payload.starts_with("STOP|")) {
             const auto threadID =
                 ParseThreadID(payload);

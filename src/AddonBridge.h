@@ -31,6 +31,13 @@ namespace OStimTogether
             const std::string& sender,
             std::string_view payload);
 
+        // OStim removes equip objects and may rebuild actor 3D after its STOP
+        // listener fires. Reapply the last generic addon state after that
+        // cleanup so persistent addon visuals survive scene exit.
+        void ScheduleRemoteStateReapply(
+            RE::Actor* actor,
+            std::string_view reason);
+
     private:
         AddonBridge() = default;
 
@@ -59,6 +66,28 @@ namespace OStimTogether
             std::string_view objectType,
             bool equipped);
 
+        struct CachedOverlayState
+        {
+            std::size_t expectedCount{ 0 };
+            std::vector<std::string> chunks;
+        };
+
+        struct CachedObjectState
+        {
+            std::string channel;
+            std::string objectType;
+            bool equipped{ false };
+        };
+
         std::atomic_bool _registered{ false };
+        std::mutex _stateMutex;
+        std::unordered_map<
+            RE::FormID,
+            std::unordered_map<std::string, CachedOverlayState>>
+            _remoteOverlays;
+        std::unordered_map<
+            RE::FormID,
+            std::unordered_map<std::string, CachedObjectState>>
+            _remoteObjects;
     };
 }

@@ -52,6 +52,11 @@ namespace OStimTogether
             std::string_view nodeID,
             const std::vector<ActorPose>& authoritativePoses);
 
+        bool SetRemoteMirrorSpeed(
+            std::string_view sender,
+            std::int32_t remoteThreadID,
+            std::int32_t speed);
+
         bool StopRemoteMirror(
             std::string_view sender,
             std::int32_t remoteThreadID);
@@ -87,10 +92,18 @@ namespace OStimTogether
             void listen(OStim::Thread* thread) override;
         };
 
+        class SpeedListener final :
+            public OStim::ThreadEventListener
+        {
+        public:
+            void listen(OStim::Thread* thread) override;
+        };
+
         OStimBridge() = default;
 
         void HandleStart(OStim::Thread* thread);
         void HandleNode(OStim::Thread* thread);
+        void HandleSpeed(OStim::Thread* thread);
         void HandleStop(OStim::Thread* thread);
 
         bool LoadModAPIs();
@@ -167,6 +180,7 @@ namespace OStimTogether
         StartListener _startListener;
         StopListener _stopListener;
         NodeListener _nodeListener;
+        SpeedListener _speedListener;
 
         std::atomic_bool _creatingRemoteMirror{ false };
 

@@ -220,6 +220,23 @@ namespace OStimTogether
                        }) != haystack.end();
         }
 
+        bool EqualsInsensitive(
+            std::string_view lhs,
+            std::string_view rhs)
+        {
+            return lhs.size() == rhs.size() &&
+                   std::equal(
+                       lhs.begin(),
+                       lhs.end(),
+                       rhs.begin(),
+                       [](char a, char b) {
+                           return std::tolower(
+                                      static_cast<unsigned char>(a)) ==
+                                  std::tolower(
+                                      static_cast<unsigned char>(b));
+                       });
+        }
+
         constexpr std::uint16_t kParamShaderEmissiveColor = 0;
         constexpr std::uint16_t kParamShaderEmissiveMultiple = 1;
         constexpr std::uint16_t kParamShaderGlossiness = 2;
@@ -547,6 +564,88 @@ namespace OStimTogether
                     }
                 }
             }
+        }
+
+        RE::NiAVObject* FindSceneObject(
+            RE::NiAVObject* object,
+            std::string_view wantedName)
+        {
+            if (!object || wantedName.empty()) {
+                return nullptr;
+            }
+
+            const char* rawName = object->name.c_str();
+            if (rawName &&
+                EqualsInsensitive(rawName, wantedName)) {
+                return object;
+            }
+
+            if (auto* node = object->AsNode()) {
+                for (auto& child : node->GetChildren()) {
+                    if (child) {
+                        if (auto* found = FindSceneObject(
+                                child.get(),
+                                wantedName)) {
+                            return found;
+                        }
+                    }
+                }
+            }
+
+            return nullptr;
+        }
+
+        std::unordered_set<std::string> DecodeOverlayNodeNames(
+            const std::vector<std::string>& chunks)
+        {
+            std::unordered_set<std::string> nodes;
+
+            for (const auto& chunk : chunks) {
+                for (const auto& raw : Split(chunk, ';')) {
+                    const auto fields = Split(raw, ',');
+                    if (fields.size() != 6) {
+                        continue;
+                    }
+
+                    const auto decoded = HexDecode(fields[1]);
+                    if (decoded && !decoded->empty()) {
+                        nodes.insert(*decoded);
+                    }
+                }
+            }
+
+            return nodes;
+        }
+
+        std::uint32_t ApplyNodeOverridesToLive3D(
+            RE::Actor* actor,
+            SKEE::IOverrideInterface* overrides,
+            const std::unordered_set<std::string>& nodeNames)
+        {
+            if (!actor || !overrides || nodeNames.empty()) {
+                return 0;
+            }
+
+            auto* root = actor->Get3D();
+            if (!root) {
+                return 0;
+            }
+
+            std::uint32_t applied = 0;
+            for (const auto& nodeName : nodeNames) {
+                auto* object = FindSceneObject(root, nodeName);
+                if (!object) {
+                    continue;
+                }
+
+                overrides->ApplyNodeOverrides(
+                    actor,
+                    object,
+                    true);
+                ++applied;
+            }
+
+            return applied;
         }
 
         std::string JoinNames(
@@ -998,6 +1097,54 @@ namespace OStimTogether
         return chunks;
     }
 
+    void RaceMenuOverlayBridge::RefreshLocalOverlayGeometry(
+        RE::Actor* actor,
+        std::string_view channel,
+        const std::vector<std::string>& encodedChunks)
+    {
+        if (!actor || !actor->IsPlayerRef() ||
+            channel.empty() || encodedChunks.empty()) {
+            return;
+        }
+
+        SKEE::IOverlayInterface* overlay = nullptr;
+        SKEE::IOverrideInterface* overrides = nullptr;
+
+        {
+            std::scoped_lock lock(_mutex);
+            overlay = static_cast<SKEE::IOverlayInterface*>(
+                _overlayInterface);
+            overrides = static_cast<SKEE::IOverrideInterface*>(
+                _overrideInterface);
+        }
+
+        if (!overlay || !overrides) {
+            return;
+        }
+
+        if (!overlay->HasOverlays(actor)) {
+            overlay->AddOverlays(actor, false);
+        }
+
+        const auto nodeNames =
+            DecodeOverlayNodeNames(encodedChunks);
+
+        overrides->SetNodeProperties(actor, true);
+        const auto directApplied =
+            ApplyNodeOverridesToLive3D(
+                actor,
+                overrides,
+                nodeNames);
+
+        SKSE::log::info(
+            "OSTNET ADDON OVR LOCAL REFRESH channel={} actor={:08X} nodes={} directApplied={} hasOverlays={}",
+            channel,
+            actor->GetFormID(),
+            nodeNames.size(),
+            directApplied,
+            overlay->HasOverlays(actor) ? 1 : 0);
+    }
+
     void RaceMenuOverlayBridge::ApplyRemoteOverlayChunk(
         RE::Actor* actor,
         std::string_view channel,
@@ -1036,6 +1183,7 @@ namespace OStimTogether
 
         std::uint32_t applied = 0;
         std::uint32_t invalid = 0;
+        std::unordered_set<std::string> nodeNames;
 
         for (const auto& raw : Split(encodedProps, ';')) {
             const auto fields = Split(raw, ',');
@@ -1105,6 +1253,7 @@ namespace OStimTogether
                     key,
                     index,
                     value);
+                nodeNames.insert(*nodeDecoded);
                 ++applied;
             } catch (...) {
                 ++invalid;
@@ -1116,6 +1265,11 @@ namespace OStimTogether
         // v0.18.17 START path established that AddOverlays(false) is the safe
         // way to make dynamic STR proxies materialize overlay nodes.
         overrides->SetNodeProperties(actor, true);
+        const auto directApplied =
+            ApplyNodeOverridesToLive3D(
+                actor,
+                overrides,
+                nodeNames);
 
         bool rebuild = false;
         {
@@ -1146,17 +1300,20 @@ namespace OStimTogether
         const auto actorFormID =
             actor->GetFormID();
         const std::string channelCopy(channel);
+        const auto nodeNamesCopy = nodeNames;
 
         const auto scheduleReapply =
             [this,
              actorFormID,
-             channelCopy](
+             channelCopy,
+             nodeNamesCopy](
                 std::chrono::milliseconds delay,
                 const char* phase) {
                 std::thread(
                     [this,
                      actorFormID,
                      channelCopy,
+                     nodeNamesCopy,
                      delay,
                      phase = std::string(phase)]() {
                         std::this_thread::sleep_for(delay);
@@ -1169,6 +1326,7 @@ namespace OStimTogether
                             [this,
                              actorFormID,
                              channelCopy,
+                             nodeNamesCopy,
                              phase]() {
                                 auto* form =
                                     RE::TESForm::LookupByID(
@@ -1196,6 +1354,10 @@ namespace OStimTogether
                                     overrides2->SetNodeProperties(
                                         actor2,
                                         true);
+                                    ApplyNodeOverridesToLive3D(
+                                        actor2,
+                                        overrides2,
+                                        nodeNamesCopy);
                                 }
 
                                 SKSE::log::info(
@@ -1215,11 +1377,12 @@ namespace OStimTogether
             "T500");
 
         SKSE::log::info(
-            "OSTNET ADDON OVR APPLY channel={} actor={:08X} applied={} invalid={} hasOverlays={} rebuild={}",
+            "OSTNET ADDON OVR APPLY channel={} actor={:08X} applied={} invalid={} directApplied={} hasOverlays={} rebuild={}",
             channel,
             actor->GetFormID(),
             applied,
             invalid,
+            directApplied,
             overlay->HasOverlays(actor) ? 1 : 0,
             rebuild ? 1 : 0);
     }

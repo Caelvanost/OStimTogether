@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "OStimBridge.h"
 
+#include "AddonBridge.h"
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
 #include "NetworkProbe.h"
@@ -792,6 +793,12 @@ namespace OStimTogether
         OStimBridge::GetSingleton().HandleNode(thread);
     }
 
+    void OStimBridge::SpeedListener::listen(
+        OStim::Thread* thread)
+    {
+        OStimBridge::GetSingleton().HandleSpeed(thread);
+    }
+
     bool OStimBridge::LoadModAPIs()
     {
         const auto module =
@@ -928,8 +935,11 @@ namespace OStimTogether
         _threads->registerNodeChangedListener(
             &_nodeListener);
 
+        _threads->registerSpeedChangedListener(
+            &_speedListener);
+
         SKSE::log::info(
-            "OStim automatic thread + node listeners registered");
+            "OStim automatic thread + node + speed listeners registered");
 
         // The legacy PluginInterface remains our event/start API.
         // The official ModAPIs provide remote navigation and StopScene.
@@ -2225,6 +2235,59 @@ namespace OStimTogether
                 APIResult::OK;
     }
 
+    bool OStimBridge::SetRemoteMirrorSpeed(
+        std::string_view sender,
+        std::int32_t remoteThreadID,
+        std::int32_t speed)
+    {
+        if (!_threadControl || speed < 0) {
+            return false;
+        }
+
+        const auto localThread =
+            FindRemoteMirror(sender, remoteThreadID);
+
+        if (!localThread) {
+            SKSE::log::warn(
+                "OSTNET MIRROR SPEED miss sender={} remoteThread={} speed={}",
+                sender,
+                remoteThreadID,
+                speed);
+            return false;
+        }
+
+        const auto maxSpeed =
+            _threadControl->GetMaxSpeed(
+                static_cast<std::uint32_t>(*localThread));
+
+        if (speed > maxSpeed) {
+            SKSE::log::warn(
+                "OSTNET MIRROR SPEED invalid sender={} remoteThread={} localThread={} speed={} max={}",
+                sender,
+                remoteThreadID,
+                *localThread,
+                speed,
+                maxSpeed);
+            return false;
+        }
+
+        const auto result =
+            _threadControl->SetSpeed(
+                static_cast<std::uint32_t>(*localThread),
+                speed);
+
+        SKSE::log::info(
+            "OSTNET MIRROR SPEED APPLY sender={} remoteThread={} localThread={} speed={} result={}",
+            sender,
+            remoteThreadID,
+            *localThread,
+            speed,
+            ResultName(result));
+
+        return result ==
+            OStimModAPI::Thread::APIResult::OK;
+    }
+
     void OStimBridge::RefreshRemoteMirrors()
     {
         if (!_threadControl ||
@@ -3022,6 +3085,45 @@ namespace OStimTogether
         }
     }
 
+    void OStimBridge::HandleSpeed(
+        OStim::Thread* thread)
+    {
+        if (!thread || !_threadControl) {
+            return;
+        }
+
+        const auto threadID = thread->getThreadID();
+        const bool isMirror =
+            _creatingRemoteMirror.load() ||
+            IsRemoteMirrorThread(threadID);
+        const auto speed =
+            _threadControl->GetCurrentSpeed(threadID);
+
+        SKSE::log::info(
+            "OStim thread SPEED id={} speed={} mirror={}",
+            threadID,
+            speed,
+            isMirror ? 1 : 0);
+
+        if (isMirror) {
+            SKSE::log::info(
+                "OSTNET MIRROR suppress TX SPEED localThread={} speed={}",
+                threadID,
+                speed);
+            return;
+        }
+
+        NetworkProbe::GetSingleton()
+            .SceneSpeed(thread, speed);
+
+        // SetSpeed() replays the current animation. In OStim builds where
+        // that replay renews lockAtPosition()/TranslateTo on the STR proxy,
+        // release it after the queued animation tasks have settled.
+        ScheduleLocalSTRProxyPositionRelease(
+            threadID,
+            "SPEED");
+    }
+
     void OStimBridge::HandleStop(
         OStim::Thread* thread)
     {
@@ -3110,6 +3212,12 @@ namespace OStimTogether
                             DefaultOutfitGuard::
                                 GetSingleton().
                                 ReleaseActor(actor);
+
+                            AddonBridge::
+                                GetSingleton().
+                                ScheduleRemoteStateReapply(
+                                    actor,
+                                    "OSTIM-STOP");
                         }
                     }
                 });

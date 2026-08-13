@@ -328,6 +328,16 @@ namespace OStimTogether
                     textureMarker,
                     2200);
 
+        // OCum has already written these overrides. During an OStim body
+        // rebuild RaceMenu can retain the values without applying them to the
+        // live overlay geometry, so refresh the exact marked nodes locally as
+        // well as sending them to the other player.
+        RaceMenuOverlayBridge::GetSingleton()
+            .RefreshLocalOverlayGeometry(
+                actor,
+                channel,
+                chunks);
+
         SKSE::log::info(
             "OSTNET ADDON OVR TX channel={} actor={:08X} name=\"{}\" marker=\"{}\" chunks={}",
             channel,
@@ -392,12 +402,36 @@ namespace OStimTogether
         if (payload.starts_with("ADDONOVR|")) {
             const auto channelHex = Field(payload, "channel");
             const auto nameHex = Field(payload, "name");
+            const auto seqValue = Field(payload, "seq");
+            const auto countValue = Field(payload, "count");
             const auto props = Field(payload, "props");
 
-            if (!channelHex || !nameHex || !props) {
+            if (!channelHex || !nameHex || !seqValue ||
+                !countValue || !props) {
                 SKSE::log::warn(
                     "OSTNET ADDON OVR RX invalid sender={}",
                     sender);
+                return;
+            }
+
+            std::size_t seq = 0;
+            std::size_t count = 0;
+            try {
+                seq = std::stoull(*seqValue);
+                count = std::stoull(*countValue);
+            } catch (...) {
+                SKSE::log::warn(
+                    "OSTNET ADDON OVR RX invalid sequence sender={}",
+                    sender);
+                return;
+            }
+
+            if (count == 0 || count > 64 || seq >= count) {
+                SKSE::log::warn(
+                    "OSTNET ADDON OVR RX sequence out of range sender={} seq={} count={}",
+                    sender,
+                    seq,
+                    count);
                 return;
             }
 
@@ -424,6 +458,20 @@ namespace OStimTogether
                     *channel,
                     *name);
                 return;
+            }
+
+            {
+                std::scoped_lock lock(_stateMutex);
+                auto& cached =
+                    _remoteOverlays[actor->GetFormID()][*channel];
+
+                if (cached.expectedCount != count ||
+                    cached.chunks.size() != count) {
+                    cached.expectedCount = count;
+                    cached.chunks.assign(count, {});
+                }
+
+                cached.chunks[seq] = *props;
             }
 
             RaceMenuOverlayBridge::GetSingleton()
@@ -486,6 +534,19 @@ namespace OStimTogether
             const bool equipped =
                 *equippedValue == "1";
 
+            {
+                std::scoped_lock lock(_stateMutex);
+                const auto key = fmt::format(
+                    "{}|{}",
+                    *channel,
+                    *objectType);
+                _remoteObjects[actor->GetFormID()][key] =
+                    CachedObjectState{
+                        *channel,
+                        *objectType,
+                        equipped };
+            }
+
             const bool dispatched =
                 PapyrusAnimationBridge::GetSingleton()
                     .SetOStimObjectState(
@@ -504,5 +565,113 @@ namespace OStimTogether
                 dispatched ? 1 : 0);
             return;
         }
+    }
+
+    void AddonBridge::ScheduleRemoteStateReapply(
+        RE::Actor* actor,
+        std::string_view reason)
+    {
+        if (!actor || actor->IsPlayerRef()) {
+            return;
+        }
+
+        const auto actorFormID = actor->GetFormID();
+        const std::string reasonCopy(reason);
+
+        const auto schedule =
+            [this, actorFormID, reasonCopy](
+                std::chrono::milliseconds delay,
+                const char* phase) {
+                std::thread(
+                    [this,
+                     actorFormID,
+                     reasonCopy,
+                     delay,
+                     phase = std::string(phase)]() {
+                        std::this_thread::sleep_for(delay);
+
+                        auto* tasks = SKSE::GetTaskInterface();
+                        if (!tasks) {
+                            return;
+                        }
+
+                        tasks->AddTask(
+                            [this,
+                             actorFormID,
+                             reasonCopy,
+                             phase]() {
+                                auto* form =
+                                    RE::TESForm::LookupByID(actorFormID);
+                                auto* actor2 = form ?
+                                    form->As<RE::Actor>() : nullptr;
+
+                                if (!actor2 || actor2->IsPlayerRef()) {
+                                    return;
+                                }
+
+                                std::unordered_map<
+                                    std::string,
+                                    CachedOverlayState> overlays;
+                                std::unordered_map<
+                                    std::string,
+                                    CachedObjectState> objects;
+
+                                {
+                                    std::scoped_lock lock(_stateMutex);
+
+                                    if (const auto it =
+                                            _remoteOverlays.find(actorFormID);
+                                        it != _remoteOverlays.end()) {
+                                        overlays = it->second;
+                                    }
+
+                                    if (const auto it =
+                                            _remoteObjects.find(actorFormID);
+                                        it != _remoteObjects.end()) {
+                                        objects = it->second;
+                                    }
+                                }
+
+                                std::size_t overlayChunks = 0;
+                                for (const auto& [channel, state] : overlays) {
+                                    for (const auto& chunk : state.chunks) {
+                                        if (chunk.empty()) {
+                                            continue;
+                                        }
+
+                                        RaceMenuOverlayBridge::GetSingleton()
+                                            .ApplyRemoteOverlayChunk(
+                                                actor2,
+                                                channel,
+                                                chunk);
+                                        ++overlayChunks;
+                                    }
+                                }
+
+                                std::size_t objectCount = 0;
+                                for (const auto& [_, state] : objects) {
+                                    PapyrusAnimationBridge::GetSingleton()
+                                        .SetOStimObjectState(
+                                            actor2,
+                                            state.objectType,
+                                            state.equipped);
+                                    ++objectCount;
+                                }
+
+                                SKSE::log::info(
+                                    "OSTNET ADDON STATE REAPPLY reason={} phase={} actor={:08X} overlayChunks={} objects={}",
+                                    reasonCopy,
+                                    phase,
+                                    actorFormID,
+                                    overlayChunks,
+                                    objectCount);
+                            });
+                    }).detach();
+            };
+
+        // Both attempts are bounded. The first follows normal OStim cleanup;
+        // the second covers delayed body/equipment rebuilds from other mods.
+        schedule(std::chrono::milliseconds(250), "T250");
+        schedule(std::chrono::milliseconds(1100), "T1100");
     }
 }

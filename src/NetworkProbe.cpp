@@ -485,4 +485,35 @@ namespace OStimTogether
         std::scoped_lock lock(_mutex);
         _startedThreads.erase(threadID);
     }
+
+    void NetworkProbe::SceneSpeed(
+        OStim::Thread* thread,
+        std::int32_t speed)
+    {
+        if (!thread || speed < 0) {
+            return;
+        }
+
+        const auto threadID = thread->getThreadID();
+
+        {
+            std::scoped_lock lock(_mutex);
+
+            if (!_startedThreads.contains(threadID)) {
+                SKSE::log::trace(
+                    "OSTNET ignoring pre-START SPEED thread={}",
+                    threadID);
+                return;
+            }
+        }
+
+        const auto payload =
+            fmt::format(
+                "SPEED|thread={}|speed={}",
+                threadID,
+                speed);
+
+        SKSE::log::info("OSTNET|v1|{}", payload);
+        UdpTransport::GetSingleton().Send(payload);
+    }
 }

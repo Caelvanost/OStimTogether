@@ -31,6 +31,15 @@ namespace OStimTogether
             std::string_view textureMarker,
             std::size_t maxChunkBytes);
 
+        // The addon has already stored its overrides through RaceMenu.
+        // Materialize those exact overlay nodes on the local player's live
+        // 3D, because ApplyNodeOverrides can otherwise leave only the
+        // serialized override state behind during an OStim body rebuild.
+        void RefreshLocalOverlayGeometry(
+            RE::Actor* actor,
+            std::string_view channel,
+            const std::vector<std::string>& encodedChunks);
+
         // Applies one generic addon overlay packet to a remote STR proxy.
         // Uses only SKEE GetNodeOverride/AddNodeOverride; never GetNodeProperty.
         void ApplyRemoteOverlayChunk(
