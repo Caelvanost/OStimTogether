@@ -33,5 +33,20 @@ from 7.4c.
 
 ## Unchanged synchronization
 
-The v0.19.6 STR proxy stability work, cum-mesh synchronization, and
-OverlayFix-aware OCum 3D overlay handling are unchanged.
+The v0.19.6 STR proxy stability work and cum-mesh synchronization are
+unchanged.
+
+## OCum overlay materialization
+
+The v0.19.6 logs proved that OCum's texture and visible alpha reached the
+correct live `Body [OvlN]` geometry on both clients, but the geometry could
+still carry OverlayFix's `Hidden` and `DisableSorting` flags. `SetAppCulled`
+does not clear those flags.
+
+v0.20.0 now mirrors OverlayFix's own visible-overlay repair on the exact OCum
+overlay subtree: it clears `Hidden` and `DisableSorting`, enables
+`AlwaysDraw`, and refreshes the lighting shader after applying the texture and
+alpha.
+
+Expected diagnostics include non-zero `hiddenCleared` or `alwaysDraw` on the
+first application, followed by `visibleMaterials=1 texturedMaterials=1`.

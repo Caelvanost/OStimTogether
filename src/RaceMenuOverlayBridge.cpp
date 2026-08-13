@@ -155,10 +155,10 @@ namespace OStimTogether
                 virtual void AddNodeOverride(RE::TESObjectREFR*, bool, const char*, u16, u8, SetVariant&) = 0;
                 virtual bool GetNodeOverride(RE::TESObjectREFR*, bool, const char*, u16, u8, GetVariant&) = 0;
                 virtual void RemoveNodeOverride(RE::TESObjectREFR*, bool, const char*, u16, u8) = 0;
-                virtual void SetNodeProperties(RE::TESObjectREFR*, bool) = 0;
-                virtual void SetNodeProperty(RE::TESObjectREFR*, bool, const char*, u16, u8, SetVariant&, bool) = 0;
-                virtual bool GetNodeProperty(RE::TESObjectREFR*, bool, const char*, u16, u8, GetVariant&) = 0;
-                virtual void ApplyNodeOverrides(RE::TESObjectREFR*, RE::NiAVObject*, bool) = 0;
+                virtual void SetNodeProperties(RE::TESObjectREFR*, bool immediate) = 0;
+                virtual void SetNodeProperty(RE::TESObjectREFR*, bool firstPerson, const char*, u16, u8, SetVariant&, bool immediate) = 0;
+                virtual bool GetNodeProperty(RE::TESObjectREFR*, bool firstPerson, const char*, u16, u8, GetVariant&) = 0;
+                virtual void ApplyNodeOverrides(RE::TESObjectREFR*, RE::NiAVObject*, bool immediate) = 0;
                 virtual void RemoveAllNodeOverrides() = 0;
                 virtual void RemoveAllNodeOverridesByReference(RE::TESObjectREFR*) = 0;
                 virtual void RemoveAllNodeOverridesByNode(RE::TESObjectREFR*, bool, const char*) = 0;
@@ -620,33 +620,123 @@ namespace OStimTogether
         struct LiveOverlayApplyResult
         {
             std::uint32_t appliedNodes{ 0 };
-            std::uint32_t unculledObjects{ 0 };
+            std::uint32_t appCullCleared{ 0 };
+            std::uint32_t hiddenCleared{ 0 };
+            std::uint32_t sortingRestored{ 0 };
+            std::uint32_t alwaysDrawEnabled{ 0 };
+            std::uint32_t shadersRefreshed{ 0 };
+            std::uint32_t visibleMaterials{ 0 };
+            std::uint32_t texturedMaterials{ 0 };
         };
 
-        std::uint32_t UncullSceneObjectTree(
+        LiveOverlayApplyResult RestoreOverlayRendering(
             RE::NiAVObject* object)
         {
             if (!object) {
-                return 0;
+                return {};
             }
 
-            std::uint32_t unculled = 0;
+            LiveOverlayApplyResult result{};
+
             if (object->GetAppCulled()) {
                 object->SetAppCulled(false);
-                ++unculled;
+                ++result.appCullCleared;
+            }
+
+            if (auto* geometry = object->AsGeometry()) {
+                auto& flags = geometry->GetFlags();
+
+                auto& runtime =
+                    geometry->GetGeometryRuntimeData();
+
+                auto* shade =
+                    runtime.properties[1].get();
+
+                if (shade &&
+                    shade->GetType() ==
+                        RE::NiShadeProperty::Type::kShade) {
+                    auto* shader = static_cast<
+                        RE::BSLightingShaderProperty*>(shade);
+
+                    shader->SetupGeometry(geometry);
+                    shader->FinishSetupGeometry(geometry);
+                    ++result.shadersRefreshed;
+
+                    auto* material = static_cast<
+                        RE::BSLightingShaderMaterialBase*>(
+                            shader->material);
+
+                    if (material) {
+                        if (material->materialAlpha > 0.01F) {
+                            ++result.visibleMaterials;
+                        }
+
+                        if (material->diffuseTexture) {
+                            const auto& name =
+                                material->diffuseTexture->name;
+
+                            if (!name.empty() &&
+                                !ContainsInsensitive(
+                                    name.c_str(),
+                                    "\\default.dds") &&
+                                !ContainsInsensitive(
+                                    name.c_str(),
+                                    "\\blank.dds")) {
+                                ++result.texturedMaterials;
+                            }
+                        }
+                    }
+                }
+
+                // OverlayFix hides unused overlays with NiAVObject flags,
+                // not the application-cull state exposed by SetAppCulled.
+                // Run this after shader setup, matching OverlayFix's own
+                // CullingFix ordering, so the repaired flags are final.
+                if (flags.all(RE::NiAVObject::Flag::kHidden)) {
+                    flags.reset(RE::NiAVObject::Flag::kHidden);
+                    ++result.hiddenCleared;
+                }
+
+                if (flags.all(
+                        RE::NiAVObject::Flag::kDisableSorting)) {
+                    flags.reset(
+                        RE::NiAVObject::Flag::kDisableSorting);
+                    ++result.sortingRestored;
+                }
+
+                if (!flags.all(
+                        RE::NiAVObject::Flag::kAlwaysDraw)) {
+                    flags.set(RE::NiAVObject::Flag::kAlwaysDraw);
+                    ++result.alwaysDrawEnabled;
+                }
             }
 
             if (auto* node = object->AsNode()) {
                 for (auto& child : node->GetChildren()) {
                     if (child) {
-                        unculled +=
-                            UncullSceneObjectTree(
+                        const auto childResult =
+                            RestoreOverlayRendering(
                                 child.get());
+
+                        result.appCullCleared +=
+                            childResult.appCullCleared;
+                        result.hiddenCleared +=
+                            childResult.hiddenCleared;
+                        result.sortingRestored +=
+                            childResult.sortingRestored;
+                        result.alwaysDrawEnabled +=
+                            childResult.alwaysDrawEnabled;
+                        result.shadersRefreshed +=
+                            childResult.shadersRefreshed;
+                        result.visibleMaterials +=
+                            childResult.visibleMaterials;
+                        result.texturedMaterials +=
+                            childResult.texturedMaterials;
                     }
                 }
             }
 
-            return unculled;
+            return result;
         }
 
         LiveOverlayApplyResult ApplyNodeOverridesToLive3D(
@@ -664,6 +754,7 @@ namespace OStimTogether
             }
 
             LiveOverlayApplyResult result{};
+
             for (const auto& nodeName : nodeNames) {
                 auto* object = FindSceneObject(root, nodeName);
                 if (!object) {
@@ -675,13 +766,23 @@ namespace OStimTogether
                     object,
                     true);
 
-                // OverlayFix can app-cull a transparent/default-texture
-                // RaceMenu overlay and leave it culled after OCum replaces
-                // the texture and alpha. Clear that rendering state only on
-                // the exact marked overlay subtree, after applying the live
-                // overrides so any hook has already run.
-                result.unculledObjects +=
-                    UncullSceneObjectTree(object);
+                const auto visibility =
+                    RestoreOverlayRendering(object);
+
+                result.appCullCleared +=
+                    visibility.appCullCleared;
+                result.hiddenCleared +=
+                    visibility.hiddenCleared;
+                result.sortingRestored +=
+                    visibility.sortingRestored;
+                result.alwaysDrawEnabled +=
+                    visibility.alwaysDrawEnabled;
+                result.shadersRefreshed +=
+                    visibility.shadersRefreshed;
+                result.visibleMaterials +=
+                    visibility.visibleMaterials;
+                result.texturedMaterials +=
+                    visibility.texturedMaterials;
                 ++result.appliedNodes;
             }
 
@@ -1340,12 +1441,18 @@ namespace OStimTogether
                 nodeNames);
 
         SKSE::log::info(
-            "OSTNET ADDON OVR LOCAL REFRESH channel={} actor={:08X} nodes={} directApplied={} unculled={} hasOverlays={}",
+            "OSTNET ADDON OVR LOCAL REFRESH channel={} actor={:08X} nodes={} directApplied={} appCullCleared={} hiddenCleared={} sortingRestored={} alwaysDraw={} shaders={} visibleMaterials={} texturedMaterials={} hasOverlays={}",
             channel,
             actor->GetFormID(),
             nodeNames.size(),
             liveApply.appliedNodes,
-            liveApply.unculledObjects,
+            liveApply.appCullCleared,
+            liveApply.hiddenCleared,
+            liveApply.sortingRestored,
+            liveApply.alwaysDrawEnabled,
+            liveApply.shadersRefreshed,
+            liveApply.visibleMaterials,
+            liveApply.texturedMaterials,
             overlay->HasOverlays(actor) ? 1 : 0);
     }
 
@@ -1480,7 +1587,7 @@ namespace OStimTogether
                                         nodeNamesCopy);
 
                                     SKSE::log::info(
-                                        "OSTNET ADDON OVR LIVE REAPPLY phase={} channel={} actor={:08X} liveProperties={} textures={} visibleAlpha={} directNodes={} unculled={} invalid={}",
+                                        "OSTNET ADDON OVR LIVE REAPPLY phase={} channel={} actor={:08X} liveProperties={} textures={} visibleAlpha={} directNodes={} appCullCleared={} hiddenCleared={} sortingRestored={} alwaysDraw={} shaders={} visibleMaterials={} texturedMaterials={} invalid={}",
                                         phase,
                                         channelCopy,
                                         actorFormID,
@@ -1488,7 +1595,13 @@ namespace OStimTogether
                                         live.textureProperties,
                                         live.visibleAlphaProperties,
                                         liveApply2.appliedNodes,
-                                        liveApply2.unculledObjects,
+                                        liveApply2.appCullCleared,
+                                        liveApply2.hiddenCleared,
+                                        liveApply2.sortingRestored,
+                                        liveApply2.alwaysDrawEnabled,
+                                        liveApply2.shadersRefreshed,
+                                        liveApply2.visibleMaterials,
+                                        liveApply2.texturedMaterials,
                                         live.invalid);
                                 }
 
@@ -1512,7 +1625,7 @@ namespace OStimTogether
             "T1200");
 
         SKSE::log::info(
-            "OSTNET ADDON OVR APPLY channel={} actor={:08X} stored={} invalid={} liveProperties={} textures={} visibleAlpha={} proxySexCopies={} directNodes={} unculled={} hasOverlays={} installed={}",
+            "OSTNET ADDON OVR APPLY channel={} actor={:08X} stored={} invalid={} liveProperties={} textures={} visibleAlpha={} proxySexCopies={} directNodes={} appCullCleared={} hiddenCleared={} sortingRestored={} alwaysDraw={} shaders={} visibleMaterials={} texturedMaterials={} hasOverlays={} installed={}",
             channel,
             actor->GetFormID(),
             applied.stored,
@@ -1522,7 +1635,13 @@ namespace OStimTogether
             applied.visibleAlphaProperties,
             applied.proxySexCopies,
             liveApply.appliedNodes,
-            liveApply.unculledObjects,
+            liveApply.appCullCleared,
+            liveApply.hiddenCleared,
+            liveApply.sortingRestored,
+            liveApply.alwaysDrawEnabled,
+            liveApply.shadersRefreshed,
+            liveApply.visibleMaterials,
+            liveApply.texturedMaterials,
             overlay->HasOverlays(actor) ? 1 : 0,
             installed ? 1 : 0);
     }
