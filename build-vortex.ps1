@@ -24,6 +24,10 @@ if (-not (Test-Path $Toolchain)) {
 cmake -S $Root -B $Build `
     -DCMAKE_TOOLCHAIN_FILE="$Toolchain"
 
+if ($LASTEXITCODE -ne 0) {
+    throw "Configuration CMake echouee avec le code $LASTEXITCODE"
+}
+
 $GeneratedPlugin =
     Join-Path $Build "__OStimTogetherPlugin.cpp"
 
@@ -46,6 +50,10 @@ if (Test-Path $GeneratedPlugin) {
 }
 
 cmake --build $Build --config $Configuration
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Compilation CMake echouee avec le code $LASTEXITCODE"
+}
 
 $dll =
     Get-ChildItem `

@@ -12,6 +12,7 @@ $PackageScripts = Join-Path $Root "package\Data\Scripts"
 
 $Compiler = Join-Path $SkyrimDir "Papyrus Compiler\PapyrusCompiler.exe"
 $GameSources = Join-Path $SkyrimDir "Data\Source\Scripts"
+$SKSESources = Join-Path $SkyrimDir "Data\Scripts\Source"
 $Flags = Join-Path $GameSources "TESV_Papyrus_Flags.flg"
 
 if (-not (Test-Path $Compiler)) {
@@ -23,13 +24,17 @@ if (-not (Test-Path $SourceFile)) {
 if (-not (Test-Path $Flags)) {
     throw "TESV_Papyrus_Flags.flg introuvable: $Flags"
 }
+if (-not (Test-Path (Join-Path $SKSESources "SKSE.psc"))) {
+    throw "Sources Papyrus SKSE introuvables: $SKSESources"
+}
 
 New-Item -ItemType Directory -Force -Path $PackageScripts | Out-Null
 
 $Includes = @(
     (Join-Path $Root "Data\Scripts\Source"),
-    $GameSources,
-    $StubDir
+    $StubDir,
+    $SKSESources,
+    $GameSources
 )
 
 if ($ExtraSourceDir) {
