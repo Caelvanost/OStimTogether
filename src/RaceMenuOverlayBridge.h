@@ -65,8 +65,6 @@ namespace OStimTogether
         mutable std::mutex _mutex;
         void* _overlayInterface{ nullptr };
         void* _overrideInterface{ nullptr };
-        std::unordered_map<std::string, std::chrono::steady_clock::time_point>
-            _lastAddonRebuild;
         bool _initialized{ false };
     };
 }

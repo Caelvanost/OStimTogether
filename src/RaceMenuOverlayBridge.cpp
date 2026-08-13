@@ -617,21 +617,53 @@ namespace OStimTogether
             return nodes;
         }
 
-        std::uint32_t ApplyNodeOverridesToLive3D(
+        struct LiveOverlayApplyResult
+        {
+            std::uint32_t appliedNodes{ 0 };
+            std::uint32_t unculledObjects{ 0 };
+        };
+
+        std::uint32_t UncullSceneObjectTree(
+            RE::NiAVObject* object)
+        {
+            if (!object) {
+                return 0;
+            }
+
+            std::uint32_t unculled = 0;
+            if (object->GetAppCulled()) {
+                object->SetAppCulled(false);
+                ++unculled;
+            }
+
+            if (auto* node = object->AsNode()) {
+                for (auto& child : node->GetChildren()) {
+                    if (child) {
+                        unculled +=
+                            UncullSceneObjectTree(
+                                child.get());
+                    }
+                }
+            }
+
+            return unculled;
+        }
+
+        LiveOverlayApplyResult ApplyNodeOverridesToLive3D(
             RE::Actor* actor,
             SKEE::IOverrideInterface* overrides,
             const std::unordered_set<std::string>& nodeNames)
         {
             if (!actor || !overrides || nodeNames.empty()) {
-                return 0;
+                return {};
             }
 
             auto* root = actor->Get3D();
             if (!root) {
-                return 0;
+                return {};
             }
 
-            std::uint32_t applied = 0;
+            LiveOverlayApplyResult result{};
             for (const auto& nodeName : nodeNames) {
                 auto* object = FindSceneObject(root, nodeName);
                 if (!object) {
@@ -642,10 +674,18 @@ namespace OStimTogether
                     actor,
                     object,
                     true);
-                ++applied;
+
+                // OverlayFix can app-cull a transparent/default-texture
+                // RaceMenu overlay and leave it culled after OCum replaces
+                // the texture and alpha. Clear that rendering state only on
+                // the exact marked overlay subtree, after applying the live
+                // overrides so any hook has already run.
+                result.unculledObjects +=
+                    UncullSceneObjectTree(object);
+                ++result.appliedNodes;
             }
 
-            return applied;
+            return result;
         }
 
         struct EncodedOverlayApplyResult
@@ -1293,18 +1333,19 @@ namespace OStimTogether
             DecodeOverlayNodeNames(encodedChunks);
 
         overrides->SetNodeProperties(actor, true);
-        const auto directApplied =
+        const auto liveApply =
             ApplyNodeOverridesToLive3D(
                 actor,
                 overrides,
                 nodeNames);
 
         SKSE::log::info(
-            "OSTNET ADDON OVR LOCAL REFRESH channel={} actor={:08X} nodes={} directApplied={} hasOverlays={}",
+            "OSTNET ADDON OVR LOCAL REFRESH channel={} actor={:08X} nodes={} directApplied={} unculled={} hasOverlays={}",
             channel,
             actor->GetFormID(),
             nodeNames.size(),
-            directApplied,
+            liveApply.appliedNodes,
+            liveApply.unculledObjects,
             overlay->HasOverlays(actor) ? 1 : 0);
     }
 
@@ -1340,7 +1381,9 @@ namespace OStimTogether
             return;
         }
 
-        if (!overlay->HasOverlays(actor)) {
+        const bool installed =
+            !overlay->HasOverlays(actor);
+        if (installed) {
             overlay->AddOverlays(actor, false);
         }
 
@@ -1351,42 +1394,16 @@ namespace OStimTogether
                 encodedProps,
                 true);
 
-        // Store first, then ask RaceMenu to rebuild the physical overlay
-        // geometry.  This is deliberately generic and bounded.  The old
-        // v0.18.17 START path established that AddOverlays(false) is the safe
-        // way to make dynamic STR proxies materialize overlay nodes.
+        // Store first, then apply the overrides to the existing physical
+        // overlay geometry. AddOverlays is only needed when the dynamic STR
+        // proxy has no overlay holder yet; rebuilding an existing holder here
+        // can replace or re-cull geometry after its properties were applied.
         overrides->SetNodeProperties(actor, true);
-        const auto directApplied =
+        const auto liveApply =
             ApplyNodeOverridesToLive3D(
                 actor,
                 overrides,
                 applied.nodeNames);
-
-        bool rebuild = false;
-        {
-            std::scoped_lock lock(_mutex);
-            const auto now =
-                std::chrono::steady_clock::now();
-            const std::string key =
-                fmt::format(
-                    "{:08X}|{}",
-                    actor->GetFormID(),
-                    channel);
-
-            const auto it =
-                _lastAddonRebuild.find(key);
-
-            if (it == _lastAddonRebuild.end() ||
-                now - it->second >=
-                    std::chrono::milliseconds(350)) {
-                _lastAddonRebuild[key] = now;
-                rebuild = true;
-            }
-        }
-
-        if (rebuild) {
-            overlay->AddOverlays(actor, false);
-        }
 
         const auto actorFormID =
             actor->GetFormID();
@@ -1456,21 +1473,22 @@ namespace OStimTogether
                                     overrides2->SetNodeProperties(
                                         actor2,
                                         true);
-                                    const auto directNodes =
+                                    const auto liveApply2 =
                                         ApplyNodeOverridesToLive3D(
                                         actor2,
                                         overrides2,
                                         nodeNamesCopy);
 
                                     SKSE::log::info(
-                                        "OSTNET ADDON OVR LIVE REAPPLY phase={} channel={} actor={:08X} liveProperties={} textures={} visibleAlpha={} directNodes={} invalid={}",
+                                        "OSTNET ADDON OVR LIVE REAPPLY phase={} channel={} actor={:08X} liveProperties={} textures={} visibleAlpha={} directNodes={} unculled={} invalid={}",
                                         phase,
                                         channelCopy,
                                         actorFormID,
                                         live.liveProperties,
                                         live.textureProperties,
                                         live.visibleAlphaProperties,
-                                        directNodes,
+                                        liveApply2.appliedNodes,
+                                        liveApply2.unculledObjects,
                                         live.invalid);
                                 }
 
@@ -1494,7 +1512,7 @@ namespace OStimTogether
             "T1200");
 
         SKSE::log::info(
-            "OSTNET ADDON OVR APPLY channel={} actor={:08X} stored={} invalid={} liveProperties={} textures={} visibleAlpha={} proxySexCopies={} directNodes={} hasOverlays={} rebuild={}",
+            "OSTNET ADDON OVR APPLY channel={} actor={:08X} stored={} invalid={} liveProperties={} textures={} visibleAlpha={} proxySexCopies={} directNodes={} unculled={} hasOverlays={} installed={}",
             channel,
             actor->GetFormID(),
             applied.stored,
@@ -1503,9 +1521,10 @@ namespace OStimTogether
             applied.textureProperties,
             applied.visibleAlphaProperties,
             applied.proxySexCopies,
-            directApplied,
+            liveApply.appliedNodes,
+            liveApply.unculledObjects,
             overlay->HasOverlays(actor) ? 1 : 0,
-            rebuild ? 1 : 0);
+            installed ? 1 : 0);
     }
 
 }

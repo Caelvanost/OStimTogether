@@ -77,7 +77,7 @@ Copy-Item `
     -Force
 
 $zip =
-    Join-Path $Root "OStimTogether-v0.19.5-Core-Vortex.zip"
+    Join-Path $Root "OStimTogether-v0.19.6-Core-Vortex.zip"
 
 if (Test-Path $zip) {
     Remove-Item $zip -Force
