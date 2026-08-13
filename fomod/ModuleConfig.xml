@@ -1,0 +1,35 @@
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>OStim Together 0.19.0</moduleName>
+  <requiredInstallFiles>
+    <folder source="00 Core" destination="" priority="0" />
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+    <installStep name="Optional integrations">
+      <optionalFileGroups order="Explicit">
+        <group name="OStim Together integrations" type="SelectAny">
+          <plugins order="Explicit">
+            <plugin name="OCum Ascended synchronization">
+              <description>Synchronizes OCum Ascended RaceMenu cum overlays and its actual vaginal/anal OStim equip-object meshes between Skyrim Together players. Requires OCum Ascended on both clients.</description>
+              <files>
+                <folder source="10 OCum Ascended" destination="" priority="0" />
+              </files>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="NotUsable" />
+                  <patterns>
+                    <pattern>
+                      <dependencies operator="And">
+                        <fileDependency file="OCum.esp" state="Active" />
+                      </dependencies>
+                      <type name="Recommended" />
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>
