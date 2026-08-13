@@ -7,6 +7,7 @@
 #include "OStimAPI/InterfaceExchangeMessage.h"
 #include "OStimAPI/ModThreadControl.h"
 #include "OStimAPI/ModSceneControl.h"
+#include "OStimInternalGraphProbe.h"
 #include "SceneCenter.h"
 
 namespace OStimTogether
@@ -177,6 +178,8 @@ namespace OStimTogether
 
         OStim::ThreadInterface* _threads{ nullptr };
         std::uint32_t _threadInterfaceVersion{ 0 };
+        OStimInternalProbe::GraphLayout _graphLayout{
+            OStimInternalProbe::GraphLayout::Unsupported };
 
         OStimModAPI::Thread::IThreadInterface*
             _threadControl{ nullptr };

@@ -8,6 +8,13 @@
 
 namespace OStimTogether::OStimInternalProbe
 {
+    enum class GraphLayout : std::uint8_t
+    {
+        Unsupported = 0,
+        OStim74c,
+        OStim75b
+    };
+
     // READ-ONLY ABI probe.
     //
     // OStim's public Node interface deliberately does not expose:
@@ -17,9 +24,14 @@ namespace OStimTogether::OStimInternalProbe
     //
     // The concrete object behind OStim::Node is Graph::Node.
     //
-    // IMPORTANT: this layout is pinned specifically to OStim 7.4c /
-    // OStim.dll 7.4.0.3. GraphActor changed in later development versions.
-    // Do not copy the current-main GraphActor layout over this probe.
+    // IMPORTANT: these layouts are pinned specifically to:
+    //   - OStim 7.4c / OStim.dll 7.4.0.3
+    //   - OStim 7.5b / OStim.dll 7.5.0.2
+    //
+    // OStim 7.5 inserted GraphActor::singleSpeed before the two expression
+    // strings, shifting GraphActor::offset from 0x64 to 0x6C.  Select the
+    // layout from the loaded DLL version and reject unknown versions rather
+    // than reading an unverified concrete object.
     //
     // We mirror only the initial data layout required for read-only probes:
     //
@@ -55,7 +67,7 @@ namespace OStimTogether::OStimInternalProbe
         float r;
     };
 
-    struct NodeActorPrefix
+    struct NodeActorPrefix74c
     {
         void* vtbl;
         std::int32_t sosBend;
@@ -74,18 +86,42 @@ namespace OStimTogether::OStimInternalProbe
         GamePosition offset;
     };
 
+    struct NodeActorPrefix75b
+    {
+        void* vtbl;
+        std::int32_t sosBend;
+        float scale;
+        float scaleHeight;
+        bool feetOnGround;
+        std::uint8_t pad15[3];
+        std::int32_t expressionAction;
+        std::int32_t animationIndex;
+        bool singleSpeed;
+        std::uint8_t pad21[7];
+        std::string underlyingExpression;
+        std::string expressionOverride;
+        bool noStrip;
+        bool moan;
+        bool talk;
+        bool muffled;
+        GamePosition offset;
+    };
+
 #if defined(_MSC_VER) && defined(_WIN64)
     static_assert(sizeof(std::string) == 0x20);
     static_assert(sizeof(std::vector<Speed>) == 0x18);
     static_assert(offsetof(NodePrefix, speeds) == 0x90);
     static_assert(offsetof(NodePrefix, defaultSpeed) == 0xA8);
-    static_assert(offsetof(NodeActorPrefix, animationIndex) == 0x1C);
-    static_assert(offsetof(NodeActorPrefix, offset) == 0x64);
+    static_assert(offsetof(NodeActorPrefix74c, animationIndex) == 0x1C);
+    static_assert(offsetof(NodeActorPrefix74c, offset) == 0x64);
+    static_assert(offsetof(NodeActorPrefix75b, animationIndex) == 0x1C);
+    static_assert(offsetof(NodeActorPrefix75b, offset) == 0x6C);
 #endif
 
     inline bool GetActorOffset(
         OStim::Node* node,
         std::uint32_t actorIndex,
+        GraphLayout layout,
         GamePosition& out)
     {
         if (!node ||
@@ -100,13 +136,24 @@ namespace OStimTogether::OStimInternalProbe
             return false;
         }
 
-        const auto* concrete =
-            reinterpret_cast<
-                const NodeActorPrefix*>(
-                    nodeActor);
+        GamePosition value{};
 
-        const auto value =
-            concrete->offset;
+        switch (layout) {
+        case GraphLayout::OStim74c:
+            value = reinterpret_cast<
+                const NodeActorPrefix74c*>(
+                    nodeActor)->offset;
+            break;
+
+        case GraphLayout::OStim75b:
+            value = reinterpret_cast<
+                const NodeActorPrefix75b*>(
+                    nodeActor)->offset;
+            break;
+
+        default:
+            return false;
+        }
 
         if (!std::isfinite(value.x) ||
             !std::isfinite(value.y) ||
@@ -154,7 +201,8 @@ namespace OStimTogether::OStimInternalProbe
     inline EventInfo BuildEvent(
         OStim::Node* node,
         std::uint32_t actorIndex,
-        std::int32_t speedIndex)
+        std::int32_t speedIndex,
+        GraphLayout layout)
     {
         EventInfo out{};
         out.speedIndex = speedIndex;
@@ -198,11 +246,25 @@ namespace OStimTogether::OStimInternalProbe
             return out;
         }
 
-        const auto* concreteActor =
-            reinterpret_cast<const NodeActorPrefix*>(nodeActor);
+        std::int32_t animationIndex = -1;
 
-        const auto animationIndex =
-            concreteActor->animationIndex;
+        switch (layout) {
+        case GraphLayout::OStim74c:
+            animationIndex = reinterpret_cast<
+                const NodeActorPrefix74c*>(
+                    nodeActor)->animationIndex;
+            break;
+
+        case GraphLayout::OStim75b:
+            animationIndex = reinterpret_cast<
+                const NodeActorPrefix75b*>(
+                    nodeActor)->animationIndex;
+            break;
+
+        default:
+            out.reason = "unsupported-graph-layout";
+            return out;
+        }
 
         if (animationIndex < 0 || animationIndex > 15) {
             out.reason = "animation-index-range";

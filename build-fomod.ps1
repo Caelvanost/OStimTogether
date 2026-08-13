@@ -11,7 +11,7 @@ $CorePackage = Join-Path $Root "package"
 $OptionalPackage = Join-Path $Root "optional\OCumIntegration\package"
 $FomodSource = Join-Path $Root "fomod"
 $Stage = Join-Path $Root "release-fomod"
-$Zip = Join-Path $Root "OStimTogether-v0.19.6-FOMOD.zip"
+$Zip = Join-Path $Root "OStimTogether-v0.20.0-FOMOD.zip"
 
 & $CoreBuildScript -VcpkgRoot $VcpkgRoot -Configuration $Configuration
 
@@ -48,5 +48,5 @@ if (Test-Path $Zip) {
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Zip -Force
 
 Write-Host ""
-Write-Host "OK - FOMOD 0.19.6 cree :" -ForegroundColor Green
+Write-Host "OK - FOMOD 0.20.0 cree :" -ForegroundColor Green
 Write-Host $Zip

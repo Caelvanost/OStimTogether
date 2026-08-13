@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     OStimTogether
-    VERSION 0.19.6
+    VERSION 0.20.0
     LANGUAGES CXX
 )
 
@@ -67,4 +67,4 @@ target_compile_definitions(${PROJECT_NAME}
 )
 
 
-target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 version)

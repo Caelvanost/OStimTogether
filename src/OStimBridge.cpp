@@ -9,11 +9,256 @@
 #include "PapyrusAnimationBridge.h"
 #include "RaceMenuOverlayBridge.h"
 
+#include <winver.h>
+
 namespace OStimTogether
 {
     namespace
     {
         constexpr const char* kPluginName = "OStimTogether";
+
+        struct OStimDllVersion
+        {
+            std::uint16_t major{ 0 };
+            std::uint16_t minor{ 0 };
+            std::uint16_t patch{ 0 };
+            std::uint16_t build{ 0 };
+
+            constexpr bool Is(
+                std::uint16_t expectedMajor,
+                std::uint16_t expectedMinor,
+                std::uint16_t expectedPatch,
+                std::uint16_t expectedBuild) const noexcept
+            {
+                return
+                    major == expectedMajor &&
+                    minor == expectedMinor &&
+                    patch == expectedPatch &&
+                    build == expectedBuild;
+            }
+
+            std::string ToString() const
+            {
+                return fmt::format(
+                    "{}.{}.{}.{}",
+                    major,
+                    minor,
+                    patch,
+                    build);
+            }
+        };
+
+        std::optional<OStimDllVersion>
+            ParseOStimDllVersion(
+                const wchar_t* value)
+        {
+            if (!value) {
+                return std::nullopt;
+            }
+
+            unsigned int major = 0;
+            unsigned int minor = 0;
+            unsigned int patch = 0;
+            unsigned int build = 0;
+
+            if (swscanf_s(
+                    value,
+                    L"%u.%u.%u.%u",
+                    &major,
+                    &minor,
+                    &patch,
+                    &build) != 4 ||
+                major > 0xFFFF ||
+                minor > 0xFFFF ||
+                patch > 0xFFFF ||
+                build > 0xFFFF) {
+                return std::nullopt;
+            }
+
+            return OStimDllVersion{
+                static_cast<std::uint16_t>(major),
+                static_cast<std::uint16_t>(minor),
+                static_cast<std::uint16_t>(patch),
+                static_cast<std::uint16_t>(build) };
+        }
+
+        std::optional<OStimDllVersion>
+            ReadOStimDllVersion(HMODULE module)
+        {
+            if (!module) {
+                return std::nullopt;
+            }
+
+            std::array<wchar_t, 32768> path{};
+
+            const auto pathLength =
+                GetModuleFileNameW(
+                    module,
+                    path.data(),
+                    static_cast<DWORD>(path.size()));
+
+            if (pathLength == 0 ||
+                pathLength >= path.size()) {
+                return std::nullopt;
+            }
+
+            DWORD ignored = 0;
+
+            const auto infoSize =
+                GetFileVersionInfoSizeW(
+                    path.data(),
+                    &ignored);
+
+            if (infoSize == 0) {
+                return std::nullopt;
+            }
+
+            std::vector<std::uint8_t> data(infoSize);
+
+            if (!GetFileVersionInfoW(
+                    path.data(),
+                    0,
+                    infoSize,
+                    data.data())) {
+                return std::nullopt;
+            }
+
+            VS_FIXEDFILEINFO* fixed = nullptr;
+            UINT fixedSize = 0;
+
+            if (!VerQueryValueW(
+                    data.data(),
+                    L"\\",
+                    reinterpret_cast<void**>(&fixed),
+                    &fixedSize) ||
+                !fixed ||
+                fixedSize < sizeof(VS_FIXEDFILEINFO) ||
+                fixed->dwSignature != 0xFEEF04BD) {
+                return std::nullopt;
+            }
+
+            struct LanguageAndCodePage
+            {
+                WORD language;
+                WORD codePage;
+            };
+
+            LanguageAndCodePage* translations = nullptr;
+            UINT translationsSize = 0;
+
+            VerQueryValueW(
+                data.data(),
+                L"\\VarFileInfo\\Translation",
+                reinterpret_cast<void**>(&translations),
+                &translationsSize);
+
+            const auto queryVersionString =
+                [&](WORD language, WORD codePage)
+                -> std::optional<OStimDllVersion>
+            {
+                for (const auto* key :
+                     { L"FileVersion", L"ProductVersion" }) {
+                    wchar_t block[128]{};
+
+                    swprintf_s(
+                        block,
+                        L"\\StringFileInfo\\%04x%04x\\%s",
+                        language,
+                        codePage,
+                        key);
+
+                    wchar_t* value = nullptr;
+                    UINT valueLength = 0;
+
+                    if (VerQueryValueW(
+                            data.data(),
+                            block,
+                            reinterpret_cast<void**>(&value),
+                            &valueLength) &&
+                        value &&
+                        valueLength > 1) {
+                        if (const auto parsed =
+                                ParseOStimDllVersion(value)) {
+                            return parsed;
+                        }
+                    }
+                }
+
+                return std::nullopt;
+            };
+
+            if (translations &&
+                translationsSize >=
+                    sizeof(LanguageAndCodePage)) {
+                const auto count =
+                    translationsSize /
+                    sizeof(LanguageAndCodePage);
+
+                for (UINT i = 0; i < count; ++i) {
+                    if (const auto version =
+                            queryVersionString(
+                                translations[i].language,
+                                translations[i].codePage)) {
+                        return version;
+                    }
+                }
+            }
+
+            // Common English/Unicode resource used by OStim's generated DLL.
+            if (const auto version =
+                    queryVersionString(0x0409, 0x04B0)) {
+                return version;
+            }
+
+            return OStimDllVersion{
+                HIWORD(fixed->dwFileVersionMS),
+                LOWORD(fixed->dwFileVersionMS),
+                HIWORD(fixed->dwFileVersionLS),
+                LOWORD(fixed->dwFileVersionLS) };
+        }
+
+        constexpr OStimInternalProbe::GraphLayout
+            SelectGraphLayout(
+                const OStimDllVersion& version)
+        {
+            if (version.Is(7, 4, 0, 3)) {
+                return OStimInternalProbe::
+                    GraphLayout::OStim74c;
+            }
+
+            if (version.Is(7, 5, 0, 2)) {
+                return OStimInternalProbe::
+                    GraphLayout::OStim75b;
+            }
+
+            return OStimInternalProbe::
+                GraphLayout::Unsupported;
+        }
+
+        static_assert(
+            SelectGraphLayout({ 7, 4, 0, 3 }) ==
+            OStimInternalProbe::GraphLayout::OStim74c);
+
+        static_assert(
+            SelectGraphLayout({ 7, 5, 0, 2 }) ==
+            OStimInternalProbe::GraphLayout::OStim75b);
+
+        static_assert(
+            SelectGraphLayout({ 7, 5, 0, 3 }) ==
+            OStimInternalProbe::GraphLayout::Unsupported);
+
+        const char* GraphLayoutName(
+            OStimInternalProbe::GraphLayout layout)
+        {
+            switch (layout) {
+            case OStimInternalProbe::GraphLayout::OStim74c:
+                return "OStim-7.4c";
+            case OStimInternalProbe::GraphLayout::OStim75b:
+                return "OStim-7.5b";
+            default:
+                return "unsupported";
+            }
+        }
 
         // OStim.esp TESGlobals read live by MCMTable during climax().
         //
@@ -428,6 +673,7 @@ namespace OStimTogether
                     node,
                     static_cast<std::uint32_t>(
                         playerIndex),
+                    _graphLayout,
                     graphOffset)) {
             return false;
         }
@@ -571,6 +817,7 @@ namespace OStimTogether
                 GetActorOffset(
                     node,
                     actorIndex,
+                    _graphLayout,
                     graphOffset)) {
             return false;
         }
@@ -721,6 +968,7 @@ namespace OStimTogether
                 GetActorOffset(
                     node,
                     actorIndex,
+                    _graphLayout,
                     graphOffset)) {
             return false;
         }
@@ -950,6 +1198,40 @@ namespace OStimTogether
             return false;
         }
 
+        const auto ostimModule =
+            GetModuleHandleW(L"OStim.dll");
+
+        if (!ostimModule) {
+            SKSE::log::error(
+                "OStim bridge: OStim.dll module not found");
+            return false;
+        }
+
+        const auto dllVersion =
+            ReadOStimDllVersion(ostimModule);
+
+        if (!dllVersion) {
+            SKSE::log::critical(
+                "OStim bridge: unable to read OStim.dll version; internal graph access disabled");
+            return false;
+        }
+
+        _graphLayout =
+            SelectGraphLayout(*dllVersion);
+
+        SKSE::log::info(
+            "OStim runtime DLL version={} graphLayout={}",
+            dllVersion->ToString(),
+            GraphLayoutName(_graphLayout));
+
+        if (_graphLayout ==
+            OStimInternalProbe::GraphLayout::Unsupported) {
+            SKSE::log::critical(
+                "OStim bridge: unsupported OStim.dll {}; supported versions are 7.4.0.3 (7.4c) and 7.5.0.2 (7.5b)",
+                dllVersion->ToString());
+            return false;
+        }
+
         OStim::InterfaceExchangeMessage exchange{};
 
         const bool dispatched =
@@ -994,6 +1276,18 @@ namespace OStimTogether
                 "OStim bridge: Threads ABI {} does not support ThreadBuilder",
                 _threadInterfaceVersion);
             _threads = nullptr;
+            return false;
+        }
+
+        if (_graphLayout ==
+                OStimInternalProbe::GraphLayout::OStim75b &&
+            _threadInterfaceVersion < 3) {
+            SKSE::log::critical(
+                "OStim bridge: OStim 7.5b requires Threads ABI 3, received {}",
+                _threadInterfaceVersion);
+            _threads = nullptr;
+            _graphLayout = OStimInternalProbe::
+                GraphLayout::Unsupported;
             return false;
         }
 

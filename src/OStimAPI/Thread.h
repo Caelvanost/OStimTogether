@@ -13,8 +13,9 @@ namespace OStim
         virtual std::uint32_t getActorCount() = 0;
         virtual ThreadActor* getActor(std::uint32_t position) = 0;
 
-        // Exact public OStim 7.4c Thread ABI.
-        // Do not append concrete/private Thread methods here.
+        // Exact public ABI v1 prefix shared by OStim 7.4c and 7.5b.
+        // OStim 7.5b appends ABI v3 furniture accessors after this prefix;
+        // none are needed by OStim Together.
         virtual void forEachThreadActor(void* visitor) = 0;
         virtual Node* getCurrentNode() = 0;
     };
