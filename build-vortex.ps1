@@ -9,6 +9,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Build = Join-Path $Root "build"
 $Package = Join-Path $Root "package"
 $Plugins = Join-Path $Package "Data\SKSE\Plugins"
+$Dist = Join-Path $Root "dist"
 
 if (-not $VcpkgRoot) {
     throw "VCPKG_ROOT n'est pas defini."
@@ -76,8 +77,13 @@ Copy-Item `
     (Join-Path $Plugins "OStimTogether.dll") `
     -Force
 
+New-Item `
+    -ItemType Directory `
+    -Force `
+    -Path $Dist | Out-Null
+
 $zip =
-    Join-Path $Root "OStimTogether-v0.20.0-Core-Vortex.zip"
+    Join-Path $Dist "OStimTogether-v0.20.0-Core-Vortex.zip"
 
 if (Test-Path $zip) {
     Remove-Item $zip -Force
