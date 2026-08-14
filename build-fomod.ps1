@@ -12,7 +12,10 @@ $OptionalPackage = Join-Path $Root "optional\OCumIntegration\package"
 $RelayHostPackage = Join-Path $Root "optional\RelayHost\package"
 $FomodSource = Join-Path $Root "fomod"
 $Stage = Join-Path $Root "release-fomod"
-$Zip = Join-Path $Root "OStimTogether-v0.20.1-FOMOD.zip"
+$Dist = Join-Path $Root "dist"
+$Zip = Join-Path $Dist "OStimTogether-v0.20.1-FOMOD.zip"
+
+New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
 & $CoreBuildScript -VcpkgRoot $VcpkgRoot -Configuration $Configuration
 
