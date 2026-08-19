@@ -32,7 +32,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/STRPMTransport.h
         src/UdpTransport.cpp
         src/UdpTransport.h
-        src/ActorResolver.cpp
+        src/ActorResolverSTRPM.cpp
         src/ActorResolver.h
         src/VisualKeepAlive.cpp
         src/VisualKeepAlive.h
