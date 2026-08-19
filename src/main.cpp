@@ -7,7 +7,6 @@
 #include "OStimBridge.h"
 #include "RaceMenuOverlayBridge.h"
 #include "STRPMTransport.h"
-#include "UdpTransport.h"
 #include "VisualKeepAlive.h"
 
 namespace
@@ -66,15 +65,14 @@ namespace
             OStimTogether::EquipmentLock::
                 GetSingleton().Start();
 
-            // STRPM is the preferred transport on the strpm development
-            // branch. Keep the legacy UDP stack alive during migration so
-            // current LAN/Internet-relay and addon behavior remains usable
-            // while individual send paths are moved to STRPM.
-            OStimTogether::STRPMTransport::
-                GetSingleton().Start();
-
-            OStimTogether::UdpTransport::
-                GetSingleton().Start();
+            // STRPM is the only multiplayer transport on this branch.
+            // If it is unavailable, synchronization is intentionally disabled
+            // rather than falling back to the unvalidated custom UDP stack.
+            if (!OStimTogether::STRPMTransport::
+                    GetSingleton().Start()) {
+                SKSE::log::error(
+                    "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
+            }
 
             OStimTogether::VisualKeepAlive::
                 GetSingleton().Start();
@@ -106,7 +104,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     SKSE::Init(skse);
 
     SKSE::log::info(
-        "OStim Together v0.20.1-strpm loading");
+        "OStim Together v0.20.1-strpm loading (STRPM-only transport)");
 
     auto* messaging =
         SKSE::GetMessagingInterface();
