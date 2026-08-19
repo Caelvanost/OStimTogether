@@ -27,6 +27,9 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/NetworkProbe.h
         src/StrServerDiscovery.cpp
         src/StrServerDiscovery.h
+        src/STRPMApi.h
+        src/STRPMTransport.cpp
+        src/STRPMTransport.h
         src/UdpTransport.cpp
         src/UdpTransport.h
         src/ActorResolver.cpp
