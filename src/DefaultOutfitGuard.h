@@ -12,6 +12,7 @@ namespace OStimTogether
         void CaptureActor(RE::Actor* actor);
         void ProtectActor(RE::Actor* actor);
         void ReleaseActor(RE::Actor* actor);
+        void ForceReleaseActor(RE::Actor* actor);
         void RestoreAll();
 
     private:
