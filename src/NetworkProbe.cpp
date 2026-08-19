@@ -1,7 +1,6 @@
 #include "PCH.h"
 #include "NetworkProbe.h"
 #include "STRPMTransport.h"
-#include "UdpTransport.h"
 #include "OStimBridge.h"
 
 #include <cctype>
@@ -13,11 +12,7 @@ namespace OStimTogether
     {
         void SendScenePayload(std::string_view payload)
         {
-            if (STRPMTransport::GetSingleton().Send(payload)) {
-                return;
-            }
-
-            UdpTransport::GetSingleton().Send(payload);
+            STRPMTransport::GetSingleton().Send(payload);
         }
     }
 
@@ -373,6 +368,21 @@ namespace OStimTogether
 
         const auto threadID = thread->getThreadID();
 
+        // OStim may create auxiliary/NPC-only threads while preparing a
+        // player scene (for example a temporary one-actor furniture thread
+        // for the remote STR proxy). Those are local implementation details,
+        // not multiplayer scenes. Mirroring them can occupy the remote local
+        // player before the real player thread arrives and corrupt furniture
+        // selection/placement.
+        if (!thread->isPlayerThread()) {
+            SKSE::log::info(
+                "OSTNET suppress auxiliary START thread={} node={} actors={} reason=no-local-player",
+                threadID,
+                GetNodeID(thread),
+                BuildActorList(thread));
+            return;
+        }
+
         {
             std::scoped_lock lock(_mutex);
             _startedThreads.insert(threadID);
@@ -393,9 +403,34 @@ namespace OStimTogether
                     center) :
                 std::string{};
 
-        const auto furniture =
+        auto furniture =
             FindLockedSceneFurniture(
                 thread);
+
+        // IsActivationBlocked()+OStim ownership alone is not enough to prove
+        // that a blocked furniture reference belongs to THIS thread. OStim can
+        // leave another active/helper thread's furniture blocked nearby. The
+        // 0.21.0 test captured such a stale table 332 units away from the real
+        // scene center. A genuine thread furniture anchor and OStim's computed
+        // scene center should remain spatially close even with JSON offsets.
+        if (haveCenter && furniture.IsFinite()) {
+            const float dx = furniture.x - center.x;
+            const float dy = furniture.y - center.y;
+            const float dz = furniture.z - center.z;
+            const float distance =
+                std::sqrt(dx * dx + dy * dy + dz * dz);
+
+            constexpr float kMaxFurnitureCenterDistance = 192.0F;
+            if (distance > kMaxFurnitureCenterDistance) {
+                SKSE::log::warn(
+                    "OSTNET FURNITURE LOCK sender REJECT stale ref={:08X} node={} centerDistance={:.3f} max={:.3f}; furniture=none",
+                    furniture.referenceFormID,
+                    GetNodeID(thread),
+                    distance,
+                    kMaxFurnitureCenterDistance);
+                furniture = {};
+            }
+        }
 
         const auto payload =
             fmt::format(
@@ -477,6 +512,18 @@ namespace OStimTogether
 
         const auto threadID = thread->getThreadID();
 
+        {
+            std::scoped_lock lock(_mutex);
+            if (!_startedThreads.contains(threadID)) {
+                SKSE::log::trace(
+                    "OSTNET suppress auxiliary/unstarted STOP thread={} node={}",
+                    threadID,
+                    GetNodeID(thread));
+                return;
+            }
+            _startedThreads.erase(threadID);
+        }
+
         const auto payload =
             fmt::format(
                 "STOP|thread={}|node={}|actors={}",
@@ -486,9 +533,6 @@ namespace OStimTogether
 
         SKSE::log::info("OSTNET|v1|{}", payload);
         SendScenePayload(payload);
-
-        std::scoped_lock lock(_mutex);
-        _startedThreads.erase(threadID);
     }
 
     void NetworkProbe::SceneSpeed(
