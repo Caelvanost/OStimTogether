@@ -1,0 +1,382 @@
+#include "PCH.h"
+#include "STRPMTransport.h"
+
+#include "ActorResolver.h"
+
+namespace OStimTogether
+{
+    namespace
+    {
+        constexpr wchar_t kModuleName[] = L"STRPluginMessagingAPI.dll";
+        constexpr char kChannel[] = "ostimtogether";
+
+        std::string SafeSenderName(
+            const STRPMApi::Message& message)
+        {
+            std::string result =
+                message.sender.displayName ?
+                    message.sender.displayName : "";
+
+            for (auto& ch : result) {
+                if (ch == '|' || ch == '\r' || ch == '\n') {
+                    ch = '_';
+                }
+            }
+
+            if (result.empty()) {
+                result = fmt::format(
+                    "STRPM-{}",
+                    message.sender.connectionID);
+            }
+
+            return result;
+        }
+    }
+
+    STRPMTransport& STRPMTransport::GetSingleton()
+    {
+        static STRPMTransport instance;
+        return instance;
+    }
+
+    STRPMTransport::~STRPMTransport()
+    {
+        Stop();
+    }
+
+    const char* STRPMTransport::ResultName(
+        STRPMApi::Result result) noexcept
+    {
+        switch (result) {
+        case STRPMApi::Result::kOk:
+            return "ok";
+        case STRPMApi::Result::kNotAvailable:
+            return "not-available";
+        case STRPMApi::Result::kUnsupportedVersion:
+            return "unsupported-version";
+        case STRPMApi::Result::kInvalidArgument:
+            return "invalid-argument";
+        case STRPMApi::Result::kNotConnected:
+            return "not-connected";
+        case STRPMApi::Result::kChannelAlreadyRegistered:
+            return "channel-already-registered";
+        case STRPMApi::Result::kChannelNotRegistered:
+            return "channel-not-registered";
+        case STRPMApi::Result::kPayloadTooLarge:
+            return "payload-too-large";
+        case STRPMApi::Result::kRateLimited:
+            return "rate-limited";
+        case STRPMApi::Result::kTransportError:
+            return "transport-error";
+        case STRPMApi::Result::kTargetNotFound:
+            return "target-not-found";
+        default:
+            return "unknown";
+        }
+    }
+
+    const char* STRPMTransport::MappingEventName(
+        STRPMApi::ProxyMappingEventType type) noexcept
+    {
+        switch (type) {
+        case STRPMApi::ProxyMappingEventType::kAdded:
+            return "added";
+        case STRPMApi::ProxyMappingEventType::kUpdated:
+            return "updated";
+        case STRPMApi::ProxyMappingEventType::kRemoved:
+            return "removed";
+        case STRPMApi::ProxyMappingEventType::kCleared:
+            return "cleared";
+        default:
+            return "unknown";
+        }
+    }
+
+    bool STRPMTransport::Start()
+    {
+        if (_running.load()) {
+            return true;
+        }
+
+        const auto module = GetModuleHandleW(kModuleName);
+        if (!module) {
+            SKSE::log::warn(
+                "OSTNET STRPM unavailable: {} is not loaded; legacy UDP transport remains available",
+                "STRPluginMessagingAPI.dll");
+            return false;
+        }
+
+        const auto queryInterface =
+            reinterpret_cast<STRPMApi::QueryInterfaceFn>(
+                GetProcAddress(
+                    module,
+                    STRPMApi::kQueryInterfaceExportName));
+
+        if (!queryInterface) {
+            SKSE::log::warn(
+                "OSTNET STRPM unavailable: missing export {}",
+                STRPMApi::kQueryInterfaceExportName);
+            return false;
+        }
+
+        const STRPMApi::Interface* api = nullptr;
+        const auto apiResult =
+            queryInterface(
+                STRPMApi::kInterfaceVersion,
+                &api);
+
+        if (apiResult != STRPMApi::Result::kOk ||
+            !api ||
+            !api->registerChannel ||
+            !api->send) {
+            SKSE::log::warn(
+                "OSTNET STRPM interface load failed result={}",
+                ResultName(apiResult));
+            return false;
+        }
+
+        const auto queryResolver =
+            reinterpret_cast<STRPMApi::QueryProxyResolverFn>(
+                GetProcAddress(
+                    module,
+                    STRPMApi::kQueryProxyResolverExportName));
+
+        const STRPMApi::ProxyResolverInterface* resolver = nullptr;
+        if (queryResolver) {
+            const auto resolverResult =
+                queryResolver(
+                    STRPMApi::kProxyResolverVersion,
+                    &resolver);
+
+            if (resolverResult != STRPMApi::Result::kOk) {
+                resolver = nullptr;
+                SKSE::log::warn(
+                    "OSTNET STRPM ProxyResolver unavailable result={}",
+                    ResultName(resolverResult));
+            }
+        }
+
+        STRPMApi::ListenerHandle listener{};
+        const auto registerResult =
+            api->registerChannel(
+                kChannel,
+                &STRPMTransport::OnMessage,
+                this,
+                &listener);
+
+        if (registerResult != STRPMApi::Result::kOk) {
+            SKSE::log::warn(
+                "OSTNET STRPM register channel failed channel={} result={}",
+                kChannel,
+                ResultName(registerResult));
+            return false;
+        }
+
+        _api = api;
+        _resolver = resolver;
+        _listener = listener;
+        _resolverListenerRegistered = false;
+
+        if (_resolver && _resolver->registerListener) {
+            const auto listenResult =
+                _resolver->registerListener(
+                    &STRPMTransport::OnProxyMapping,
+                    this);
+
+            _resolverListenerRegistered =
+                listenResult == STRPMApi::Result::kOk;
+
+            if (!_resolverListenerRegistered) {
+                SKSE::log::warn(
+                    "OSTNET STRPM ProxyResolver listener registration failed result={}",
+                    ResultName(listenResult));
+            }
+        }
+
+        if (_api->setLocalDisplayName) {
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                const auto* name = player->GetName();
+                if (name && *name) {
+                    _api->setLocalDisplayName(name);
+                }
+            }
+        }
+
+        _running.store(true);
+
+        SKSE::log::info(
+            "OSTNET STRPM READY channel={} apiVersion={} proxyResolver={} resolverListener={}",
+            kChannel,
+            _api->version,
+            _resolver ? 1 : 0,
+            _resolverListenerRegistered ? 1 : 0);
+
+        return true;
+    }
+
+    void STRPMTransport::Stop()
+    {
+        if (!_running.exchange(false)) {
+            return;
+        }
+
+        if (_resolver &&
+            _resolverListenerRegistered &&
+            _resolver->unregisterListener) {
+            _resolver->unregisterListener(
+                &STRPMTransport::OnProxyMapping,
+                this);
+        }
+
+        if (_api &&
+            _listener.value != 0 &&
+            _api->unregisterChannel) {
+            _api->unregisterChannel(_listener);
+        }
+
+        _resolverListenerRegistered = false;
+        _listener = {};
+        _resolver = nullptr;
+        _api = nullptr;
+
+        SKSE::log::info("OSTNET STRPM stopped");
+    }
+
+    bool STRPMTransport::Send(std::string_view payload)
+    {
+        if (!_running.load() ||
+            !_api ||
+            !_api->send ||
+            payload.empty()) {
+            return false;
+        }
+
+        STRPMApi::Target target{};
+        target.kind = STRPMApi::TargetKind::kAllPlayers;
+
+        const auto result =
+            _api->send(
+                kChannel,
+                target,
+                payload.data(),
+                payload.size(),
+                STRPMApi::kMessageReliable |
+                    STRPMApi::kMessageOrdered);
+
+        if (result != STRPMApi::Result::kOk) {
+            SKSE::log::warn(
+                "OSTNET STRPM TX failed result={} bytes={}; caller may fall back to UDP",
+                ResultName(result),
+                payload.size());
+            return false;
+        }
+
+        SKSE::log::info(
+            "OSTNET STRPM TX bytes={} {}",
+            payload.size(),
+            payload);
+        return true;
+    }
+
+    std::optional<RE::FormID> STRPMTransport::ResolveProxy(
+        STRPMApi::ConnectionID connectionID) const
+    {
+        if (!_resolver ||
+            !_resolver->resolve ||
+            connectionID == 0) {
+            return std::nullopt;
+        }
+
+        STRPMApi::ProxyFormID formID = 0;
+        const auto result =
+            _resolver->resolve(
+                connectionID,
+                &formID);
+
+        if (result != STRPMApi::Result::kOk || formID == 0) {
+            return std::nullopt;
+        }
+
+        return static_cast<RE::FormID>(formID);
+    }
+
+    void __cdecl STRPMTransport::OnMessage(
+        const STRPMApi::Message* message,
+        void* userData)
+    {
+        if (!message || !userData) {
+            return;
+        }
+
+        static_cast<STRPMTransport*>(userData)
+            ->HandleMessage(*message);
+    }
+
+    void STRPMTransport::HandleMessage(
+        const STRPMApi::Message& message)
+    {
+        if (!message.data || message.size == 0) {
+            return;
+        }
+
+        std::string payload(
+            static_cast<const char*>(message.data),
+            message.size);
+
+        const auto sender = SafeSenderName(message);
+        const auto resolved =
+            ResolveProxy(message.sender.connectionID);
+
+        SKSE::log::info(
+            "OSTNET STRPM RX connection={} sender=\"{}\" host={} seq={} bytes={} proxy={:08X}",
+            message.sender.connectionID,
+            sender,
+            message.sender.isHost ? 1 : 0,
+            message.sequence,
+            payload.size(),
+            resolved.value_or(0));
+
+        // ActorResolver currently owns all OStim packet parsing and mirror
+        // lifecycle. Feed it the same envelope used by the legacy UDP path so
+        // every existing scene/addon feature is retained while transport is
+        // migrated. ProxyResolver identity is already available above and is
+        // intentionally logged on every received message for the next step,
+        // where participant resolution switches from name scans to FormIDs.
+        const auto legacyEnvelope =
+            fmt::format(
+                "OSTUDP|v1|from={}|{}",
+                sender,
+                payload);
+
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask(
+                [packet = legacyEnvelope]() mutable {
+                    ActorResolver::GetSingleton()
+                        .HandleUdpPacket(std::move(packet));
+                });
+        }
+    }
+
+    void __cdecl STRPMTransport::OnProxyMapping(
+        const STRPMApi::ProxyMappingEvent* event,
+        void* userData)
+    {
+        if (!event || !userData) {
+            return;
+        }
+
+        static_cast<STRPMTransport*>(userData)
+            ->HandleProxyMapping(*event);
+    }
+
+    void STRPMTransport::HandleProxyMapping(
+        const STRPMApi::ProxyMappingEvent& event)
+    {
+        SKSE::log::info(
+            "OSTNET STRPM PROXY event={} connection={} old={:08X} new={:08X}",
+            MappingEventName(event.type),
+            event.connectionID,
+            event.oldFormID,
+            event.newFormID);
+    }
+}
