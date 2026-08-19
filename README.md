@@ -1,6 +1,13 @@
 # OStim Together
 
-Current STRPM development version: **0.20.1-strpm**.
+Current development version: **0.21.0**.
+
+The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
+
+Versioning rule used by this project:
+
+- small fixes/adjustments increment the third number (`0.21.0` -> `0.21.1`);
+- larger feature or architecture changes increment the second number and reset the third (`0.21.x` -> `0.22.0`).
 
 OStim Together is an SKSE plugin that synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch keeps the existing OStim Together scene, positioning, furniture, RaceMenu and optional OCum functionality, but delegates multiplayer transport and remote-player identity to **STRPluginMessagingAPI**.
 
@@ -45,7 +52,7 @@ When STRPM is unavailable or not connected, OStim Together logs the failure and 
 - RaceMenu overlay registration, persistence, live-property application, and OverlayFix-aware un-culling;
 - generic addon synchronization through the `ostimtogether_addon` ModEvent;
 - optional OCum Ascended synchronization for marked RaceMenu overlays and vaginal/anal equip objects;
-- OStim Standalone 7.4c and 7.5b graph-layout compatibility from the existing v0.20.x codebase.
+- OStim Standalone 7.4c and 7.5b graph-layout compatibility inherited from the previous codebase.
 
 ## STRPluginMessagingAPI requirement
 
@@ -73,7 +80,7 @@ OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback
 
 ## OStim compatibility
 
-The inherited v0.20.x compatibility layer supports the tested OStim Standalone runtimes:
+The compatibility layer supports the tested OStim Standalone runtimes:
 
 - OStim 7.4c — `OStim.dll` `7.4.0.3`;
 - OStim 7.5b — `OStim.dll` `7.5.0.2`.
@@ -101,7 +108,7 @@ optional/OCumIntegration/
 
 It listens to `ocum_applied_cum`, synchronizes RaceMenu textures containing `CumOverlays`, and mirrors the actual `ocumvagmesh` / `ocumanmesh` equipped state.
 
-The FOMOD layout is now only:
+The FOMOD layout is:
 
 - `00 Core` — always installed;
 - `10 OCum Ascended` — optional.
@@ -136,10 +143,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-Core output:
+With `VERSION` set to `0.21.0`, the Core output is:
 
 ```text
-dist/OStimTogether-v0.20.1-Core-Vortex.zip
+dist/OStimTogether-v0.21.0-Core-Vortex.zip
 ```
 
 For the optional OCum integration, produce/copy its ESP and PEX as documented under `optional/OCumIntegration/`, then run:
@@ -148,12 +155,14 @@ For the optional OCum integration, produce/copy its ESP and PEX as documented un
 .\build-fomod.ps1
 ```
 
-FOMOD output:
+The FOMOD output is:
 
 ```text
-dist/OStimTogether-v0.20.1-FOMOD.zip
+dist/OStimTogether-v0.21.0-FOMOD.zip
 ```
+
+Changing `VERSION` automatically changes both archive names, the CMake project version and the version reported by the DLL at startup. `build-fomod.ps1` also stamps the staged FOMOD `info.xml` with the same value.
 
 ## Migration note
 
-The old custom UDP implementation was never considered a validated transport baseline. On the `strpm` branch it has been removed from the build/runtime path. A temporary source-level compatibility facade named `UdpTransport` remains only so older addon call sites can compile while they are renamed; it performs no socket, discovery, relay, authentication or UDP operation and delegates sends exclusively to STRPM.
+The old custom UDP implementation was never considered a validated transport baseline. On the `strpm` branch it has been removed from the build/runtime path. A temporary source-level compatibility alias named `UdpTransport` remains only so older addon call sites can compile while they are renamed; it performs no socket, discovery, relay, authentication or UDP operation and delegates sends exclusively to STRPM.
