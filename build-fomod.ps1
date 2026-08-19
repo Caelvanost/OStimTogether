@@ -12,7 +12,18 @@ $OptionalPackage = Join-Path $Root "optional\OCumIntegration\package"
 $FomodSource = Join-Path $Root "fomod"
 $Stage = Join-Path $Root "release-fomod"
 $Dist = Join-Path $Root "dist"
-$Zip = Join-Path $Dist "OStimTogether-v0.20.1-FOMOD.zip"
+$VersionFile = Join-Path $Root "VERSION"
+
+if (-not (Test-Path $VersionFile)) {
+    throw "VERSION introuvable: $VersionFile"
+}
+
+$Version = (Get-Content $VersionFile -Raw).Trim()
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "VERSION invalide: '$Version'"
+}
+
+$Zip = Join-Path $Dist "OStimTogether-v$Version-FOMOD.zip"
 
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
@@ -44,6 +55,16 @@ Copy-Item (Join-Path $CorePackage "*") $CoreStage -Recurse -Force
 Copy-Item (Join-Path $OptionalPackage "*") $OCumStage -Recurse -Force
 Copy-Item (Join-Path $FomodSource "*") $FomodStage -Recurse -Force
 
+$StagedInfo = Join-Path $FomodStage "info.xml"
+if (Test-Path $StagedInfo) {
+    $InfoContent = Get-Content $StagedInfo -Raw
+    $InfoContent = [regex]::Replace(
+        $InfoContent,
+        '<Version>[^<]*</Version>',
+        "<Version>$Version</Version>")
+    Set-Content -Path $StagedInfo -Value $InfoContent -Encoding UTF8
+}
+
 if (Test-Path $Zip) {
     Remove-Item $Zip -Force
 }
@@ -51,5 +72,5 @@ if (Test-Path $Zip) {
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Zip -Force
 
 Write-Host ""
-Write-Host "OK - FOMOD 0.20.1 STRPM cree :" -ForegroundColor Green
+Write-Host "OK - OStim Together v$Version FOMOD STRPM cree :" -ForegroundColor Green
 Write-Host $Zip
