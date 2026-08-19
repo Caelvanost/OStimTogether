@@ -18,6 +18,7 @@ namespace OStimTogether
 
         void AddOStimTarget(RE::Actor* actor, std::int32_t threadID);
         void RemoveOStimThread(std::int32_t threadID);
+        void RemoveOStimActor(RE::FormID actorID);
         void ClearAllOStimTargets();
 
         [[nodiscard]] bool HasAnyTarget() const;
