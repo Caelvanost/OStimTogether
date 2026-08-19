@@ -90,6 +90,52 @@ namespace OStimTogether
         }
     }
 
+    const char* STRPMTransport::BackendName(
+        STRPMApi::RuntimeBackend backend) noexcept
+    {
+        switch (backend) {
+        case STRPMApi::RuntimeBackend::kNone:
+            return "none";
+        case STRPMApi::RuntimeBackend::kUdp:
+            return "udp";
+        case STRPMApi::RuntimeBackend::kStrBridge:
+            return "str-bridge";
+        default:
+            return "unknown";
+        }
+    }
+
+    void STRPMTransport::LogRuntimeStatus(std::string_view reason) const
+    {
+        if (!_diagnostics || !_diagnostics->getRuntimeStatus) {
+            SKSE::log::info(
+                "OSTNET STRPM STATUS reason={} diagnostics=unavailable",
+                reason);
+            return;
+        }
+
+        STRPMApi::RuntimeStatus status{};
+        const auto result =
+            _diagnostics->getRuntimeStatus(&status);
+
+        if (result != STRPMApi::Result::kOk) {
+            SKSE::log::warn(
+                "OSTNET STRPM STATUS reason={} result={}",
+                reason,
+                ResultName(result));
+            return;
+        }
+
+        SKSE::log::info(
+            "OSTNET STRPM STATUS reason={} backend={} bridgeAvailable={} bridgeActive={} knownPeers={} configuredPeers={}",
+            reason,
+            BackendName(status.activeBackend),
+            status.strBridgeAvailable,
+            status.strBridgeActive,
+            status.knownPeerCount,
+            status.configuredPeerCount);
+    }
+
     bool STRPMTransport::Start()
     {
         if (_running.load()) {
@@ -99,7 +145,7 @@ namespace OStimTogether
         const auto module = GetModuleHandleW(kModuleName);
         if (!module) {
             SKSE::log::warn(
-                "OSTNET STRPM unavailable: STRPluginMessagingAPI.dll is not loaded; legacy UDP remains active");
+                "OSTNET STRPM unavailable: STRPluginMessagingAPI.dll is not loaded; synchronization disabled");
             return false;
         }
 
@@ -128,6 +174,23 @@ namespace OStimTogether
                 "OSTNET STRPM interface load failed result={}",
                 ResultName(apiResult));
             return false;
+        }
+
+        const STRPMApi::DiagnosticsInterface* diagnostics = nullptr;
+        const auto queryDiagnostics =
+            reinterpret_cast<STRPMApi::QueryDiagnosticsFn>(
+                GetProcAddress(
+                    module,
+                    STRPMApi::kQueryDiagnosticsExportName));
+
+        if (queryDiagnostics) {
+            const auto diagnosticsResult =
+                queryDiagnostics(
+                    STRPMApi::kDiagnosticsVersion,
+                    &diagnostics);
+            if (diagnosticsResult != STRPMApi::Result::kOk) {
+                diagnostics = nullptr;
+            }
         }
 
         const STRPMApi::ProxyResolverInterface* resolver = nullptr;
@@ -168,6 +231,7 @@ namespace OStimTogether
         }
 
         _api = api;
+        _diagnostics = diagnostics;
         _resolver = resolver;
         _listener = listener;
         _resolverListenerRegistered = false;
@@ -199,11 +263,14 @@ namespace OStimTogether
         _running.store(true);
 
         SKSE::log::info(
-            "OSTNET STRPM READY channel={} apiVersion={} proxyResolver={} resolverListener={}",
+            "OSTNET STRPM READY channel={} apiVersion={} diagnostics={} proxyResolver={} resolverListener={}",
             kChannel,
             _api->version,
+            _diagnostics ? 1 : 0,
             _resolver ? 1 : 0,
             _resolverListenerRegistered ? 1 : 0);
+
+        LogRuntimeStatus("start");
         return true;
     }
 
@@ -230,6 +297,7 @@ namespace OStimTogether
         _resolverListenerRegistered = false;
         _listener = {};
         _resolver = nullptr;
+        _diagnostics = nullptr;
         _api = nullptr;
         SKSE::log::info("OSTNET STRPM stopped");
     }
@@ -257,9 +325,10 @@ namespace OStimTogether
 
         if (result != STRPMApi::Result::kOk) {
             SKSE::log::warn(
-                "OSTNET STRPM TX failed result={} bytes={}; fallback=UDP",
+                "OSTNET STRPM TX failed result={} bytes={} transport=STRPM-only",
                 ResultName(result),
                 payload.size());
+            LogRuntimeStatus("tx-failed");
             return false;
         }
 
