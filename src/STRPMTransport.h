@@ -13,8 +13,7 @@ namespace OStimTogether
         bool Start();
         void Stop();
 
-        // Returns true only when STRPM accepted the payload. Callers may use
-        // the legacy UDP transport as a fallback when this returns false.
+        // STRPM is the only transport on the strpm branch.
         bool Send(std::string_view payload);
 
         [[nodiscard]] bool IsRunning() const noexcept
@@ -42,12 +41,16 @@ namespace OStimTogether
 
         void HandleMessage(const STRPMApi::Message& message);
         void HandleProxyMapping(const STRPMApi::ProxyMappingEvent& event);
+        void LogRuntimeStatus(std::string_view reason) const;
 
         static const char* ResultName(STRPMApi::Result result) noexcept;
         static const char* MappingEventName(
             STRPMApi::ProxyMappingEventType type) noexcept;
+        static const char* BackendName(
+            STRPMApi::RuntimeBackend backend) noexcept;
 
         const STRPMApi::Interface* _api{ nullptr };
+        const STRPMApi::DiagnosticsInterface* _diagnostics{ nullptr };
         const STRPMApi::ProxyResolverInterface* _resolver{ nullptr };
         STRPMApi::ListenerHandle _listener{};
         std::atomic_bool _running{ false };
