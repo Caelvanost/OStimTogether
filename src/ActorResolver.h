@@ -2,6 +2,7 @@
 
 #include "PCH.h"
 #include "SceneCenter.h"
+#include "STRPMApi.h"
 
 namespace OStimTogether
 {
@@ -10,11 +11,20 @@ namespace OStimTogether
     public:
         static ActorResolver& GetSingleton();
 
-        // Must be called on Skyrim's game thread.
+        // Legacy UDP entrypoint. Must be called on Skyrim's game thread.
         void HandleUdpPacket(std::string packet);
 
-        // Resolve the other client's real player by character name. Used by
-        // the generic addon bus; role=player deliberately excludes local 0x14.
+        // STRPM entrypoint. connectionID is the authenticated STR sender
+        // identity supplied by STRPluginMessagingAPI. Must be called on the
+        // Skyrim game thread.
+        void HandleSTRPMPacket(
+            STRPMApi::ConnectionID connectionID,
+            std::string sender,
+            std::string payload);
+
+        // Generic addon resolution. On STRPM sessions this first consumes the
+        // cached ProxyResolver FormID associated with the player's name.
+        // Legacy UDP sessions retain the historical name-scan fallback.
         RE::Actor* ResolveRemotePlayerByName(std::string_view name);
 
     private:
@@ -32,6 +42,7 @@ namespace OStimTogether
             RE::FormID chosen{ 0 };
             std::vector<RE::FormID> matches;
             bool localSelf{ false };
+            bool fromSTRPM{ false };
         };
 
         static std::vector<std::string> Split(
@@ -39,6 +50,8 @@ namespace OStimTogether
             char delimiter);
 
         static std::string Trim(std::string value);
+
+        static std::string NormalizeName(std::string_view value);
 
         static bool EqualsInsensitive(
             std::string_view lhs,
@@ -68,15 +81,32 @@ namespace OStimTogether
             std::string_view payload);
 
         ResolveResult ResolveParticipant(
-            const Participant& participant);
+            const Participant& participant,
+            STRPMApi::ConnectionID senderConnectionID);
 
         void HandleStart(
             const std::string& sender,
-            std::string_view payload);
+            std::string_view payload,
+            STRPMApi::ConnectionID senderConnectionID);
+
+        void HandlePayload(
+            const std::string& sender,
+            std::string_view payload,
+            STRPMApi::ConnectionID senderConnectionID);
+
+        void CacheSTRPMProxyName(
+            STRPMApi::ConnectionID connectionID,
+            RE::FormID formID,
+            std::string_view senderName);
 
         std::mutex _mutex;
 
         // key = sender|thread|participantIndex (diagnostic/cache)
         std::unordered_map<std::string, RE::FormID> _resolved;
+
+        // Lower-case player display/actor names -> resolver supplied local
+        // proxy FormID. This lets the existing generic addon bridge resolve
+        // the same proxy without performing a ProcessLists name scan.
+        std::unordered_map<std::string, RE::FormID> _strpmRemoteByName;
     };
 }
