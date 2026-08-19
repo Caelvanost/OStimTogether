@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.21.0**.
+Current development version: **0.21.1**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
@@ -44,8 +44,10 @@ When STRPM is unavailable or not connected, OStim Together logs the failure and 
 ## Current features retained
 
 - mirrored OStim `START`, `NODE`, `SPEED`, and `STOP` state;
+- only the locally owned player thread is transmitted; auxiliary/NPC-only OStim setup threads are not mirrored;
 - STRPM-based sender identity and remote-player proxy FormID resolution;
-- exact furniture synchronization when a placed furniture reference is available;
+- exact furniture synchronization when a placed furniture reference is available and spatially consistent with the authoritative scene center;
+- stale OStim-blocked furniture references from helper/other threads are rejected instead of being sent as the scene anchor;
 - delayed authoritative startup for Wall scenes whose final OStim anchor settles after scene creation;
 - active-scene STR proxy pose stabilization using the authoritative OStim actor pose;
 - equipment/outfit protection that avoids mutating dynamic STR player bases;
@@ -143,10 +145,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-With `VERSION` set to `0.21.0`, the Core output is:
+With `VERSION` set to `0.21.1`, the Core output is:
 
 ```text
-dist/OStimTogether-v0.21.0-Core-Vortex.zip
+dist/OStimTogether-v0.21.1-Core-Vortex.zip
 ```
 
 For the optional OCum integration, produce/copy its ESP and PEX as documented under `optional/OCumIntegration/`, then run:
@@ -158,7 +160,7 @@ For the optional OCum integration, produce/copy its ESP and PEX as documented un
 The FOMOD output is:
 
 ```text
-dist/OStimTogether-v0.21.0-FOMOD.zip
+dist/OStimTogether-v0.21.1-FOMOD.zip
 ```
 
 Changing `VERSION` automatically changes both archive names, the CMake project version and the version reported by the DLL at startup. `build-fomod.ps1` also stamps the staged FOMOD `info.xml` with the same value.
