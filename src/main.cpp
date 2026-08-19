@@ -9,6 +9,10 @@
 #include "STRPMTransport.h"
 #include "VisualKeepAlive.h"
 
+#ifndef OSTIM_TOGETHER_VERSION
+#define OSTIM_TOGETHER_VERSION "dev"
+#endif
+
 namespace
 {
     void InitLogging()
@@ -104,7 +108,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     SKSE::Init(skse);
 
     SKSE::log::info(
-        "OStim Together v0.20.1-strpm loading (STRPM-only transport)");
+        "OStim Together v{} loading (STRPM-only transport)",
+        OSTIM_TOGETHER_VERSION);
 
     auto* messaging =
         SKSE::GetMessagingInterface();
