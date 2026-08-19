@@ -6,9 +6,12 @@
 namespace OStimTogether::STRPMApi
 {
     inline constexpr std::uint32_t kInterfaceVersion = 2;
+    inline constexpr std::uint32_t kDiagnosticsVersion = 2;
     inline constexpr std::uint32_t kProxyResolverVersion = 1;
     inline constexpr char kQueryInterfaceExportName[] =
         "STR_QueryPluginMessagingInterface";
+    inline constexpr char kQueryDiagnosticsExportName[] =
+        "STR_QueryPluginMessagingDiagnostics";
     inline constexpr char kQueryProxyResolverExportName[] =
         "STR_QueryPluginMessagingProxyResolver";
 
@@ -44,6 +47,20 @@ namespace OStimTogether::STRPMApi
         kHost = 2,
         kPlayer = 3,
         kAllPlayers = 4
+    };
+
+    enum class RuntimeBackend : std::uint32_t
+    {
+        kNone = 0,
+        kUdp = 1,
+        kStrBridge = 2
+    };
+
+    enum class RuntimeBackendMode : std::uint32_t
+    {
+        kAuto = 0,
+        kUdp = 1,
+        kStrBridge = 2
     };
 
     enum class ProxyMappingEventType : std::uint32_t
@@ -91,6 +108,22 @@ namespace OStimTogether::STRPMApi
         ProxyFormID newFormID{ 0 };
     };
 
+    struct RuntimeStatus
+    {
+        std::uint32_t version{ kDiagnosticsVersion };
+        std::uint32_t knownPeerCount{ 0 };
+        std::uint32_t configuredPeerCount{ 0 };
+        std::uint32_t autoDiscovery{ 0 };
+        std::uint32_t relayMode{ 0 };
+        std::uint32_t requireKnownPeer{ 0 };
+        std::uint16_t localPort{ 0 };
+        std::uint16_t reserved{ 0 };
+        RuntimeBackend activeBackend{ RuntimeBackend::kNone };
+        RuntimeBackendMode configuredBackendMode{ RuntimeBackendMode::kAuto };
+        std::uint32_t strBridgeAvailable{ 0 };
+        std::uint32_t strBridgeActive{ 0 };
+    };
+
     using ReceiveCallback = void(__cdecl*)(
         const Message* message,
         void* userData);
@@ -123,6 +156,12 @@ namespace OStimTogether::STRPMApi
         Result(__cdecl* setLocalDisplayName)(const char* displayName);
     };
 
+    struct DiagnosticsInterface
+    {
+        std::uint32_t version{ kDiagnosticsVersion };
+        Result(__cdecl* getRuntimeStatus)(RuntimeStatus* outStatus);
+    };
+
     struct ProxyResolverInterface
     {
         std::uint32_t version{ kProxyResolverVersion };
@@ -143,6 +182,10 @@ namespace OStimTogether::STRPMApi
     using QueryInterfaceFn = Result(__cdecl*)(
         std::uint32_t requestedVersion,
         const Interface** outInterface);
+
+    using QueryDiagnosticsFn = Result(__cdecl*)(
+        std::uint32_t requestedVersion,
+        const DiagnosticsInterface** outInterface);
 
     using QueryProxyResolverFn = Result(__cdecl*)(
         std::uint32_t requestedVersion,
