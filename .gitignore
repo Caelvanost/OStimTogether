@@ -2,6 +2,7 @@
 build/
 out/
 dist/
+release-fomod/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
