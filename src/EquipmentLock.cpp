@@ -21,6 +21,7 @@ namespace OStimTogether
                    (base->GetFormID() & kDynamicMask) == kDynamicMask;
         }
     }
+
     EquipmentLock& EquipmentLock::GetSingleton()
     {
         static EquipmentLock instance;
@@ -170,11 +171,6 @@ namespace OStimTogether
             return;
         }
 
-        // v0.18.16 diagnostic: do not fight Skyrim Together's remote-player
-        // equipment replication with UnequipObject every 25 ms. That churn
-        // starts exactly when the proxy enters OStim and is the strongest
-        // remaining suspect for RaceMenu/overlay/attached-visual loss.
-        // Real NPCs keep the existing automatic equipment lock.
         if (IsLikelySTRRemotePlayerProxy(actor)) {
             auto* base = actor->GetActorBase();
             SKSE::log::info(
@@ -208,14 +204,6 @@ namespace OStimTogether
             RE::DebugNotification(
                 "OStim Together: NPC OStim verrouille");
         }
-
-        // IMPORTANT:
-        // Do not touch the actor's inventory directly from OStim's
-        // ThreadStart callback. OStim can still be constructing the thread
-        // and manipulating actor state at that point.
-        //
-        // The worker will notice the new target and enqueue the first
-        // equipment pass through SKSE::TaskInterface on the game thread.
     }
 
     void EquipmentLock::RemoveOStimThread(
@@ -258,6 +246,49 @@ namespace OStimTogether
         if (!released.empty() && _config.debugNotifications) {
             RE::DebugNotification(
                 "OStim Together: verrou OStim relache");
+        }
+    }
+
+    void EquipmentLock::RemoveOStimActor(RE::FormID actorID)
+    {
+        if (actorID == 0) {
+            return;
+        }
+
+        std::vector<std::int32_t> removedThreads;
+
+        {
+            std::scoped_lock lock(_targetMutex);
+
+            for (auto it = _threadTargets.begin();
+                 it != _threadTargets.end();) {
+                if (it->second.erase(actorID) != 0) {
+                    removedThreads.push_back(it->first);
+                }
+
+                if (it->second.empty()) {
+                    it = _threadTargets.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            _ostimRefCounts.erase(actorID);
+        }
+
+        if (!removedThreads.empty()) {
+            std::string threadList;
+            for (std::size_t i = 0; i < removedThreads.size(); ++i) {
+                if (i != 0) {
+                    threadList += ",";
+                }
+                threadList += std::to_string(removedThreads[i]);
+            }
+
+            SKSE::log::info(
+                "OStim auto-lock FORCE OFF actor={:08X} threads=[{}]",
+                actorID,
+                threadList);
         }
     }
 
@@ -314,7 +345,6 @@ namespace OStimTogether
             return;
         }
 
-        // Defensive guard for targets captured before a proxy was identified.
         if (IsLikelySTRRemotePlayerProxy(actor)) {
             return;
         }
