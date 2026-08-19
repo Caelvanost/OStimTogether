@@ -16,14 +16,6 @@ namespace OStimTogether
                 return false;
             }
 
-            // Skyrim Together remote players are runtime-created actors whose
-            // reference AND TESNPC base are allocated from the dynamic 0xFF
-            // FormID space.  Normal placed/spawned NPCs can have a dynamic
-            // reference, but their base normally remains a static plugin form.
-            //
-            // Never mutate the dynamic STR player's TESNPC::defaultOutfit:
-            // doing so can disturb RaceMenu/NiOverride appearance state on the
-            // proxy (face makeup/overlays and visual effect attachments).
             constexpr RE::FormID kDynamicMask = 0xFF000000;
             return (actor->GetFormID() & kDynamicMask) == kDynamicMask &&
                    (base->GetFormID() & kDynamicMask) == kDynamicMask;
@@ -78,7 +70,6 @@ namespace OStimTogether
             actorID,
             actorEntry.wornArmor.size());
     }
-
 
     void DefaultOutfitGuard::CaptureActor(RE::Actor* actor)
     {
@@ -255,12 +246,67 @@ namespace OStimTogether
             }
         }
 
-        // Prefer the exact real worn-state snapshot. This handles NPCs whose
-        // visible outfit does not map cleanly to direct defaultOutfit entries.
         if (!snapshotToRestore.empty()) {
             ReequipSnapshot(actor, snapshotToRestore);
         } else {
-            // Fallback for NPCs where no worn armor was captured.
+            ReequipDefaultOutfit(actor, outfitToRestore);
+        }
+    }
+
+    void DefaultOutfitGuard::ForceReleaseActor(RE::Actor* actor)
+    {
+        if (!actor || actor->IsPlayerRef() ||
+            IsLikelySTRRemotePlayerProxy(actor)) {
+            return;
+        }
+
+        auto* base = actor->GetActorBase();
+        if (!base) {
+            return;
+        }
+
+        const auto actorID = actor->GetFormID();
+        const auto baseID = base->GetFormID();
+
+        RE::BGSOutfit* outfitToRestore = nullptr;
+        std::vector<RE::FormID> snapshotToRestore;
+        std::uint32_t actorRefs = 0;
+        std::uint32_t baseRefs = 0;
+
+        {
+            std::scoped_lock lock(_mutex);
+
+            if (auto actorIt = _actors.find(actorID);
+                actorIt != _actors.end()) {
+                actorRefs = actorIt->second.refCount;
+                snapshotToRestore = actorIt->second.wornArmor;
+                _actors.erase(actorIt);
+            }
+
+            if (auto baseIt = _bases.find(baseID);
+                baseIt != _bases.end()) {
+                baseRefs = baseIt->second.refCount;
+                outfitToRestore = baseIt->second.originalOutfit;
+                base->defaultOutfit = outfitToRestore;
+                _bases.erase(baseIt);
+            }
+        }
+
+        if (actorRefs == 0 && baseRefs == 0) {
+            return;
+        }
+
+        SKSE::log::info(
+            "DefaultOutfitGuard FORCE OFF actor={:08X} base={:08X} actorRefs={} baseRefs={} outfit={:08X}",
+            actorID,
+            baseID,
+            actorRefs,
+            baseRefs,
+            outfitToRestore ? outfitToRestore->GetFormID() : 0);
+
+        if (!snapshotToRestore.empty()) {
+            ReequipSnapshot(actor, snapshotToRestore);
+        } else {
             ReequipDefaultOutfit(actor, outfitToRestore);
         }
     }
