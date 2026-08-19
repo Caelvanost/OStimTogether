@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.21.1**.
+Current development version: **0.21.2**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
@@ -145,10 +145,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-With `VERSION` set to `0.21.1`, the Core output is:
+With `VERSION` set to `0.21.2`, the Core output is:
 
 ```text
-dist/OStimTogether-v0.21.1-Core-Vortex.zip
+dist/OStimTogether-v0.21.2-Core-Vortex.zip
 ```
 
 For the optional OCum integration, produce/copy its ESP and PEX as documented under `optional/OCumIntegration/`, then run:
@@ -160,10 +160,12 @@ For the optional OCum integration, produce/copy its ESP and PEX as documented un
 The FOMOD output is:
 
 ```text
-dist/OStimTogether-v0.21.1-FOMOD.zip
+dist/OStimTogether-v0.21.2-FOMOD.zip
 ```
 
 Changing `VERSION` automatically changes both archive names, the CMake project version and the version reported by the DLL at startup. `build-fomod.ps1` also stamps the staged FOMOD `info.xml` with the same value.
+
+`release-fomod/` is a generated staging directory. It is recreated by `build-fomod.ps1`, is ignored by Git, and must not be committed.
 
 ## Migration note
 
