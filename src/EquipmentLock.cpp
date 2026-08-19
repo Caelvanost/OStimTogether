@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "EquipmentLock.h"
+#include "DefaultOutfitGuard.h"
 
 namespace OStimTogether
 {
@@ -60,6 +61,7 @@ namespace OStimTogether
             _manualTarget = 0;
             _threadTargets.clear();
             _ostimRefCounts.clear();
+            _primaryThreadByActor.clear();
         }
 
         if (_worker.joinable()) {
@@ -182,6 +184,7 @@ namespace OStimTogether
         }
 
         const auto id = actor->GetFormID();
+        std::optional<std::int32_t> previousPrimary;
 
         {
             std::scoped_lock lock(_targetMutex);
@@ -191,14 +194,21 @@ namespace OStimTogether
                 return;
             }
 
+            if (const auto it = _primaryThreadByActor.find(id);
+                it != _primaryThreadByActor.end()) {
+                previousPrimary = it->second;
+            }
+
+            _primaryThreadByActor[id] = threadID;
             ++_ostimRefCounts[id];
         }
 
         SKSE::log::info(
-            "OStim auto-lock ON thread={} actor={:08X} ({})",
+            "OStim auto-lock ON thread={} actor={:08X} ({}) primaryPrevious={}",
             threadID,
             id,
-            actor->GetDisplayFullName());
+            actor->GetDisplayFullName(),
+            previousPrimary ? std::to_string(*previousPrimary) : "none");
 
         if (_config.debugNotifications) {
             RE::DebugNotification(
@@ -210,6 +220,7 @@ namespace OStimTogether
         std::int32_t threadID)
     {
         std::vector<RE::FormID> released;
+        std::vector<RE::FormID> forceReleased;
 
         {
             std::scoped_lock lock(_targetMutex);
@@ -219,21 +230,50 @@ namespace OStimTogether
                 return;
             }
 
-            for (const auto id : it->second) {
-                auto countIt = _ostimRefCounts.find(id);
-                if (countIt == _ostimRefCounts.end()) {
+            const auto actorsInStoppedThread = it->second;
+
+            for (const auto id : actorsInStoppedThread) {
+                const auto primaryIt = _primaryThreadByActor.find(id);
+                const bool primaryStop =
+                    primaryIt != _primaryThreadByActor.end() &&
+                    primaryIt->second == threadID;
+
+                if (primaryStop) {
+                    // The newest thread for this NPC is the actual scene in
+                    // the observed OStim startup sequence. If it ends while
+                    // an older setup thread remains, purge all of those stale
+                    // references so equipment/outfit cleanup cannot be held
+                    // hostage by a missing auxiliary STOP callback.
+                    for (auto threadIt = _threadTargets.begin();
+                         threadIt != _threadTargets.end();) {
+                        threadIt->second.erase(id);
+                        if (threadIt->second.empty()) {
+                            threadIt = _threadTargets.erase(threadIt);
+                        } else {
+                            ++threadIt;
+                        }
+                    }
+
+                    _ostimRefCounts.erase(id);
+                    _primaryThreadByActor.erase(id);
+                    forceReleased.push_back(id);
                     continue;
                 }
 
-                if (countIt->second > 1) {
-                    --countIt->second;
-                } else {
-                    _ostimRefCounts.erase(countIt);
-                    released.push_back(id);
+                auto countIt = _ostimRefCounts.find(id);
+                if (countIt != _ostimRefCounts.end()) {
+                    if (countIt->second > 1) {
+                        --countIt->second;
+                    } else {
+                        _ostimRefCounts.erase(countIt);
+                        released.push_back(id);
+                        _primaryThreadByActor.erase(id);
+                    }
                 }
             }
 
-            _threadTargets.erase(it);
+            // The entry may already have been erased by primary cleanup.
+            _threadTargets.erase(threadID);
         }
 
         for (const auto id : released) {
@@ -243,7 +283,28 @@ namespace OStimTogether
                 id);
         }
 
-        if (!released.empty() && _config.debugNotifications) {
+        for (const auto id : forceReleased) {
+            auto* actor = ResolveActor(id);
+
+            SKSE::log::info(
+                "OStim auto-lock PRIMARY STOP actor={:08X} thread={} cleanup=all-threads",
+                id,
+                threadID);
+
+            if (actor) {
+                actor->StopTranslation();
+
+                DefaultOutfitGuard::GetSingleton()
+                    .ForceReleaseActor(actor);
+
+                SKSE::log::info(
+                    "OStim NPC POST-STOP RELEASE actor={:08X} stopTranslation=1 outfitForce=1",
+                    id);
+            }
+        }
+
+        if ((!released.empty() || !forceReleased.empty()) &&
+            _config.debugNotifications) {
             RE::DebugNotification(
                 "OStim Together: verrou OStim relache");
         }
@@ -274,6 +335,7 @@ namespace OStimTogether
             }
 
             _ostimRefCounts.erase(actorID);
+            _primaryThreadByActor.erase(actorID);
         }
 
         if (!removedThreads.empty()) {
@@ -297,6 +359,7 @@ namespace OStimTogether
         std::scoped_lock lock(_targetMutex);
         _threadTargets.clear();
         _ostimRefCounts.clear();
+        _primaryThreadByActor.clear();
 
         SKSE::log::info(
             "All automatic OStim targets cleared");
