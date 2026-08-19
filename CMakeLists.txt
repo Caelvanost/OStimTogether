@@ -25,8 +25,6 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/DefaultOutfitGuard.h
         src/NetworkProbe.cpp
         src/NetworkProbe.h
-        src/StrServerDiscovery.cpp
-        src/StrServerDiscovery.h
         src/STRPMApi.h
         src/STRPMTransport.cpp
         src/STRPMTransport.h
@@ -71,5 +69,4 @@ target_compile_definitions(${PROJECT_NAME}
         NOMINMAX
 )
 
-
-target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 version bcrypt)
+target_link_libraries(${PROJECT_NAME} PRIVATE version)
