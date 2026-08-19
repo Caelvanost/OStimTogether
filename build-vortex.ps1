@@ -10,6 +10,16 @@ $Build = Join-Path $Root "build"
 $Package = Join-Path $Root "package"
 $Plugins = Join-Path $Package "Data\SKSE\Plugins"
 $Dist = Join-Path $Root "dist"
+$VersionFile = Join-Path $Root "VERSION"
+
+if (-not (Test-Path $VersionFile)) {
+    throw "VERSION introuvable: $VersionFile"
+}
+
+$Version = (Get-Content $VersionFile -Raw).Trim()
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "VERSION invalide: '$Version'"
+}
 
 if (-not $VcpkgRoot) {
     throw "VCPKG_ROOT n'est pas defini."
@@ -83,7 +93,7 @@ New-Item `
     -Path $Dist | Out-Null
 
 $zip =
-    Join-Path $Dist "OStimTogether-v0.20.1-Core-Vortex.zip"
+    Join-Path $Dist "OStimTogether-v$Version-Core-Vortex.zip"
 
 if (Test-Path $zip) {
     Remove-Item $zip -Force
@@ -96,7 +106,7 @@ Compress-Archive `
 
 Write-Host ""
 Write-Host `
-    "OK - package Vortex cree :" `
+    "OK - OStim Together v$Version package Vortex cree :" `
     -ForegroundColor Green
 
 Write-Host $zip
