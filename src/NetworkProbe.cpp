@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "NetworkProbe.h"
+#include "STRPMTransport.h"
 #include "UdpTransport.h"
 #include "OStimBridge.h"
 
@@ -8,6 +9,18 @@
 
 namespace OStimTogether
 {
+    namespace
+    {
+        void SendScenePayload(std::string_view payload)
+        {
+            if (STRPMTransport::GetSingleton().Send(payload)) {
+                return;
+            }
+
+            UdpTransport::GetSingleton().Send(payload);
+        }
+    }
+
     NetworkProbe& NetworkProbe::GetSingleton()
     {
         static NetworkProbe instance;
@@ -197,14 +210,6 @@ namespace OStimTogether
         std::uint32_t blockedFurnitureCount = 0;
         std::uint32_t ostimOwnedCount = 0;
 
-        // The furniture was selected before Thread::initContinue() sends
-        // the START event. OStim 7.4c already did:
-        //
-        //   furniture.disableUse(); // SetActivationBlocked(true)
-        //   furniture.setPrivate(); // owner = OStim empty faction
-        //
-        // Search around the actual local player, NOT our reconstructed
-        // scene center (which is precisely what is wrong on furniture START).
         constexpr float kSearchRadius =
             1024.0F;
 
@@ -412,7 +417,7 @@ namespace OStimTogether
             haveCenter ? 1 : 0,
             furniture.IsFinite() ? 1 : 0);
 
-        UdpTransport::GetSingleton().Send(payload);
+        SendScenePayload(payload);
     }
 
     void NetworkProbe::SceneNode(OStim::Thread* thread)
@@ -461,7 +466,7 @@ namespace OStimTogether
             "OSTNET|v1|{} centerValid={}",
             payload,
             haveCenter ? 1 : 0);
-        UdpTransport::GetSingleton().Send(payload);
+        SendScenePayload(payload);
     }
 
     void NetworkProbe::SceneStop(OStim::Thread* thread)
@@ -480,7 +485,7 @@ namespace OStimTogether
                 BuildActorList(thread));
 
         SKSE::log::info("OSTNET|v1|{}", payload);
-        UdpTransport::GetSingleton().Send(payload);
+        SendScenePayload(payload);
 
         std::scoped_lock lock(_mutex);
         _startedThreads.erase(threadID);
@@ -514,6 +519,6 @@ namespace OStimTogether
                 speed);
 
         SKSE::log::info("OSTNET|v1|{}", payload);
-        UdpTransport::GetSingleton().Send(payload);
+        SendScenePayload(payload);
     }
 }
