@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" OST_VERSION)
+string(STRIP "${OST_VERSION}" OST_VERSION)
+
 project(
     OStimTogether
-    VERSION 0.20.1
+    VERSION ${OST_VERSION}
     LANGUAGES CXX
 )
 
@@ -65,6 +68,7 @@ target_compile_definitions(${PROJECT_NAME}
     PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
+        OSTIM_TOGETHER_VERSION="${OST_VERSION}"
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE version)
