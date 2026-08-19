@@ -6,6 +6,7 @@
 #include "Input.h"
 #include "OStimBridge.h"
 #include "RaceMenuOverlayBridge.h"
+#include "STRPMTransport.h"
 #include "UdpTransport.h"
 #include "VisualKeepAlive.h"
 
@@ -65,6 +66,13 @@ namespace
             OStimTogether::EquipmentLock::
                 GetSingleton().Start();
 
+            // STRPM is the preferred transport on the strpm development
+            // branch. Keep the legacy UDP stack alive during migration so
+            // current LAN/Internet-relay and addon behavior remains usable
+            // while individual send paths are moved to STRPM.
+            OStimTogether::STRPMTransport::
+                GetSingleton().Start();
+
             OStimTogether::UdpTransport::
                 GetSingleton().Start();
 
@@ -98,7 +106,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     SKSE::Init(skse);
 
     SKSE::log::info(
-        "OStim Together v0.20.1 loading");
+        "OStim Together v0.20.1-strpm loading");
 
     auto* messaging =
         SKSE::GetMessagingInterface();
