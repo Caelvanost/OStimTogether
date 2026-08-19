@@ -292,13 +292,15 @@ namespace OStimTogether
                 threadID);
 
             if (actor) {
-                actor->StopTranslation();
-
+                // CommonLibSSE-NG does not expose Actor::StopTranslation().
+                // Purging every stale OStim lock/reference is the safe
+                // ownership handoff here; avoid guessing at animation or
+                // movement APIs that could disturb the NPC state.
                 DefaultOutfitGuard::GetSingleton()
                     .ForceReleaseActor(actor);
 
                 SKSE::log::info(
-                    "OStim NPC POST-STOP RELEASE actor={:08X} stopTranslation=1 outfitForce=1",
+                    "OStim NPC POST-STOP RELEASE actor={:08X} staleThreadsPurged=1 outfitForce=1",
                     id);
             }
         }
