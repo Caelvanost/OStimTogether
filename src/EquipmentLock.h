@@ -54,5 +54,15 @@ namespace OStimTogether
             RE::FormID,
             std::uint32_t
         > _ostimRefCounts;
+
+        // OStim can create a short-lived one-actor setup thread immediately
+        // before the real multi-actor scene. The newest thread that registers
+        // an NPC is treated as authoritative for cleanup. If it ends while an
+        // older auxiliary thread remains orphaned, purge every stale ref for
+        // that actor instead of leaving equipment/outfit locks behind.
+        std::unordered_map<
+            RE::FormID,
+            std::int32_t
+        > _primaryThreadByActor;
     };
 }
