@@ -28,7 +28,6 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/STRPMApi.h
         src/STRPMTransport.cpp
         src/STRPMTransport.h
-        src/UdpTransport.cpp
         src/UdpTransport.h
         src/ActorResolverSTRPM.cpp
         src/ActorResolver.h
