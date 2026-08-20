@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.21.2**.
+Current development version: **0.21.3**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
@@ -53,7 +53,8 @@ When STRPM is unavailable or not connected, OStim Together logs the failure and 
 - equipment/outfit protection that avoids mutating dynamic STR player bases;
 - RaceMenu overlay registration, persistence, live-property application, and OverlayFix-aware un-culling;
 - generic addon synchronization through the `ostimtogether_addon` ModEvent;
-- optional OCum Ascended synchronization for marked RaceMenu overlays and vaginal/anal equip objects;
+- optional OCum Ascended synchronization for marked RaceMenu overlays and OCum 3D equip objects;
+- bounded, generation-guarded retries for remote OCum 3D equip objects when their state arrives before the mirrored OStim actor is fully registered;
 - OStim Standalone 7.4c and 7.5b graph-layout compatibility inherited from the previous codebase.
 
 ## STRPluginMessagingAPI requirement
@@ -108,7 +109,9 @@ The optional integration lives in:
 optional/OCumIntegration/
 ```
 
-It listens to `ocum_applied_cum`, synchronizes RaceMenu textures containing `CumOverlays`, and mirrors the actual `ocumvagmesh` / `ocumanmesh` equipped state.
+It listens to `ocum_applied_cum`, synchronizes RaceMenu textures containing `CumOverlays`, and mirrors OCum 3D equip-object state.
+
+On a receiving STR client, an OCum object-state packet can arrive a few frames before OStim has fully registered the remote proxy in its mirrored thread. OStim Together therefore retries a newly changed object state for a short bounded window. Retries are guarded by a per-actor/object generation so an older state cannot override a newer one.
 
 The FOMOD layout is:
 
@@ -145,10 +148,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-With `VERSION` set to `0.21.2`, the Core output is:
+With `VERSION` set to `0.21.3`, the Core output is:
 
 ```text
-dist/OStimTogether-v0.21.2-Core-Vortex.zip
+dist/OStimTogether-v0.21.3-Core-Vortex.zip
 ```
 
 For the optional OCum integration, produce/copy its ESP and PEX as documented under `optional/OCumIntegration/`, then run:
@@ -160,7 +163,7 @@ For the optional OCum integration, produce/copy its ESP and PEX as documented un
 The FOMOD output is:
 
 ```text
-dist/OStimTogether-v0.21.2-FOMOD.zip
+dist/OStimTogether-v0.21.3-FOMOD.zip
 ```
 
 Changing `VERSION` automatically changes both archive names, the CMake project version and the version reported by the DLL at startup. `build-fomod.ps1` also stamps the staged FOMOD `info.xml` with the same value.
