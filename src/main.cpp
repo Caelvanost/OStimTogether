@@ -1,6 +1,7 @@
 #include "PCH.h"
 
 #include "AddonBridge.h"
+#include "AddonStateRepair.h"
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
 #include "Input.h"
@@ -58,6 +59,9 @@ namespace
                 GetSingleton().Initialize();
 
             OStimTogether::MirrorUndressRepair::
+                GetSingleton().Initialize();
+
+            OStimTogether::AddonStateRepair::
                 GetSingleton().Initialize();
             break;
 
