@@ -123,6 +123,59 @@ namespace OStimTogether
             return result;
         }
 
+        // OStim Thread interface v3 (7.5b) exposes the exact furniture
+        // reference owned by this thread. Prefer it over every heuristic:
+        // the player's gameplay RE::Actor position can still be hundreds of
+        // units from the rendered furniture scene when START is emitted.
+        // Scanning blocked references and comparing them with that actor
+        // position therefore rejected a perfectly valid bench in 0.21.3.
+        if (OStimBridge::GetSingleton().SupportsThreadFurniture()) {
+            auto* exact =
+                static_cast<RE::TESObjectREFR*>(
+                    thread->getFurnitureObject());
+
+            if (!exact) {
+                SKSE::log::info(
+                    "OSTNET FURNITURE THREAD sender node={} interfaceV3=1 furniture=none",
+                    GetNodeID(thread));
+                return result;
+            }
+
+            auto* base = exact->GetBaseObject();
+            if (!base || !base->As<RE::TESFurniture>()) {
+                SKSE::log::warn(
+                    "OSTNET FURNITURE THREAD sender node={} ref={:08X} invalid-base; furniture=none",
+                    GetNodeID(thread),
+                    exact->GetFormID());
+                return result;
+            }
+
+            const auto pos = exact->GetPosition();
+
+            result.referenceFormID = exact->GetFormID();
+            result.baseFormID = base->GetFormID();
+            result.x = pos.x;
+            result.y = pos.y;
+            result.z = pos.z;
+            result.r = exact->GetAngleZ();
+            result.valid = true;
+
+            SKSE::log::info(
+                "OSTNET FURNITURE THREAD EXACT node={} ref={:08X} base={:08X} name=\"{}\" pos=({:.3f},{:.3f},{:.3f},{:.5f}) interfaceV3=1",
+                GetNodeID(thread),
+                result.referenceFormID,
+                result.baseFormID,
+                exact->GetName(),
+                result.x,
+                result.y,
+                result.z,
+                result.r);
+
+            return result;
+        }
+
+        // Compatibility fallback for OStim 7.4c / interface v1, which does
+        // not expose getFurnitureObject().
         RE::Actor* referenceActor = nullptr;
 
         const auto actorCount =
@@ -407,13 +460,12 @@ namespace OStimTogether
             FindLockedSceneFurniture(
                 thread);
 
-        // IsActivationBlocked()+OStim ownership alone is not enough to prove
-        // that a blocked furniture reference belongs to THIS thread. OStim can
-        // leave another active/helper thread's furniture blocked nearby. The
-        // 0.21.0 test captured such a stale table 332 units away from the real
-        // scene center. A genuine thread furniture anchor and OStim's computed
-        // scene center should remain spatially close even with JSON offsets.
-        if (haveCenter && furniture.IsFinite()) {
+        // Only the 7.4c heuristic needs a stale-reference distance guard.
+        // OStim v3 directly tells us which furniture belongs to this thread;
+        // rejecting that authoritative reference because the gameplay Actor
+        // has not yet moved to it recreates the bench-start bug from 0.21.3.
+        if (!OStimBridge::GetSingleton().SupportsThreadFurniture() &&
+            haveCenter && furniture.IsFinite()) {
             const float dx = furniture.x - center.x;
             const float dy = furniture.y - center.y;
             const float dz = furniture.z - center.z;
