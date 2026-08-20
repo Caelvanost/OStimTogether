@@ -37,6 +37,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/VisualKeepAlive.h
         src/PapyrusAnimationBridge.cpp
         src/PapyrusAnimationBridge.h
+        src/SKEEOverlayRefresh.cpp
+        src/SKEEOverlayRefresh.h
         src/Input.cpp
         src/Input.h
         src/OStimBridge.cpp
