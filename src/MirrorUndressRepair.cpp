@@ -2,6 +2,8 @@
 #include "MirrorUndressRepair.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
 
+#include <array>
+
 namespace OStimTogether
 {
     namespace
@@ -27,6 +29,24 @@ namespace OStimTogether
             RE::BGSBipedObjectForm::BipedObjectSlot slot)
         {
             return actor && actor->GetWornArmor(slot, false) != nullptr;
+        }
+
+        void QueueRepair(
+            std::int32_t threadID,
+            std::chrono::milliseconds delay)
+        {
+            std::thread([threadID, delay]() {
+                std::this_thread::sleep_for(delay);
+
+                auto* tasks = SKSE::GetTaskInterface();
+                if (!tasks) {
+                    return;
+                }
+
+                tasks->AddTask([threadID]() {
+                    MirrorUndressRepair::GetSingleton().Repair(threadID);
+                });
+            }).detach();
         }
     }
 
@@ -115,21 +135,19 @@ namespace OStimTogether
 
         const auto threadID = thread->getThreadID();
 
-        // OStim's START listener runs before the initial ChangeNode but after
-        // ThreadActor initialization. Give the native undress/equipment tasks
-        // a short chance to settle, then repair only a partial strip.
-        std::thread([threadID]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(180));
+        // OStim's START callback precedes some of its initial equipment work.
+        // Use a small bounded set of checks so a body strip that finishes
+        // after the first sample can still expose a residual helmet/glove/boot
+        // regression. Fully clothed scenes remain untouched on every pass.
+        constexpr std::array delays{
+            std::chrono::milliseconds(180),
+            std::chrono::milliseconds(600),
+            std::chrono::milliseconds(1200)
+        };
 
-            auto* tasks = SKSE::GetTaskInterface();
-            if (!tasks) {
-                return;
-            }
-
-            tasks->AddTask([threadID]() {
-                MirrorUndressRepair::GetSingleton().Repair(threadID);
-            });
-        }).detach();
+        for (const auto delay : delays) {
+            QueueRepair(threadID, delay);
+        }
     }
 
     void MirrorUndressRepair::Repair(std::int32_t threadID)
