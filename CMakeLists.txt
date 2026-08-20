@@ -20,6 +20,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/main.cpp
         src/AddonBridge.cpp
         src/AddonBridge.h
+        src/AddonStateRepair.cpp
+        src/AddonStateRepair.h
         src/Config.cpp
         src/Config.h
         src/EquipmentLock.cpp
