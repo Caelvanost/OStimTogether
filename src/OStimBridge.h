@@ -24,6 +24,11 @@ namespace OStimTogether
             return _threads != nullptr;
         }
 
+        bool SupportsThreadFurniture() const noexcept
+        {
+            return _threadInterfaceVersion >= 3;
+        }
+
         // Sender-side: reconstruct the authoritative world-space
         // center used by OStim from the already aligned local player.
         bool TryComputeSceneCenter(
