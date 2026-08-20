@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "PapyrusAnimationBridge.h"
+#include "SKEEOverlayRefresh.h"
 
 #include <RE/I/IFunctionArguments.h>
 #include <RE/I/IStackCallbackFunctor.h>
@@ -39,18 +40,8 @@ namespace OStimTogether
                     return false;
                 }
 
-                // CommonLibSSE-NG 3.5.3 exposes:
-                //
-                //   Variable::Pack<T>(T&&)
-                //
-                // Because this operator is const, _reference and _eventName
-                // are const expressions here. Make mutable local copies and
-                // pass them as rvalues.
-                auto reference =
-                    _reference;
-
-                auto eventName =
-                    _eventName;
+                auto reference = _reference;
+                auto eventName = _eventName;
 
                 RE::BSScript::Variable refArg;
                 refArg.Pack<RE::TESObjectREFR*>(
@@ -60,12 +51,8 @@ namespace OStimTogether
                 eventArg.Pack<std::string>(
                     std::move(eventName));
 
-                dst.push_back(
-                    std::move(refArg));
-
-                dst.push_back(
-                    std::move(eventArg));
-
+                dst.push_back(std::move(refArg));
+                dst.push_back(std::move(eventArg));
                 return true;
             }
 
@@ -192,8 +179,7 @@ namespace OStimTogether
                 return false;
             }
 
-            auto* skyrimVM =
-                RE::SkyrimVM::GetSingleton();
+            auto* skyrimVM = RE::SkyrimVM::GetSingleton();
 
             if (!skyrimVM || !skyrimVM->impl) {
                 SKSE::log::error(
@@ -273,10 +259,8 @@ namespace OStimTogether
                                 return;
                             }
 
-                            auto* form =
-                                RE::TESForm::LookupByID(actorID);
-                            auto* actor =
-                                form ? form->As<RE::Actor>() : nullptr;
+                            auto* form = RE::TESForm::LookupByID(actorID);
+                            auto* actor = form ? form->As<RE::Actor>() : nullptr;
 
                             if (!actor) {
                                 SKSE::log::warn(
@@ -315,51 +299,35 @@ namespace OStimTogether
         return instance;
     }
 
-    bool PapyrusAnimationBridge::
-        SendForcedAnimationEvent(
-            RE::Actor* actor,
-            std::string_view eventName)
+    bool PapyrusAnimationBridge::SendForcedAnimationEvent(
+        RE::Actor* actor,
+        std::string_view eventName)
     {
-        if (!actor ||
-            eventName.empty()) {
+        if (!actor || eventName.empty()) {
             return false;
         }
 
-        auto* skyrimVM =
-            RE::SkyrimVM::GetSingleton();
+        auto* skyrimVM = RE::SkyrimVM::GetSingleton();
 
-        if (!skyrimVM ||
-            !skyrimVM->impl) {
+        if (!skyrimVM || !skyrimVM->impl) {
             SKSE::log::error(
                 "OSTNET PAPYRUS FORCE: SkyrimVM unavailable");
             return false;
         }
 
-        // DispatchStaticCall consumes the argument functor while preparing
-        // the VM call. Keep the argument object alive for the duration of
-        // DispatchStaticCall.
-        DebugAnimationArguments args(
-            actor,
-            eventName);
+        DebugAnimationArguments args(actor, eventName);
 
         RE::BSTSmartPointer<
-            RE::BSScript::IStackCallbackFunctor>
-            callback;
+            RE::BSScript::IStackCallbackFunctor> callback;
 
-        const RE::BSFixedString className(
-            "Debug");
+        const RE::BSFixedString className("Debug");
+        const RE::BSFixedString functionName("SendAnimationEvent");
 
-        const RE::BSFixedString functionName(
-            "SendAnimationEvent");
-
-        const bool dispatched =
-            skyrimVM->impl->DispatchStaticCall(
-                className,
-                functionName,
-                &args,
-                callback);
-
-        return dispatched;
+        return skyrimVM->impl->DispatchStaticCall(
+            className,
+            functionName,
+            &args,
+            callback);
     }
 
     bool PapyrusAnimationBridge::SetOStimObjectState(
@@ -392,6 +360,16 @@ namespace OStimTogether
             generation,
             changed ? 1 : 0,
             dispatched ? 1 : 0);
+
+        // Remote OCum sends its RaceMenu overlay packet immediately before
+        // its equip-object packet. On dynamic STR proxies SKEE can already
+        // have an overlay holder, so merely changing Body [OvlN] properties
+        // does not necessarily rebuild the geometry/material. Queueing the
+        // normal public AddOverlays path here rebuilds that existing holder
+        // after the freshly received overrides have been stored.
+        SKEEOverlayRefresh::Queue(
+            actor,
+            "ADDON-OBJECT");
 
         // OActor.EquipObject only succeeds once the actor is registered in an
         // active OStim thread. STRPM addon state can arrive a few frames before
