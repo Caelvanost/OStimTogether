@@ -5,6 +5,8 @@
 
 namespace OStim
 {
+    class FurnitureType;
+
     class Thread
     {
     public:
@@ -14,9 +16,14 @@ namespace OStim
         virtual ThreadActor* getActor(std::uint32_t position) = 0;
 
         // Exact public ABI v1 prefix shared by OStim 7.4c and 7.5b.
-        // OStim 7.5b appends ABI v3 furniture accessors after this prefix;
-        // none are needed by OStim Together.
         virtual void forEachThreadActor(void* visitor) = 0;
         virtual Node* getCurrentNode() = 0;
+
+        // Public ABI v3 additions exposed by OStim 7.5b. Call these only when
+        // ThreadInterface::GetVersion() reports >= 3; OStim 7.4c objects do
+        // not have these vtable entries.
+        virtual FurnitureType* getFurnitureType() = 0;
+        // Cast the returned pointer to RE::TESObjectREFR*.
+        virtual void* getFurnitureObject() = 0;
     };
 }
