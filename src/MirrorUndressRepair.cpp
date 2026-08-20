@@ -59,7 +59,7 @@ namespace OStimTogether
             OStim::InterfaceExchangeMessage::MESSAGE_TYPE,
             &exchange,
             sizeof(exchange),
-            "OStim");
+            nullptr);
 
         if (!dispatched || !exchange.interfaceMap) {
             SKSE::log::warn(
