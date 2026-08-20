@@ -39,6 +39,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/PapyrusAnimationBridge.h
         src/SKEEOverlayRefresh.cpp
         src/SKEEOverlayRefresh.h
+        src/MirrorUndressRepair.cpp
+        src/MirrorUndressRepair.h
         src/Input.cpp
         src/Input.h
         src/OStimBridge.cpp
