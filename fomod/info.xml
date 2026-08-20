@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.21.3</Version>
+  <Version>0.22.0</Version>
   <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI. OStim Together does not provide its own UDP transport. OCum Ascended support is an optional FOMOD component.</Description>
 </fomod>
