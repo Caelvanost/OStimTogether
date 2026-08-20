@@ -4,6 +4,7 @@
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
 #include "Input.h"
+#include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
 #include "RaceMenuOverlayBridge.h"
 #include "STRPMTransport.h"
@@ -54,6 +55,9 @@ namespace
                 GetSingleton().Initialize();
 
             OStimTogether::OStimBridge::
+                GetSingleton().Initialize();
+
+            OStimTogether::MirrorUndressRepair::
                 GetSingleton().Initialize();
             break;
 
