@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.22.0**.
+Current development version: **0.22.1**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
@@ -58,6 +58,10 @@ When STRPM is unavailable or not connected, OStim Together logs the failure and 
 - bounded, generation-guarded retries for remote OCum 3D equip objects when their state arrives before the mirrored OStim actor is fully registered;
 - cached remote addon state reapplication after OStim node changes so node/body rebuilds do not permanently remove synchronized addon visuals;
 - OStim Standalone 7.4c and 7.5b graph-layout compatibility inherited from the previous codebase.
+
+## 0.22.1 compile fix
+
+0.22.1 adjusts the mirror residual-armor probe for the CommonLibSSE-NG 3.5.3 API used by the project toolchain. `Actor::GetWornArmor` is called with the single slot argument exposed by that version.
 
 ## 0.22.0 synchronization repairs
 
@@ -196,10 +200,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-With `VERSION` set to `0.22.0`, the Core output is:
+With `VERSION` set to `0.22.1`, the Core output is:
 
 ```text
-dist/OStimTogether-v0.22.0-Core-Vortex.zip
+dist/OStimTogether-v0.22.1-Core-Vortex.zip
 ```
 
 For the optional OCum integration, produce/copy its ESP and PEX as documented under `optional/OCumIntegration/`, then run:
@@ -211,7 +215,7 @@ For the optional OCum integration, produce/copy its ESP and PEX as documented un
 The FOMOD output is:
 
 ```text
-dist/OStimTogether-v0.22.0-FOMOD.zip
+dist/OStimTogether-v0.22.1-FOMOD.zip
 ```
 
 Changing `VERSION` automatically changes both archive names, the CMake project version and the version reported by the DLL at startup. `build-fomod.ps1` also stamps the staged FOMOD `info.xml` with the same value.
