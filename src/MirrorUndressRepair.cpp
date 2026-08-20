@@ -30,24 +30,6 @@ namespace OStimTogether
         {
             return actor && actor->GetWornArmor(slot, false) != nullptr;
         }
-
-        void QueueRepair(
-            std::int32_t threadID,
-            std::chrono::milliseconds delay)
-        {
-            std::thread([threadID, delay]() {
-                std::this_thread::sleep_for(delay);
-
-                auto* tasks = SKSE::GetTaskInterface();
-                if (!tasks) {
-                    return;
-                }
-
-                tasks->AddTask([threadID]() {
-                    MirrorUndressRepair::GetSingleton().Repair(threadID);
-                });
-            }).detach();
-        }
     }
 
     MirrorUndressRepair& MirrorUndressRepair::GetSingleton()
@@ -146,7 +128,18 @@ namespace OStimTogether
         };
 
         for (const auto delay : delays) {
-            QueueRepair(threadID, delay);
+            std::thread([this, threadID, delay]() {
+                std::this_thread::sleep_for(delay);
+
+                auto* tasks = SKSE::GetTaskInterface();
+                if (!tasks) {
+                    return;
+                }
+
+                tasks->AddTask([this, threadID]() {
+                    Repair(threadID);
+                });
+            }).detach();
         }
     }
 
