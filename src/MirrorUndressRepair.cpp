@@ -28,7 +28,10 @@ namespace OStimTogether
             RE::Actor* actor,
             RE::BGSBipedObjectForm::BipedObjectSlot slot)
         {
-            return actor && actor->GetWornArmor(slot, false) != nullptr;
+            // CommonLibSSE-NG 3.5.3 exposes the Actor overload used by the
+            // project's Windows toolchain as GetWornArmor(slot). Do not pass
+            // the newer optional no-init argument here.
+            return actor && actor->GetWornArmor(slot) != nullptr;
         }
     }
 
