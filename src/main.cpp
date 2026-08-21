@@ -2,6 +2,7 @@
 
 #include "AddonBridge.h"
 #include "AddonStateRepair.h"
+#include "CoopSessionManager.h"
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
 #include "Input.h"
@@ -58,6 +59,9 @@ namespace
             OStimTogether::OStimBridge::
                 GetSingleton().Initialize();
 
+            OStimTogether::CoopSessionManager::
+                GetSingleton().Initialize();
+
             OStimTogether::MirrorUndressRepair::
                 GetSingleton().Initialize();
 
@@ -99,6 +103,9 @@ namespace
 
             OStimTogether::DefaultOutfitGuard::
                 GetSingleton().RestoreAll();
+
+            OStimTogether::CoopSessionManager::
+                GetSingleton().Reset();
 
             OStimTogether::OStimBridge::
                 GetSingleton().ResetRemoteState();
