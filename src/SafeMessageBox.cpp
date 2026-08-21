@@ -1,6 +1,8 @@
 #include "PCH.h"
 #include "SafeMessageBox.h"
 
+#include "OCumStateSync.h"
+
 #include <RE/B/BSTCreateFactoryManager.h>
 #include <RE/M/MessageBoxData.h>
 
@@ -17,8 +19,19 @@ namespace OStimTogether
 
             void Run(RE::IMessageBoxCallback::Message message) override
             {
+                const auto choice = static_cast<unsigned int>(message);
+
+                // Consent Accept is the ideal synchronization barrier for
+                // appearance state: emit the real local player's current OCum
+                // state before INVITE_RESPONSE is sent. STRPM reliable+ordered
+                // delivery guarantees the owner sees ADDON packets first.
+                if (choice == 0) {
+                    OCumStateSync::GetSingleton().SendLocalSnapshot(
+                        "consent-accept");
+                }
+
                 if (_callback) {
-                    _callback(static_cast<unsigned int>(message));
+                    _callback(choice);
                 }
             }
 
