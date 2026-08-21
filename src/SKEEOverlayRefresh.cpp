@@ -33,7 +33,10 @@ namespace OStimTogether::SKEEOverlayRefresh
                 IInterfaceMap* interfaceMap{ nullptr };
             };
 
-            // Only the public vtable prefix through AddOverlays is required.
+            // Public SKEE IOverlayInterface vtable prefix. In RaceMenu's
+            // implementation the boolean passed to AddOverlays controls
+            // immediate execution: false queues SKSETaskUpdateOverlays, true
+            // rebuilds synchronously on the current game thread.
             class IOverlayInterface : public IPluginInterface
             {
             public:
@@ -107,15 +110,17 @@ namespace OStimTogether::SKEEOverlayRefresh
                             const bool hadOverlays =
                                 overlay->HasOverlays(actor);
 
-                            // RaceMenu AddOverlays() inserts the actor into a
-                            // set and always queues QueueOverlayBuild(). Calling
-                            // it for an already-registered proxy therefore
-                            // refreshes geometry without deleting the holder or
-                            // any unrelated user overlays.
-                            overlay->AddOverlays(actor, false);
+                            // AddOverlays() uses a set internally, so invoking
+                            // it for an already registered proxy is safe. Run
+                            // the rebuild immediately on this game-thread task
+                            // instead of queueing another task behind OStim/STR
+                            // geometry work. RaceMenu's build copies the live
+                            // skin instance and reapplies stored node overrides
+                            // to each overlay shape.
+                            overlay->AddOverlays(actor, true);
 
                             SKSE::log::info(
-                                "OSTNET SKEE OVERLAY REBUILD reason={} phase={} actor={:08X} hadOverlays={} queued=1",
+                                "OSTNET SKEE OVERLAY REBUILD reason={} phase={} actor={:08X} hadOverlays={} immediate=1",
                                 reason,
                                 phase,
                                 actorID,
@@ -135,9 +140,9 @@ namespace OStimTogether::SKEEOverlayRefresh
         const auto actorID = actor->GetFormID();
         const std::string reasonCopy(reason);
 
-        // First pass lets the remote override packet finish storing its SKEE
-        // node properties. The second pass covers OStim/STR body rebuilds that
-        // replace the proxy geometry shortly afterwards.
+        // The packet path stores SKEE overrides before reaching this helper.
+        // Rebuild twice: once immediately after that store, then again after
+        // the short OStim/STR geometry-settle window.
         QueueOne(
             actorID,
             reasonCopy,
