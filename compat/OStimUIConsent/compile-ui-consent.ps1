@@ -18,10 +18,21 @@ if (-not (Test-Path $Compiler)) { throw "PapyrusCompiler.exe introuvable: $Compi
 if (-not (Test-Path $Flags)) { throw "TESV_Papyrus_Flags.flg introuvable: $Flags" }
 if (-not (Test-Path (Join-Path $SourceDir "OSKSE.psc"))) { throw "OSKSE.psc patch introuvable" }
 if (-not (Test-Path (Join-Path $SourceDir "OStimTogetherNative.psc"))) { throw "OStimTogetherNative.psc introuvable" }
-if (-not (Test-Path (Join-Path $StubDir "UIExtensions.psc"))) { throw "Stub UIExtensions.psc introuvable" }
-if (-not (Test-Path (Join-Path $StubDir "UIListMenu.psc"))) { throw "Stub UIListMenu.psc introuvable" }
-if (-not (Test-Path (Join-Path $StubDir "UIMenuBase.psc"))) { throw "Stub UIMenuBase.psc introuvable" }
-if (-not (Test-Path (Join-Path $StubDir "UITextEntryMenu.psc"))) { throw "Stub UITextEntryMenu.psc introuvable" }
+
+$RequiredStubs = @(
+    "UIExtensions.psc",
+    "UIListMenu.psc",
+    "UIMenuBase.psc",
+    "UITextEntryMenu.psc",
+    "OUtils.psc",
+    "OActorUtil.psc",
+    "OSexIntegrationMain.psc"
+)
+foreach ($Stub in $RequiredStubs) {
+    if (-not (Test-Path (Join-Path $StubDir $Stub))) {
+        throw "Stub de compilation introuvable: $Stub"
+    }
+}
 
 if (-not $OStimSourceDir) {
     $DefaultOStimSource = Join-Path $SkyrimDir "Data\Scripts\Source"
@@ -34,6 +45,10 @@ if (-not $OStimSourceDir -or -not (Test-Path $OStimSourceDir)) {
     throw "Sources Papyrus OStim introuvables. Passe -OStimSourceDir vers le dossier contenant les sources OStim."
 }
 
+# The compile-only stubs MUST precede the real OStim source directory. They
+# intentionally shadow OUtils/OActorUtil/OSexIntegrationMain so compiling the
+# small OSKSE patch cannot recursively pull OStim's bars and SkyUI widget tree.
+# Only OSKSE.pex and OStimTogetherNative.pex are emitted/packaged.
 $Includes = @(
     $SourceDir,
     $StubDir,
@@ -60,5 +75,5 @@ foreach ($Pex in @("OStimTogetherNative.pex", "OSKSE.pex")) {
 }
 
 Write-Host "OK - OStim UI consent patch compile dans $PackageScripts" -ForegroundColor Green
-Write-Host "UIExtensions: stubs de compilation integres au repo; aucune source UIExtensions externe requise." -ForegroundColor Green
+Write-Host "UIExtensions/OStim: stubs de compilation integres; les scripts reels ne sont pas recompiles." -ForegroundColor Green
 Write-Host "Le fichier OSKSE.pex doit gagner le conflit face a OStim pour suspendre Add Actor avant consentement." -ForegroundColor Yellow
