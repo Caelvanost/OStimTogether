@@ -2,6 +2,7 @@
 #include "Input.h"
 
 #include "Config.h"
+#include "CoopSessionManager.h"
 #include "EquipmentLock.h"
 
 namespace OStimTogether
@@ -47,6 +48,12 @@ namespace OStimTogether
             }
 
             const auto key = button->GetIDCode();
+
+            // Consent has priority only while an invitation is pending. With
+            // no pending invite, Y/N continue to behave exactly as normal.
+            if (CoopSessionManager::GetSingleton().HandleConsentKey(key)) {
+                continue;
+            }
 
             if (key == config.toggleKey) {
                 EquipmentLock::GetSingleton().ToggleCrosshairActor();
