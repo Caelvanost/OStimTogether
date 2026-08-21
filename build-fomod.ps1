@@ -9,6 +9,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CoreBuildScript = Join-Path $Root "build-vortex.ps1"
 $CorePackage = Join-Path $Root "package"
 $OptionalPackage = Join-Path $Root "optional\OCumIntegration\package"
+$UIConsentPackage = Join-Path $Root "compat\OStimUIConsent\package"
 $FomodSource = Join-Path $Root "fomod"
 $Stage = Join-Path $Root "release-fomod"
 $Dist = Join-Path $Root "dist"
@@ -40,19 +41,28 @@ if (-not (Test-Path $OptionalPex)) {
     throw "PEX OCum optionnel manquant: $OptionalPex`nCompile Data\Scripts\Source\OStimTogetherOCum.psc puis copie le PEX dans optional\OCumIntegration\package\Data\Scripts."
 }
 
+$UIConsentOSKSE = Join-Path $UIConsentPackage "Data\Scripts\OSKSE.pex"
+$UIConsentNative = Join-Path $UIConsentPackage "Data\Scripts\OStimTogetherNative.pex"
+if (-not (Test-Path $UIConsentOSKSE) -or -not (Test-Path $UIConsentNative)) {
+    throw "Patch Papyrus Add Actor non compile.`nExecute compat\OStimUIConsent\compile-ui-consent.ps1 avec les chemins de sources OStim/UIExtensions, puis relance build-fomod.ps1."
+}
+
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 $CoreStage = Join-Path $Stage "00 Core"
 $OCumStage = Join-Path $Stage "10 OCum Ascended"
+$UIConsentStage = Join-Path $Stage "20 OStim Add Actor Consent Gate"
 $FomodStage = Join-Path $Stage "fomod"
 
 New-Item -ItemType Directory -Force -Path $CoreStage | Out-Null
 New-Item -ItemType Directory -Force -Path $OCumStage | Out-Null
+New-Item -ItemType Directory -Force -Path $UIConsentStage | Out-Null
 New-Item -ItemType Directory -Force -Path $FomodStage | Out-Null
 
 Copy-Item (Join-Path $CorePackage "*") $CoreStage -Recurse -Force
 Copy-Item (Join-Path $OptionalPackage "*") $OCumStage -Recurse -Force
+Copy-Item (Join-Path $UIConsentPackage "*") $UIConsentStage -Recurse -Force
 Copy-Item (Join-Path $FomodSource "*") $FomodStage -Recurse -Force
 
 $StagedInfo = Join-Path $FomodStage "info.xml"
