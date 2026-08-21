@@ -18,5 +18,10 @@ namespace OStimTogether
 
     private:
         InputHandler() = default;
+
+        void EnsureBeforeOStim();
+        static bool AddressInsideModule(const void* address, HMODULE module);
+
+        std::optional<std::uint32_t> _suppressedSceneStartKey;
     };
 }
