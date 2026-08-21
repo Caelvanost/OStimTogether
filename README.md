@@ -1,12 +1,12 @@
 # OStim Together
 
-Current development version: **0.22.1**.
+Current development version: **0.22.2**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
 Versioning rule used by this project:
 
-- small fixes/adjustments increment the third number (`0.22.0` -> `0.22.1`);
+- small fixes/adjustments increment the third number (`0.22.1` -> `0.22.2`);
 - larger feature or architecture changes increment the second number and reset the third (`0.22.x` -> `0.23.0`).
 
 OStim Together is an SKSE plugin that synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch keeps the existing OStim Together scene, positioning, furniture, RaceMenu and optional OCum functionality, but delegates multiplayer transport and remote-player identity to **STRPluginMessagingAPI**.
@@ -51,13 +51,34 @@ When STRPM is unavailable or not connected, OStim Together logs the failure and 
 - delayed authoritative startup for Wall scenes whose final OStim anchor settles after scene creation;
 - active-scene STR proxy pose stabilization using the authoritative OStim actor pose;
 - equipment/outfit protection that avoids mutating dynamic STR player bases;
-- targeted mirror undress repair for the case where OStim has stripped the local player's body but leaves a residual helmet/gloves/boots equipped;
+- targeted mirror residual-apparel repair after OStim has stripped the body, including secondary head/hair/circlet and limb slots, with restoration after scene stop;
 - RaceMenu overlay registration, persistence, live-property application, OverlayFix-aware un-culling, and bounded SKEE geometry rebuilds for dynamic STR proxies;
 - generic addon synchronization through the `ostimtogether_addon` ModEvent;
 - optional OCum Ascended synchronization for marked RaceMenu overlays and OCum 3D equip objects;
 - bounded, generation-guarded retries for remote OCum 3D equip objects when their state arrives before the mirrored OStim actor is fully registered;
 - cached remote addon state reapplication after OStim node changes so node/body rebuilds do not permanently remove synchronized addon visuals;
 - OStim Standalone 7.4c and 7.5b graph-layout compatibility inherited from the previous codebase.
+
+## 0.22.2 residual apparel and overlay materialization fix
+
+The 0.22.1 runtime logs showed that the receiving player's body could already be stripped while a visually remaining helmet was not reported through the simple `Head` probe. 0.22.2 now enumerates the actual worn armor inventory and logs each worn item's full biped slot mask. Once OStim has already removed the body slot, residual apparel on standard head/hair/circlet/ears, hands/forearms, and feet/calves slots is given one final OStim undress pass and then forcibly unequipped if it remains. Only items removed by this repair are recorded, and they are restored after OStim finishes its normal scene-stop redress path.
+
+Expected diagnostics include:
+
+```text
+OSTNET MIRROR WORN thread=... actor=00000014 item=... slots=0x........ residual=1
+OSTNET MIRROR UNDRESS REPAIR thread=... action=OStim-undress+verify
+OSTNET MIRROR RESIDUAL UNEQUIP thread=... actor=00000014 item=... slots=0x........
+OSTNET MIRROR RESIDUAL RESTORE thread=... actor=00000014 item=...
+```
+
+For RaceMenu overlays, the receiving proxy already had a valid SKEE overlay holder and the synchronized OCum properties were reaching live body overlay materials. The previous refresh still queued RaceMenu's overlay rebuild asynchronously. 0.22.2 now executes `AddOverlays(actor, true)` from the scheduled game-thread refresh, forcing RaceMenu to rebuild/relink the registered proxy overlay geometry immediately and reapply its stored node overrides against the current OStim/STR body geometry.
+
+Expected diagnostics now use:
+
+```text
+OSTNET SKEE OVERLAY REBUILD reason=ADDON-OBJECT phase=T80 actor=... hadOverlays=1 immediate=1
+```
 
 ## 0.22.1 compile fix
 
@@ -81,24 +102,17 @@ OSTNET FURNITURE THREAD EXACT node=... ref=... base=... interfaceV3=1
 
 A mirrored scene can occasionally leave one primary armor piece equipped on the receiving player's real local character even though OStim already stripped the body. This can also keep unrelated visual systems such as IED in an armored/display state.
 
-OStim Together now checks the receiving local player shortly after a synchronized multi-player OStim thread starts. If the body is already stripped but a helmet, gloves/forearms or boots/calves remain, the repair calls OStim's own `ThreadActor::undress()` path. Fully clothed scenes are not force-undressed.
-
-Expected diagnostics:
-
-```text
-MirrorUndressRepair READY threadsVersion=3
-OSTNET MIRROR UNDRESS REPAIR thread=... actor=00000014 ... action=OStim-undress
-```
+OStim Together checks the receiving local player shortly after a synchronized multi-player OStim thread starts. Fully clothed scenes are not force-undressed.
 
 ### Remote addon lifecycle repair
 
 OStim can rebuild actor geometry and change GraphActor equip-object requirements during a node change. A synchronized OCum mesh or RaceMenu overlay that was correct immediately after receipt can therefore disappear later in the same scene.
 
-OStim Together now:
+OStim Together:
 
 - reapplies cached remote addon state after OStim node changes;
 - keeps object-state retries generation-guarded so stale state cannot overwrite a newer state;
-- queues bounded SKEE `AddOverlays()` rebuilds after remote addon properties have been stored, allowing an already-existing dynamic proxy overlay holder to rebuild its live geometry/materials without deleting unrelated overlays.
+- rebuilds SKEE overlay geometry after remote addon properties have been stored, allowing an already-existing dynamic proxy overlay holder to relink to current body geometry without deleting unrelated overlays.
 
 Expected diagnostics include:
 
@@ -106,7 +120,6 @@ Expected diagnostics include:
 AddonStateRepair READY threadsVersion=3
 OSTNET ADDON NODE REPAIR thread=... node=...
 OSTNET ADDON STATE REAPPLY reason=OSTIM-NODE phase=T250 ...
-OSTNET SKEE OVERLAY REBUILD reason=ADDON-OBJECT phase=T80 ... queued=1
 ```
 
 ## STRPluginMessagingAPI requirement
@@ -200,10 +213,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-With `VERSION` set to `0.22.1`, the Core output is:
+With `VERSION` set to `0.22.2`, the Core output is:
 
 ```text
-dist/OStimTogether-v0.22.1-Core-Vortex.zip
+dist/OStimTogether-v0.22.2-Core-Vortex.zip
 ```
 
 For the optional OCum integration, produce/copy its ESP and PEX as documented under `optional/OCumIntegration/`, then run:
@@ -215,7 +228,7 @@ For the optional OCum integration, produce/copy its ESP and PEX as documented un
 The FOMOD output is:
 
 ```text
-dist/OStimTogether-v0.22.1-FOMOD.zip
+dist/OStimTogether-v0.22.2-FOMOD.zip
 ```
 
 Changing `VERSION` automatically changes both archive names, the CMake project version and the version reported by the DLL at startup. `build-fomod.ps1` also stamps the staged FOMOD `info.xml` with the same value.
