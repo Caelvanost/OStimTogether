@@ -1,12 +1,12 @@
 # OStim Together
 
-Current development version: **0.23.1**.
+Current development version: **0.23.2**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
 Versioning rule used by this project:
 
-- small fixes/adjustments increment the third number (`0.23.0` -> `0.23.1`);
+- small fixes/adjustments increment the third number (`0.23.1` -> `0.23.2`);
 - larger feature or architecture changes increment the second number and reset the third (`0.23.x` -> `0.24.0`).
 
 OStim Together is an SKSE plugin that synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch delegates multiplayer transport and remote-player identity to **STRPluginMessagingAPI**.
@@ -62,6 +62,26 @@ When STRPM is unavailable or not connected, OStim Together drops multiplayer syn
 - bounded, generation-guarded retries for remote OCum 3D equip objects;
 - cached remote addon state reapplication after OStim node changes;
 - OStim Standalone 7.4c and 7.5b graph-layout compatibility.
+
+## 0.23.2 cooperative speed callback deadlock fix
+
+0.23.1 introduced the non-modal consent path successfully, but its new cooperative speed listener called OStim ModAPI `GetCurrentSpeed()` directly from OStim's speed-change callback. OStim can still hold its internal thread lock while notifying speed listeners, so re-entering the ModAPI from that callback can deadlock the game. A local Player/NPC scene exposed the regression immediately: the log ended after the first OStim SPEED event, before any network START or consent traffic.
+
+0.23.2 applies the same callback-safety rule already used by `OStimBridge::HandleSpeed()`:
+
+- ordinary local, NPC, and auxiliary threads are rejected from the cooperative speed path **before any OStim ModAPI call**;
+- cooperative mirror speed events only enqueue a Skyrim task;
+- `GetCurrentSpeed()` runs later, after the OStim listener has returned and its internal lock has unwound;
+- the existing speed echo-suppression and `CONTROL_SPEED` routing then run from that deferred task;
+- the mirror START callback no longer calls `GetCurrentSpeed()` either.
+
+Expected cooperative diagnostic after a participant changes speed:
+
+```text
+OSTNET COOP CONTROL SPEED TX DEFERRED localThread=... ownerConnection=... ownerThread=... speed=...
+```
+
+A normal local Player/NPC scene should produce no cooperative speed-control log and must remain entirely on OStim's normal local path.
 
 ## 0.23.1 non-modal consent / startup-freeze fix
 
@@ -234,10 +254,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-With `VERSION` set to `0.23.1`, the Core output is:
+With `VERSION` set to `0.23.2`, the Core output is:
 
 ```text
-dist/OStimTogether-v0.23.1-Core-Vortex.zip
+dist/OStimTogether-v0.23.2-Core-Vortex.zip
 ```
 
 For the optional OCum integration, produce/copy its ESP and PEX as documented under `optional/OCumIntegration/`, then run:
@@ -249,7 +269,7 @@ For the optional OCum integration, produce/copy its ESP and PEX as documented un
 The FOMOD output is:
 
 ```text
-dist/OStimTogether-v0.23.1-FOMOD.zip
+dist/OStimTogether-v0.23.2-FOMOD.zip
 ```
 
 Changing `VERSION` automatically changes both archive names, the CMake project version and the version reported by the DLL at startup. `build-fomod.ps1` also stamps the staged FOMOD `info.xml` with the same value.
