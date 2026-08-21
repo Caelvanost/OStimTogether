@@ -1010,10 +1010,10 @@ namespace OStimTogether
                 if (!chosen->nodeID.empty()) {
                     suppression.expectedNode = chosen->nodeID;
                 }
-                if (_threadControl) {
-                    suppression.expectedSpeed = _threadControl->GetCurrentSpeed(
-                        static_cast<std::uint32_t>(localThreadID));
-                }
+                // Do not call GetCurrentSpeed() from OStim's START callback.
+                // OStim may still hold its internal thread lock here. The
+                // authoritative START/SPEED packets establish suppression
+                // state after the callback has unwound.
             }
         }
 
@@ -1083,42 +1083,80 @@ namespace OStimTogether
         }
 
         const auto localThreadID = thread->getThreadID();
-        const auto speed = _threadControl->GetCurrentSpeed(
-            static_cast<std::uint32_t>(localThreadID));
 
-        std::optional<MirrorRoute> route;
-        bool suppressed = false;
+        // First determine whether this is actually a cooperative mirror using
+        // only our own state. Never re-enter OStim ModAPI for ordinary local,
+        // NPC, or auxiliary threads.
         {
             std::scoped_lock lock(_mutex);
-            const auto routeIt = _mirrorRoutes.find(localThreadID);
-            if (routeIt == _mirrorRoutes.end()) {
+            if (!_mirrorRoutes.contains(localThreadID)) {
                 return;
-            }
-            route = routeIt->second;
-            auto& suppression = _mirrorSuppressions[localThreadID];
-            if (suppression.expectedSpeed &&
-                *suppression.expectedSpeed == speed) {
-                suppression.expectedSpeed.reset();
-                suppressed = true;
             }
         }
 
-        if (suppressed || !route) {
+        // OStim invokes speed listeners while it may still own its internal
+        // thread lock. GetCurrentSpeed() re-enters that lock and can deadlock
+        // the game (the same rule already enforced by OStimBridge::HandleSpeed).
+        // Defer all ModAPI access until the listener has fully returned.
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            SKSE::log::warn(
+                "OSTNET COOP SPEED defer unavailable localThread={}",
+                localThreadID);
             return;
         }
 
-        STRPMTransport::GetSingleton().SendTo(
-            route->ownerConnectionID,
-            fmt::format(
-                "CONTROL_SPEED|thread={}|speed={}",
+        tasks->AddTask([this, localThreadID]() {
+            if (!_threadControl) {
+                return;
+            }
+
+            std::optional<MirrorRoute> route;
+            {
+                std::scoped_lock lock(_mutex);
+                const auto routeIt = _mirrorRoutes.find(localThreadID);
+                if (routeIt == _mirrorRoutes.end()) {
+                    return;
+                }
+                route = routeIt->second;
+            }
+
+            const auto speed = _threadControl->GetCurrentSpeed(
+                static_cast<std::uint32_t>(localThreadID));
+
+            bool suppressed = false;
+            {
+                std::scoped_lock lock(_mutex);
+                const auto routeIt = _mirrorRoutes.find(localThreadID);
+                if (routeIt == _mirrorRoutes.end()) {
+                    return;
+                }
+                route = routeIt->second;
+                auto& suppression = _mirrorSuppressions[localThreadID];
+                if (suppression.expectedSpeed &&
+                    *suppression.expectedSpeed == speed) {
+                    suppression.expectedSpeed.reset();
+                    suppressed = true;
+                }
+            }
+
+            if (suppressed || !route) {
+                return;
+            }
+
+            STRPMTransport::GetSingleton().SendTo(
+                route->ownerConnectionID,
+                fmt::format(
+                    "CONTROL_SPEED|thread={}|speed={}",
+                    route->remoteThreadID,
+                    speed));
+            SKSE::log::info(
+                "OSTNET COOP CONTROL SPEED TX DEFERRED localThread={} ownerConnection={} ownerThread={} speed={}",
+                localThreadID,
+                route->ownerConnectionID,
                 route->remoteThreadID,
-                speed));
-        SKSE::log::info(
-            "OSTNET COOP CONTROL SPEED TX localThread={} ownerConnection={} ownerThread={} speed={}",
-            localThreadID,
-            route->ownerConnectionID,
-            route->remoteThreadID,
-            speed);
+                speed);
+        });
     }
 
     void CoopSessionManager::HandleThreadStop(OStim::Thread* thread)
