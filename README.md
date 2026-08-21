@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.24.0**.
+Current development version: **0.24.1**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
@@ -13,111 +13,77 @@ OStim Together is an SKSE plugin that synchronizes OStim Standalone scenes betwe
 
 ## Current cooperative architecture
 
-For a local scene that contains one or more Skyrim Together remote-player proxies, 0.24.0 uses a preflight consent flow:
+For a local scene containing one or more STR remote-player proxies:
 
 ```text
-OStim local thread is created
+OStim creates the initial local thread
     ↓
-OStim Together detects local player + STR proxy participant(s)
+PreflightGuard runs before OStimBridge
     ↓
-preflight thread is stopped immediately after the OStim START callback returns
+thread is classified as consent-preflight before authoritative START work is armed
     ↓
-all START/NODE/SPEED/STOP packets from that preflight thread are suppressed
+CoopSessionManager captures actors + node + furniture
     ↓
-targeted INVITE is sent to the remote participant(s)
+preflight thread is stopped on the next Skyrim task
     ↓
-remote player gets a Skyrim-Souls-safe native MessageBox
+INVITE is sent to remote participant(s)
+    ↓
+remote player receives a Skyrim-Souls-safe native MessageBox
     ↓
 Accept
     ↓
-OStim Together recreates the authoritative local scene from the captured
-actors + starting node + furniture reference
+OStim Together recreates the authoritative scene
     ↓
-normal authoritative START is sent to accepted participants only
+normal START/NODE/SPEED/STOP synchronization begins
 ```
 
-With the public OStim API, participant/furniture information does not exist until a thread has been created. Therefore the implementation cannot prevent OStim from constructing the initial preflight thread internally, but that thread is stopped on the first safe game-task after the START callback and never becomes the multiplayer authoritative scene. The accepted replay is the scene that remains active and is synchronized.
+Pure local player/NPC scenes are not preflighted. The consent path activates only when a non-player actor resolves to an STRPM `ConnectionID`.
 
-Pure local player/NPC scenes are not preflighted. The consent path activates only when at least one dynamic STR player proxy can be resolved back to an STRPM `ConnectionID`.
+## 0.24.1 — guarded preflight crash fix
 
-## 0.24.0 — preflight consent + safe MessageBox
+0.24.0 stopped the disposable preflight correctly, but OStimBridge's START listener had already run first and armed delayed authoritative work such as Wall startup alignment, proxy pose ownership and other START follow-ups. Those tasks could execute after the preflight thread had been destroyed and crash the initiating client.
 
-### Player 1 does not remain in scene while Player 2 decides
+0.24.1 adds a dedicated `PreflightGuard` START listener registered **before OStimBridge**. It recognizes a local-player + mapped STR-proxy thread and marks it as suppressed before OStimBridge sees the START event. The accepted replay is explicitly exempted so it becomes the normal authoritative thread.
 
-0.23.x captured consent only when the authoritative network `START` was ready. The initiator's OStim scene could therefore already be running while the remote player was deciding whether to accept.
-
-0.24.0 moves consent to the OStim thread-start lifecycle. The first local player+proxy thread is treated as a disposable preflight and stopped immediately outside the OStim callback. Its network state is suppressed.
-
-Expected owner-side diagnostics:
+Expected diagnostics:
 
 ```text
-OSTNET COOP PREFLIGHT CAPTURE session=... thread=... participants=... action=stop-before-consent
-OSTNET COOP PREFLIGHT STOP session=... thread=... result=...
-OSTNET COOP INVITE TX session=... participants=... localSceneActive=0
+OSTNET PREFLIGHT GUARD READY priority=before-bridge ...
+OSTNET PREFLIGHT GUARD suppress thread=0 reason=remote-consent-pending
+OStim thread START id=0 actors=2 mirror=1
+OSTNET MIRROR suppress TX START localThread=0
+OSTNET COOP PREFLIGHT CAPTURE ...
+OSTNET COOP PREFLIGHT STOP ... result=0
+OSTNET COOP INVITE TX ... localSceneActive=0
 ```
 
 After acceptance:
 
 ```text
-OSTNET COOP INVITE RESPONSE RX session=... accepted=1 start=1
-OSTNET COOP APPROVED THREAD LIVE session=... thread=... node=...
-OSTNET COOP APPROVED START session=... result=... returnedThread=...
+OSTNET PREFLIGHT GUARD allow approved-replay thread=...
+OSTNET COOP APPROVED THREAD LIVE ...
+OSTNET COOP APPROVED START ...
 ```
 
-### Skyrim Souls / Unpaused Menus safe MessageBox
+## 0.24.0 — consent before persistent local scene
 
-The remote confirmation dialog reuses the approach validated in Trade Together.
+0.24.0 introduced a disposable preflight thread so Player1 does not remain in an active synchronized scene while Player2 is deciding whether to accept. With the public OStim API, actors/furniture are only available after OStim constructs a thread, so the implementation captures that initial thread, stops it outside the OStim callback, and recreates the approved scene after consent.
 
-OStim Together creates `MessageBoxData` through Skyrim's native `MessageDataFactoryManager`, fills only the body text/buttons/callback and leaves every other factory-initialized field untouched. In particular it does not hand-forge internal MessageBox state. This allows Skyrim Souls / Unpaused Menus to apply its registered menu creator and unpaused-menu flags normally.
-
-Expected receiver diagnostics:
-
-```text
-OSTNET COOP INVITE MESSAGEBOX ownerConnection=... session=... sender="..."
-OSTNET SAFE MESSAGEBOX queued buttons=2 nativeDefaults=1
-OSTNET COOP INVITE RESPONSE TX ... accepted=1 source=safe-messagebox
-```
-
-Buttons are:
-
-```text
-Accept
-Decline
-```
-
-The invitation times out after 30 seconds on the owner. A late response to a canceled session is ignored.
+Remote consent uses the same safe native `MessageBoxData` pattern validated in Trade Together: `MessageDataFactoryManager` creates the object, OStim Together fills only body text/buttons/callback, and all runtime-initialized fields are preserved so Skyrim Souls / Unpaused Menus can apply their normal menu flags.
 
 ## Shared controls
 
-The initiating player remains the authoritative OStim thread owner, but every accepted participant can use the normal OStim controls on their mirrored scene.
-
-Remote navigation becomes:
+The initiating player remains authoritative, but accepted remote participants can use normal OStim controls. Their local changes are forwarded as:
 
 ```text
 CONTROL_NODE|thread=<owner thread>|node=<scene id>
-```
-
-Remote speed changes become:
-
-```text
 CONTROL_SPEED|thread=<owner thread>|speed=<speed>
-```
-
-The owner validates that the sender is an accepted participant, applies the request through OStim's public ModAPI, then the ordinary authoritative `NODE`/`SPEED` state is sent back to all participants.
-
-Network-applied changes are suppressed on mirror clients so they are not echoed back as new control requests.
-
-Speed reads are always deferred outside OStim's SPEED callback. Calling `GetCurrentSpeed()` reentrantly from that callback can deadlock OStim, which was fixed in 0.23.2.
-
-## Shared scene termination
-
-If any remote participant ends their mirrored OStim scene, OStim Together sends:
-
-```text
 CONTROL_STOP|thread=<owner thread>
 ```
 
-The owner stops the authoritative OStim thread and the resulting `STOP` is propagated to every participant. This prevents the old state where one client redressed locally while another client still saw that player's proxy continuing the scene.
+The owner applies NODE/SPEED/STOP through OStim's public ModAPI and the resulting authoritative state is fanned back out. Network-applied changes are echo-suppressed.
+
+Speed reads are deferred outside OStim's SPEED callback to avoid reentrant OStim lock deadlocks.
 
 ## Other synchronization features
 
@@ -134,8 +100,6 @@ The owner stops the authoritative OStim thread and the resulting `STOP` is propa
 
 ## STRPluginMessagingAPI
 
-Transport path:
-
 ```text
 OStim Together
     ↓ channel: ostimtogether
@@ -146,19 +110,13 @@ STRPluginMessagingBridge
 Skyrim Together Reborn
 ```
 
-Remote identity uses STRPM ProxyResolver in both directions:
-
-```text
-ConnectionID -> local STR proxy FormID
-local STR proxy FormID -> ConnectionID
-```
-
 There is **no UDP fallback**.
 
 Expected startup diagnostics:
 
 ```text
 OSTNET STRPM READY channel=ostimtogether ... proxyResolver=1 ...
+OSTNET PREFLIGHT GUARD READY priority=before-bridge ...
 OSTNET COOP READY consent=safe-messagebox preflight=1 sharedControls=1 stopAnyParticipant=1 ...
 ```
 
@@ -169,15 +127,9 @@ Validated compatibility layer targets:
 - OStim 7.4c — `OStim.dll` `7.4.0.3`;
 - OStim 7.5b — `OStim.dll` `7.5.0.2`.
 
-OStim 7.5 Threads interface v3 is used for exact furniture access. Unknown internal graph layouts are rejected rather than read with unvalidated offsets.
-
 ## Optional OCum Ascended integration
 
-The optional integration lives in:
-
-```text
-optional/OCumIntegration/
-```
+The optional integration lives in `optional/OCumIntegration/`.
 
 The FOMOD layout is:
 
@@ -197,11 +149,7 @@ DebugNotifications=1
 SlotMask=140
 ```
 
-Multiplayer transport settings belong to STRPM/Skyrim Together Reborn.
-
 ## Build
-
-Set `VCPKG_ROOT`, then:
 
 ```powershell
 $env:VCPKG_ROOT="C:\dev\vcpkg"
@@ -210,10 +158,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-Core output for 0.24.0:
+Core output:
 
 ```text
-dist/OStimTogether-v0.24.0-Core-Vortex.zip
+dist/OStimTogether-v0.24.1-Core-Vortex.zip
 ```
 
 FOMOD:
@@ -225,7 +173,7 @@ FOMOD:
 Expected output:
 
 ```text
-dist/OStimTogether-v0.24.0-FOMOD.zip
+dist/OStimTogether-v0.24.1-FOMOD.zip
 ```
 
 `release-fomod/` is generated staging and must not be committed.
