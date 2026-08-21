@@ -22,8 +22,11 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/AddonBridge.h
         src/AddonStateRepair.cpp
         src/AddonStateRepair.h
+        src/AddActorConsentGate.cpp
         src/CoopSessionManager.cpp
         src/CoopSessionManager.h
+        src/PapyrusConsentBridge.cpp
+        src/PapyrusConsentBridge.h
         src/PreflightGuard.cpp
         src/PreflightGuard.h
         src/SafeMessageBox.cpp
