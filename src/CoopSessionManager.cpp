@@ -1,10 +1,10 @@
 #include "PCH.h"
 #include "CoopSessionManager.h"
 
+#include "Config.h"
 #include "STRPMTransport.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
 
-#include <array>
 #include <cctype>
 
 namespace OStimTogether
@@ -13,6 +13,7 @@ namespace OStimTogether
     {
         constexpr const char* kPluginName = "OStimTogether";
         constexpr auto kConsentTimeout = std::chrono::seconds(30);
+        constexpr auto kInviteDispatchDelay = std::chrono::milliseconds(150);
 
         bool IsDynamicSTRProxy(RE::Actor* actor)
         {
@@ -74,12 +75,10 @@ namespace OStimTogether
             if (pos == 0 || payload[pos - 1] == '|') {
                 const auto begin = pos + needle.size();
                 const auto end = payload.find('|', begin);
-                return std::string(
-                    payload.substr(
-                        begin,
-                        end == std::string_view::npos ?
-                            payload.size() - begin :
-                            end - begin));
+                return std::string(payload.substr(
+                    begin,
+                    end == std::string_view::npos ?
+                        payload.size() - begin : end - begin));
             }
 
             from = pos + needle.size();
@@ -146,7 +145,7 @@ namespace OStimTogether
 
         auto* declaration = SKSE::PluginDeclaration::GetSingleton();
         const auto version = declaration ?
-            declaration->GetVersion() : REL::Version{ 0, 23, 0, 0 };
+            declaration->GetVersion() : REL::Version{ 0, 23, 1, 0 };
         const auto pluginName = declaration ?
             std::string(declaration->GetName()) : std::string(kPluginName);
 
@@ -154,7 +153,6 @@ namespace OStimTogether
             OStimModAPI::Thread::RequestAPI>(
                 reinterpret_cast<void*>(
                     GetProcAddress(module, "RequestPluginAPI_Thread")));
-
         const auto requestScene = reinterpret_cast<
             OStimModAPI::Scene::RequestAPI>(
                 reinterpret_cast<void*>(
@@ -166,7 +164,6 @@ namespace OStimTogether
                 pluginName.c_str(),
                 version);
         }
-
         if (requestScene) {
             _sceneControl = requestScene(
                 OStimModAPI::Scene::InterfaceVersion::V1,
@@ -194,8 +191,11 @@ namespace OStimTogether
         _threads->registerSpeedChangedListener(&_speedListener);
         _threads->registerThreadStopListener(&_stopListener);
 
+        const auto cfg = Config::Load();
         SKSE::log::info(
-            "OSTNET COOP READY consent=1 sharedControls=1 stopAnyParticipant=1 threadsVersion={}",
+            "OSTNET COOP READY consent=nonmodal sharedControls=1 stopAnyParticipant=1 acceptKey={} declineKey={} threadsVersion={}",
+            cfg.consentAcceptKey,
+            cfg.consentDeclineKey,
             _threads->getVersion());
         return true;
     }
@@ -204,12 +204,32 @@ namespace OStimTogether
     {
         std::scoped_lock lock(_mutex);
         _authoritative.clear();
-        _pendingConsentPrompts.clear();
+        _pendingInvites.clear();
         _pendingMirrorStarts.clear();
         _mirrorRoutes.clear();
         _mirrorByRemote.clear();
         _mirrorSuppressions.clear();
         _generation.fetch_add(1);
+    }
+
+    bool CoopSessionManager::HandleConsentKey(std::uint32_t keyCode)
+    {
+        static const Config config = Config::Load();
+        const bool accept = keyCode == config.consentAcceptKey;
+        const bool decline = keyCode == config.consentDeclineKey;
+        if (!accept && !decline) {
+            return false;
+        }
+
+        {
+            std::scoped_lock lock(_mutex);
+            if (_pendingInvites.empty()) {
+                return false;
+            }
+        }
+
+        AnswerOldestInvite(accept);
+        return true;
     }
 
     std::unordered_set<STRPMApi::ConnectionID>
@@ -240,6 +260,9 @@ namespace OStimTogether
                     firstColon + 1,
                     secondColon - firstColon - 1);
 
+                // On the authoritative client the actual local player is
+                // role=player. Every other STR participant is represented by
+                // a dynamic proxy whose FormID can be reversed to ConnectionID.
                 if (role != "player") {
                     try {
                         const auto formID = static_cast<RE::FormID>(
@@ -247,10 +270,8 @@ namespace OStimTogether
                                 std::string(entry.substr(0, firstColon)),
                                 nullptr,
                                 16));
-
                         if (const auto connection =
-                                STRPMTransport::GetSingleton().
-                                    ResolveConnection(formID)) {
+                                STRPMTransport::GetSingleton().ResolveConnection(formID)) {
                             result.insert(*connection);
                         }
                     } catch (...) {
@@ -276,13 +297,68 @@ namespace OStimTogether
 
         auto participants = ResolveSceneParticipants(startPayload);
         if (participants.empty()) {
-            // No STR proxy could be mapped to a concrete participant. Preserve
-            // the old transport behavior for non-player/NPC-only payloads.
             return false;
         }
 
-        const auto node = Field(startPayload, "node").value_or("");
+        AuthoritativeSession session{};
+        session.threadID = *threadID;
+        session.startPayload = std::string(startPayload);
+        session.participants = std::move(participants);
+        session.generation = _generation.fetch_add(1);
+
+        const auto generation = session.generation;
+        const auto participantCount = session.participants.size();
+        {
+            std::scoped_lock lock(_mutex);
+            _authoritative[*threadID] = std::move(session);
+        }
+
+        SKSE::log::info(
+            "OSTNET COOP START CAPTURED thread={} participants={} dispatchDelayMs={} callbackSafe=1",
+            *threadID,
+            participantCount,
+            kInviteDispatchDelay.count());
+
+        // Important: do not call STRPM send while we are still inside OStim's
+        // START callback/fade path. The worker only sleeps; actual session work
+        // is queued back onto Skyrim's task interface after the callback has
+        // fully unwound.
+        std::thread([this, threadID = *threadID, generation]() {
+            std::this_thread::sleep_for(kInviteDispatchDelay);
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([this, threadID, generation]() {
+                    DispatchInvitesDeferred(threadID, generation);
+                });
+            }
+        }).detach();
+
+        QueueConsentTimeout(*threadID, generation);
+        return true;
+    }
+
+    void CoopSessionManager::DispatchInvitesDeferred(
+        std::int32_t threadID,
+        std::uint64_t generation)
+    {
+        std::unordered_set<STRPMApi::ConnectionID> participants;
+        std::string node;
         std::string inviter = "Player";
+
+        {
+            std::scoped_lock lock(_mutex);
+            const auto it = _authoritative.find(threadID);
+            if (it == _authoritative.end() ||
+                it->second.canceled ||
+                it->second.active ||
+                it->second.invitesSent ||
+                it->second.generation != generation) {
+                return;
+            }
+            it->second.invitesSent = true;
+            participants = it->second.participants;
+            node = Field(it->second.startPayload, "node").value_or("");
+        }
+
         if (auto* player = RE::PlayerCharacter::GetSingleton()) {
             const auto* name = player->GetName();
             if (name && *name) {
@@ -290,38 +366,23 @@ namespace OStimTogether
             }
         }
 
-        AuthoritativeSession session{};
-        session.threadID = *threadID;
-        session.startPayload = std::string(startPayload);
-        session.participants = participants;
-        session.generation = _generation.fetch_add(1);
-
-        {
-            std::scoped_lock lock(_mutex);
-            _authoritative[*threadID] = session;
-        }
-
         for (const auto connectionID : participants) {
             STRPMTransport::GetSingleton().SendTo(
                 connectionID,
                 fmt::format(
                     "INVITE|thread={}|inviter={}|node={}",
-                    *threadID,
+                    threadID,
                     inviter,
                     SafeLabel(node)));
         }
 
         SKSE::log::info(
-            "OSTNET COOP INVITE TX thread={} participants={} node={} status=pending",
-            *threadID,
+            "OSTNET COOP INVITE TX DEFERRED thread={} participants={} node={} status=pending",
+            threadID,
             participants.size(),
             node);
-
         RE::DebugNotification(
             "OStim Together: waiting for remote consent");
-
-        QueueConsentTimeout(*threadID, session.generation);
-        return true;
     }
 
     void CoopSessionManager::QueueConsentTimeout(
@@ -330,85 +391,136 @@ namespace OStimTogether
     {
         std::thread([this, threadID, generation]() {
             std::this_thread::sleep_for(kConsentTimeout);
-
-            auto* tasks = SKSE::GetTaskInterface();
-            if (!tasks) {
-                return;
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([this, threadID, generation]() {
+                    bool timedOut = false;
+                    {
+                        std::scoped_lock lock(_mutex);
+                        const auto it = _authoritative.find(threadID);
+                        timedOut =
+                            it != _authoritative.end() &&
+                            !it->second.active &&
+                            !it->second.canceled &&
+                            it->second.generation == generation;
+                    }
+                    if (timedOut) {
+                        CancelAuthoritativeSession(
+                            threadID,
+                            "consent-timeout",
+                            true);
+                        RE::DebugNotification(
+                            "OStim Together: consent request timed out");
+                    }
+                });
             }
-
-            tasks->AddTask([this, threadID, generation]() {
-                bool timedOut = false;
-                {
-                    std::scoped_lock lock(_mutex);
-                    const auto it = _authoritative.find(threadID);
-                    timedOut =
-                        it != _authoritative.end() &&
-                        !it->second.active &&
-                        !it->second.canceled &&
-                        it->second.generation == generation;
-                }
-
-                if (timedOut) {
-                    CancelAuthoritativeSession(
-                        threadID,
-                        "consent-timeout",
-                        true);
-                    RE::DebugNotification(
-                        "OStim Together: consent request timed out");
-                }
-            });
         }).detach();
     }
 
-    void CoopSessionManager::ShowConsentPrompt(
+    void CoopSessionManager::RegisterIncomingInvite(
         STRPMApi::ConnectionID ownerConnectionID,
         std::int32_t remoteThreadID,
         std::string sender)
     {
-        const auto key = MirrorKey(ownerConnectionID, remoteThreadID);
+        const auto senderLabel = SafeLabel(sender);
+        bool inserted = false;
         {
             std::scoped_lock lock(_mutex);
-            if (!_pendingConsentPrompts.insert(key).second) {
-                return;
+            const auto duplicate = std::find_if(
+                _pendingInvites.begin(),
+                _pendingInvites.end(),
+                [ownerConnectionID, remoteThreadID](const PendingInvite& invite) {
+                    return invite.ownerConnectionID == ownerConnectionID &&
+                           invite.remoteThreadID == remoteThreadID;
+                });
+            if (duplicate == _pendingInvites.end()) {
+                _pendingInvites.push_back(PendingInvite{
+                    ownerConnectionID,
+                    remoteThreadID,
+                    senderLabel,
+                    std::chrono::steady_clock::now() });
+                inserted = true;
             }
         }
 
-        auto* factory = RE::MessageDataFactoryManager::GetSingleton();
-        auto* strings = RE::InterfaceStrings::GetSingleton();
-        if (!factory || !strings) {
-            AnswerConsent(ownerConnectionID, remoteThreadID, false);
+        if (!inserted) {
             return;
         }
 
-        auto* creator = factory->GetCreator<RE::MessageBoxData>(
-            strings->messageBoxData);
-        auto* message = creator ? creator->Create() : nullptr;
-        if (!message) {
-            AnswerConsent(ownerConnectionID, remoteThreadID, false);
-            return;
-        }
-
-        const auto senderLabel = SafeLabel(sender);
-        message->callback = RE::make_smart<ConsentCallback>(
-            [this, ownerConnectionID, remoteThreadID](unsigned int choice) {
-                // Button 0 = Accept, button 1 = Decline.
-                AnswerConsent(
-                    ownerConnectionID,
-                    remoteThreadID,
-                    choice == 0);
-            });
-        message->bodyText = fmt::format(
-            "{} wants to start an OStim scene with you. Accept?",
-            senderLabel);
-        message->buttonText.push_back("Accept");
-        message->buttonText.push_back("Decline");
-        message->QueueMessage();
+        const auto cfg = Config::Load();
+        RE::DebugNotification(fmt::format(
+            "OStim Together: {} invites you - Y accept / N decline",
+            senderLabel).c_str());
 
         SKSE::log::info(
-            "OSTNET COOP INVITE PROMPT ownerConnection={} thread={} sender=\"{}\"",
+            "OSTNET COOP INVITE NONMODAL ownerConnection={} thread={} sender=\"{}\" acceptKey={} declineKey={}",
             ownerConnectionID,
             remoteThreadID,
-            senderLabel);
+            senderLabel,
+            cfg.consentAcceptKey,
+            cfg.consentDeclineKey);
+
+        QueueIncomingInviteTimeout(ownerConnectionID, remoteThreadID);
+    }
+
+    void CoopSessionManager::QueueIncomingInviteTimeout(
+        STRPMApi::ConnectionID ownerConnectionID,
+        std::int32_t remoteThreadID)
+    {
+        std::thread([this, ownerConnectionID, remoteThreadID]() {
+            std::this_thread::sleep_for(kConsentTimeout);
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([this, ownerConnectionID, remoteThreadID]() {
+                    bool expired = false;
+                    {
+                        std::scoped_lock lock(_mutex);
+                        const auto it = std::find_if(
+                            _pendingInvites.begin(),
+                            _pendingInvites.end(),
+                            [ownerConnectionID, remoteThreadID](const PendingInvite& invite) {
+                                return invite.ownerConnectionID == ownerConnectionID &&
+                                       invite.remoteThreadID == remoteThreadID;
+                            });
+                        if (it != _pendingInvites.end()) {
+                            _pendingInvites.erase(it);
+                            expired = true;
+                        }
+                    }
+                    if (expired) {
+                        STRPMTransport::GetSingleton().SendTo(
+                            ownerConnectionID,
+                            fmt::format(
+                                "INVITE_RESPONSE|thread={}|accepted=0",
+                                remoteThreadID));
+                        RE::DebugNotification(
+                            "OStim Together: scene invitation expired");
+                        SKSE::log::info(
+                            "OSTNET COOP INVITE EXPIRED ownerConnection={} thread={}",
+                            ownerConnectionID,
+                            remoteThreadID);
+                    }
+                });
+            }
+        }).detach();
+    }
+
+    void CoopSessionManager::AnswerOldestInvite(bool accepted)
+    {
+        std::optional<PendingInvite> invite;
+        {
+            std::scoped_lock lock(_mutex);
+            if (_pendingInvites.empty()) {
+                return;
+            }
+            invite = _pendingInvites.front();
+            _pendingInvites.erase(_pendingInvites.begin());
+        }
+
+        if (invite) {
+            AnswerConsent(
+                invite->ownerConnectionID,
+                invite->remoteThreadID,
+                accepted);
+        }
     }
 
     void CoopSessionManager::AnswerConsent(
@@ -416,16 +528,6 @@ namespace OStimTogether
         std::int32_t remoteThreadID,
         bool accepted)
     {
-        const auto key = MirrorKey(ownerConnectionID, remoteThreadID);
-        {
-            std::scoped_lock lock(_mutex);
-            if (_pendingConsentPrompts.erase(key) == 0) {
-                // Canceled/timed-out invite. Do not resurrect it from a stale
-                // message-box callback.
-                return;
-            }
-        }
-
         STRPMTransport::GetSingleton().SendTo(
             ownerConnectionID,
             fmt::format(
@@ -433,8 +535,13 @@ namespace OStimTogether
                 remoteThreadID,
                 accepted ? 1 : 0));
 
+        RE::DebugNotification(
+            accepted ?
+                "OStim Together: scene accepted" :
+                "OStim Together: scene declined");
+
         SKSE::log::info(
-            "OSTNET COOP INVITE RESPONSE TX ownerConnection={} thread={} accepted={}",
+            "OSTNET COOP INVITE RESPONSE TX ownerConnection={} thread={} accepted={} source=keyboard",
             ownerConnectionID,
             remoteThreadID,
             accepted ? 1 : 0);
@@ -477,10 +584,7 @@ namespace OStimTogether
             activate ? 1 : 0);
 
         if (reject) {
-            CancelAuthoritativeSession(
-                threadID,
-                "declined",
-                true);
+            CancelAuthoritativeSession(threadID, "declined", true);
             RE::DebugNotification(
                 "OStim Together: remote player declined the scene");
         } else if (activate) {
@@ -504,7 +608,6 @@ namespace OStimTogether
                 it->second.active) {
                 return;
             }
-
             it->second.active = true;
             participants = it->second.participants;
             startPayload = it->second.startPayload;
@@ -513,18 +616,12 @@ namespace OStimTogether
         }
 
         for (const auto connectionID : participants) {
-            STRPMTransport::GetSingleton().SendTo(
-                connectionID,
-                startPayload);
+            STRPMTransport::GetSingleton().SendTo(connectionID, startPayload);
             if (!nodePayload.empty()) {
-                STRPMTransport::GetSingleton().SendTo(
-                    connectionID,
-                    nodePayload);
+                STRPMTransport::GetSingleton().SendTo(connectionID, nodePayload);
             }
             if (!speedPayload.empty()) {
-                STRPMTransport::GetSingleton().SendTo(
-                    connectionID,
-                    speedPayload);
+                STRPMTransport::GetSingleton().SendTo(connectionID, speedPayload);
             }
         }
 
@@ -544,14 +641,12 @@ namespace OStimTogether
         bool stopLocalThread)
     {
         std::unordered_set<STRPMApi::ConnectionID> participants;
-
         {
             std::scoped_lock lock(_mutex);
-            auto it = _authoritative.find(threadID);
+            const auto it = _authoritative.find(threadID);
             if (it == _authoritative.end()) {
                 return;
             }
-
             it->second.canceled = true;
             participants = it->second.participants;
         }
@@ -594,9 +689,9 @@ namespace OStimTogether
         std::unordered_set<STRPMApi::ConnectionID> participants;
         bool active = false;
         bool canceled = false;
-        bool isStop = payload.starts_with("STOP|");
-        bool isNode = payload.starts_with("NODE|");
-        bool isSpeed = payload.starts_with("SPEED|");
+        const bool isStop = payload.starts_with("STOP|");
+        const bool isNode = payload.starts_with("NODE|");
+        const bool isSpeed = payload.starts_with("SPEED|");
 
         {
             std::scoped_lock lock(_mutex);
@@ -623,7 +718,6 @@ namespace OStimTogether
         }
 
         if (canceled) {
-            // Consume the STOP generated by StopScene after decline/timeout.
             return true;
         }
 
@@ -641,11 +735,8 @@ namespace OStimTogether
         }
 
         for (const auto connectionID : participants) {
-            STRPMTransport::GetSingleton().SendTo(
-                connectionID,
-                payload);
+            STRPMTransport::GetSingleton().SendTo(connectionID, payload);
         }
-
         return true;
     }
 
@@ -654,13 +745,11 @@ namespace OStimTogether
         if (payload.starts_with("START|")) {
             return BeginConsent(payload);
         }
-
         if (payload.starts_with("NODE|") ||
             payload.starts_with("SPEED|") ||
             payload.starts_with("STOP|")) {
             return RouteAuthoritativePayload(payload);
         }
-
         return false;
     }
 
@@ -713,11 +802,9 @@ namespace OStimTogether
             const auto value = Field(payload, "speed");
             if (value && _threadControl) {
                 try {
-                    const auto speed = static_cast<std::int32_t>(
-                        std::stol(*value));
+                    const auto speed = static_cast<std::int32_t>(std::stol(*value));
                     const auto result = _threadControl->SetSpeed(
-                        static_cast<std::uint32_t>(*threadID),
-                        speed);
+                        static_cast<std::uint32_t>(*threadID), speed);
                     SKSE::log::info(
                         "OSTNET COOP CONTROL SPEED connection={} thread={} speed={} result={}",
                         senderConnectionID,
@@ -757,15 +844,13 @@ namespace OStimTogether
         }
 
         const auto key = MirrorKey(ownerConnectionID, *threadID);
-
         std::scoped_lock lock(_mutex);
 
         if (payload.starts_with("START|")) {
-            const auto node = Field(payload, "node").value_or("");
             _pendingMirrorStarts.push_back(PendingMirrorStart{
                 ownerConnectionID,
                 *threadID,
-                node,
+                Field(payload, "node").value_or(""),
                 std::chrono::steady_clock::now() });
             return;
         }
@@ -782,8 +867,8 @@ namespace OStimTogether
             const auto speed = Field(payload, "speed");
             if (speed) {
                 try {
-                    suppression.expectedSpeed = static_cast<std::int32_t>(
-                        std::stol(*speed));
+                    suppression.expectedSpeed =
+                        static_cast<std::int32_t>(std::stol(*speed));
                 } catch (...) {
                 }
             }
@@ -798,9 +883,8 @@ namespace OStimTogether
         std::string_view payload)
     {
         if (payload.starts_with("INVITE|")) {
-            const auto threadID = ThreadID(payload);
-            if (threadID) {
-                ShowConsentPrompt(
+            if (const auto threadID = ThreadID(payload)) {
+                RegisterIncomingInvite(
                     senderConnectionID,
                     *threadID,
                     std::string(sender));
@@ -821,11 +905,17 @@ namespace OStimTogether
         }
 
         if (payload.starts_with("INVITE_CANCEL|")) {
-            const auto threadID = ThreadID(payload);
-            if (threadID) {
-                const auto key = MirrorKey(senderConnectionID, *threadID);
+            if (const auto threadID = ThreadID(payload)) {
                 std::scoped_lock lock(_mutex);
-                _pendingConsentPrompts.erase(key);
+                _pendingInvites.erase(
+                    std::remove_if(
+                        _pendingInvites.begin(),
+                        _pendingInvites.end(),
+                        [senderConnectionID, threadID](const PendingInvite& invite) {
+                            return invite.ownerConnectionID == senderConnectionID &&
+                                   invite.remoteThreadID == *threadID;
+                        }),
+                    _pendingInvites.end());
             }
             RE::DebugNotification(
                 "OStim Together: scene invitation canceled");
@@ -884,7 +974,6 @@ namespace OStimTogether
         {
             std::scoped_lock lock(_mutex);
             const auto now = std::chrono::steady_clock::now();
-
             _pendingMirrorStarts.erase(
                 std::remove_if(
                     _pendingMirrorStarts.begin(),
@@ -898,16 +987,12 @@ namespace OStimTogether
                 _pendingMirrorStarts.begin(),
                 _pendingMirrorStarts.end(),
                 [&nodeID](const PendingMirrorStart& entry) {
-                    return entry.nodeID.empty() ||
-                           nodeID.empty() ||
+                    return entry.nodeID.empty() || nodeID.empty() ||
                            entry.nodeID == nodeID;
                 });
-
-            if (it == _pendingMirrorStarts.end() &&
-                !_pendingMirrorStarts.empty()) {
+            if (it == _pendingMirrorStarts.end() && !_pendingMirrorStarts.empty()) {
                 it = _pendingMirrorStarts.begin();
             }
-
             if (it != _pendingMirrorStarts.end()) {
                 chosen = *it;
                 _pendingMirrorStarts.erase(it);
@@ -926,9 +1011,8 @@ namespace OStimTogether
                     suppression.expectedNode = chosen->nodeID;
                 }
                 if (_threadControl) {
-                    suppression.expectedSpeed =
-                        _threadControl->GetCurrentSpeed(
-                            static_cast<std::uint32_t>(localThreadID));
+                    suppression.expectedSpeed = _threadControl->GetCurrentSpeed(
+                        static_cast<std::uint32_t>(localThreadID));
                 }
             }
         }
@@ -966,7 +1050,6 @@ namespace OStimTogether
                 return;
             }
             route = routeIt->second;
-
             auto& suppression = _mirrorSuppressions[localThreadID];
             if (suppression.expectedNode &&
                 *suppression.expectedNode == nodeID) {
@@ -985,7 +1068,6 @@ namespace OStimTogether
                 "CONTROL_NODE|thread={}|node={}",
                 route->remoteThreadID,
                 SafeLabel(nodeID)));
-
         SKSE::log::info(
             "OSTNET COOP CONTROL NODE TX localThread={} ownerConnection={} ownerThread={} node={}",
             localThreadID,
@@ -1013,7 +1095,6 @@ namespace OStimTogether
                 return;
             }
             route = routeIt->second;
-
             auto& suppression = _mirrorSuppressions[localThreadID];
             if (suppression.expectedSpeed &&
                 *suppression.expectedSpeed == speed) {
@@ -1032,7 +1113,6 @@ namespace OStimTogether
                 "CONTROL_SPEED|thread={}|speed={}",
                 route->remoteThreadID,
                 speed));
-
         SKSE::log::info(
             "OSTNET COOP CONTROL SPEED TX localThread={} ownerConnection={} ownerThread={} speed={}",
             localThreadID,
@@ -1059,7 +1139,7 @@ namespace OStimTogether
             }
 
             route = routeIt->second;
-            auto suppressionIt = _mirrorSuppressions.find(localThreadID);
+            const auto suppressionIt = _mirrorSuppressions.find(localThreadID);
             if (suppressionIt != _mirrorSuppressions.end()) {
                 suppressed = suppressionIt->second.stop;
                 _mirrorSuppressions.erase(suppressionIt);
@@ -1077,7 +1157,6 @@ namespace OStimTogether
                 fmt::format(
                     "CONTROL_STOP|thread={}",
                     route->remoteThreadID));
-
             SKSE::log::info(
                 "OSTNET COOP CONTROL STOP TX localThread={} ownerConnection={} ownerThread={}",
                 localThreadID,
