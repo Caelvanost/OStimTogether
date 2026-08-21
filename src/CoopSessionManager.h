@@ -17,7 +17,11 @@ namespace OStimTogether
         bool Initialize();
         void Reset();
 
-        bool HandleConsentKey(std::uint32_t keyCode);
+        // Legacy 0.23.x keyboard consent is kept as a no-op compatibility
+        // entry point for Input.cpp. Consent is modal again in 0.24.0 via the
+        // Skyrim-Souls-safe MessageBox implementation.
+        bool HandleConsentKey(std::uint32_t) { return false; }
+
         bool InterceptOutgoing(std::string_view payload);
         bool HandleIncoming(
             STRPMApi::ConnectionID senderConnectionID,
@@ -48,32 +52,26 @@ namespace OStimTogether
             void listen(OStim::Thread* thread) override;
         };
 
-        struct AuthoritativeSession
+        struct OwnerSession
         {
-            std::int32_t threadID{ -1 };
-            std::string startPayload;
+            std::uint64_t sessionID{ 0 };
+            std::int32_t preflightThreadID{ -1 };
+            std::int32_t activeThreadID{ -1 };
+            std::vector<RE::FormID> actorFormIDs;
+            RE::FormID furnitureFormID{ 0 };
+            std::string nodeID;
             std::unordered_set<STRPMApi::ConnectionID> participants;
             std::unordered_set<STRPMApi::ConnectionID> accepted;
-            std::string latestNodePayload;
-            std::string latestSpeedPayload;
+            bool invitesSent{ false };
+            bool restarting{ false };
             bool active{ false };
             bool canceled{ false };
-            bool invitesSent{ false };
-            std::uint64_t generation{ 0 };
-        };
-
-        struct PendingInvite
-        {
-            STRPMApi::ConnectionID ownerConnectionID{ 0 };
-            std::int32_t remoteThreadID{ -1 };
-            std::string sender;
-            std::chrono::steady_clock::time_point created{};
         };
 
         struct PendingMirrorStart
         {
             STRPMApi::ConnectionID ownerConnectionID{ 0 };
-            std::int32_t remoteThreadID{ -1 };
+            std::int32_t ownerThreadID{ -1 };
             std::string nodeID;
             std::chrono::steady_clock::time_point created{};
         };
@@ -81,7 +79,7 @@ namespace OStimTogether
         struct MirrorRoute
         {
             STRPMApi::ConnectionID ownerConnectionID{ 0 };
-            std::int32_t remoteThreadID{ -1 };
+            std::int32_t ownerThreadID{ -1 };
         };
 
         struct MirrorSuppression
@@ -96,44 +94,49 @@ namespace OStimTogether
             std::string_view key);
         static std::optional<std::int32_t> ThreadID(
             std::string_view payload);
+        static std::optional<std::uint64_t> SessionID(
+            std::string_view payload);
+        static std::string SafeLabel(std::string_view value);
         static std::string MirrorKey(
             STRPMApi::ConnectionID ownerConnectionID,
-            std::int32_t remoteThreadID);
-        static std::string SafeLabel(std::string_view value);
+            std::int32_t ownerThreadID);
+
+        bool LoadOStimAPIs();
+        bool IsDynamicSTRProxy(RE::Actor* actor) const;
+
+        std::optional<PendingMirrorStart> TakePendingMirrorStart(
+            OStim::Thread* thread,
+            std::string_view nodeID);
 
         std::unordered_set<STRPMApi::ConnectionID>
-            ResolveSceneParticipants(std::string_view startPayload) const;
+            ResolveRemoteParticipants(OStim::Thread* thread) const;
 
-        bool BeginConsent(std::string_view startPayload);
-        void DispatchInvitesDeferred(
-            std::int32_t threadID,
-            std::uint64_t generation);
-        void RegisterIncomingInvite(
-            STRPMApi::ConnectionID ownerConnectionID,
-            std::int32_t remoteThreadID,
-            std::string sender);
-        void AnswerOldestInvite(bool accepted);
-        void AnswerConsent(
-            STRPMApi::ConnectionID ownerConnectionID,
-            std::int32_t remoteThreadID,
-            bool accepted);
-        void HandleConsentResponse(
+        void BeginOwnerPreflight(
+            OStim::Thread* thread,
+            std::unordered_set<STRPMApi::ConnectionID> participants,
+            std::string nodeID);
+        void StopPreflightAndInvite(std::uint64_t sessionID);
+        void QueueOwnerTimeout(std::uint64_t sessionID);
+        void HandleInviteResponse(
             STRPMApi::ConnectionID participantConnectionID,
-            std::int32_t threadID,
+            std::uint64_t sessionID,
             bool accepted);
-        void ActivateAuthoritativeSession(std::int32_t threadID);
-        void CancelAuthoritativeSession(
-            std::int32_t threadID,
-            std::string_view reason,
-            bool stopLocalThread);
-        void QueueConsentTimeout(
-            std::int32_t threadID,
-            std::uint64_t generation);
-        void QueueIncomingInviteTimeout(
-            STRPMApi::ConnectionID ownerConnectionID,
-            std::int32_t remoteThreadID);
+        void StartApprovedOwnerSession(std::uint64_t sessionID);
+        void RetryStartApprovedOwnerSession(std::uint64_t sessionID);
+        void CancelOwnerSession(
+            std::uint64_t sessionID,
+            std::string_view reason);
 
-        bool RouteAuthoritativePayload(std::string_view payload);
+        void ShowInviteMessageBox(
+            STRPMApi::ConnectionID ownerConnectionID,
+            std::uint64_t sessionID,
+            std::string sender);
+        void SendInviteResponse(
+            STRPMApi::ConnectionID ownerConnectionID,
+            std::uint64_t sessionID,
+            bool accepted);
+
+        bool RouteOwnerPayload(std::string_view payload);
         bool HandleControlRequest(
             STRPMApi::ConnectionID senderConnectionID,
             std::string_view payload);
@@ -141,13 +144,11 @@ namespace OStimTogether
             STRPMApi::ConnectionID ownerConnectionID,
             std::string_view payload);
 
-        bool LooksLikeRemoteMirror(OStim::Thread* thread) const;
         void HandleThreadStart(OStim::Thread* thread);
         void HandleThreadNode(OStim::Thread* thread);
         void HandleThreadSpeed(OStim::Thread* thread);
         void HandleThreadStop(OStim::Thread* thread);
-
-        bool LoadOStimAPIs();
+        void HandleDeferredMirrorSpeed(std::int32_t localThreadID);
 
         OStim::ThreadInterface* _threads{ nullptr };
         OStimModAPI::Thread::IThreadInterface* _threadControl{ nullptr };
@@ -159,11 +160,18 @@ namespace OStimTogether
         StopListener _stopListener;
 
         std::atomic_bool _initialized{ false };
-        std::atomic_uint64_t _generation{ 1 };
+        std::atomic_uint64_t _nextSessionID{ 1 };
         mutable std::mutex _mutex;
 
-        std::unordered_map<std::int32_t, AuthoritativeSession> _authoritative;
-        std::vector<PendingInvite> _pendingInvites;
+        std::unordered_map<std::uint64_t, OwnerSession> _ownerSessions;
+        std::unordered_map<std::int32_t, std::uint64_t> _pendingOwnerByThread;
+        std::unordered_map<std::int32_t, std::uint64_t> _activeOwnerByThread;
+
+        // StartScene() invokes OStim listeners synchronously. This arm tells
+        // HandleThreadStart that the next matching local player thread is the
+        // accepted replay and must not be preflighted a second time.
+        std::optional<std::uint64_t> _approvedReplayArmed;
+
         std::vector<PendingMirrorStart> _pendingMirrorStarts;
         std::unordered_map<std::int32_t, MirrorRoute> _mirrorRoutes;
         std::unordered_map<std::string, std::int32_t> _mirrorByRemote;
