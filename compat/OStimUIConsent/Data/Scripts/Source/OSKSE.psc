@@ -68,12 +68,10 @@ EndFunction
 int Function UIExtMessageBox(string Caption, string[] Options) Global
     Debug.Notification(Caption)
 
-    ; OStim Together 0.26.0: keep OStim's own UIListMenu open-loop here so
-    ; selecting a Skyrim Together proxy can pause the setup pipeline before
-    ; OStim receives the result. While consent is pending the callback that
-    ; normally calls addActor() never resumes, therefore no role menu/fade or
-    ; scene start can occur yet.
-    While True
+    bool ReopenMenu = True
+    While ReopenMenu
+        ReopenMenu = False
+
         UIListMenu ListMenu = uiextensions.GetMenu("UIListMenu") As UIListMenu
         ListMenu.ResetMenu()
 
@@ -100,16 +98,20 @@ int Function UIExtMessageBox(string Caption, string[] Options) Global
                     Return Index
                 endif
 
-                ; Decline/timeout: remain at this exact Add Actor decision
-                ; rather than allowing OStim to continue to role/fade with a
-                ; rejected remote player. Reopen the same option list.
+                ; Decline/timeout: do not return an actor index to OStim. Keep
+                ; this same UIListMenu decision active and let the initiator
+                ; choose another actor or None.
                 Debug.Notification("Scene request declined")
-                continue
+                ReopenMenu = True
+            else
+                Return Index
             endif
+        else
+            Return Index
         endif
-
-        Return Index
     EndWhile
+
+    Return 0
 EndFunction
 
 string Function UIExtTextInput() Global
