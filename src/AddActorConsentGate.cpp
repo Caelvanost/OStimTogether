@@ -4,6 +4,8 @@
 #include "ActorResolver.h"
 #include "STRPMTransport.h"
 
+#include <limits>
+
 namespace OStimTogether
 {
     std::int32_t CoopSessionManager::BeginAddActorConsent(
@@ -51,6 +53,14 @@ namespace OStimTogether
         gate.nodeID = "add-actor";
 
         const auto gateID = gate.sessionID;
+        if (gateID > static_cast<std::uint64_t>(
+                         std::numeric_limits<std::int32_t>::max())) {
+            SKSE::log::error(
+                "OSTNET ADD-ACTOR GATE exhausted Papyrus-compatible IDs gate={}",
+                gateID);
+            return 0;
+        }
+
         {
             std::scoped_lock lock(_mutex);
             _ownerSessions[gateID] = std::move(gate);
@@ -79,9 +89,6 @@ namespace OStimTogether
             StopPreflightAndInvite(gateID);
         }
 
-        if (gateID > static_cast<std::uint64_t>(INT32_MAX)) {
-            return 0;
-        }
         return static_cast<std::int32_t>(gateID);
     }
 
@@ -132,11 +139,9 @@ namespace OStimTogether
                     *parent,
                     ownerIt->second.participants.size());
             } else {
-                // HandleInviteResponse intentionally tried StartScene() for
-                // this standalone gate and received Invalid/Failed because the
-                // gate has no actor list. Re-arm the same session as the owner
-                // of the real thread that OStim will create after the paused
-                // UIListMenu callback finally returns.
+                // HandleInviteResponse may already have attempted StartScene()
+                // for this temporary gate. Re-arm it as the owner of the real
+                // thread OStim creates only after the paused UI callback returns.
                 gate.canceled = false;
                 gate.restarting = true;
                 gate.active = false;
