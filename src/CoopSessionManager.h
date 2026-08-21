@@ -24,6 +24,28 @@ namespace OStimTogether
         // crosshair target is a mapped STR player proxy and consent is pending.
         bool TryGateDirectSceneStart(std::uint32_t keyCode);
 
+        // A completed direct-start session keeps its historical thread ID for
+        // diagnostics/routing cleanup. Mark it closed before evaluating a new
+        // scene-start input so it cannot be mistaken for a still-pending
+        // consent request after the accepted scene has ended.
+        void CleanupCompletedDirectSessions()
+        {
+            std::scoped_lock lock(_mutex);
+            for (auto& [sessionID, session] : _ownerSessions) {
+                if (session.directStartIntent &&
+                    !session.active &&
+                    !session.canceled &&
+                    session.activeThreadID >= 0) {
+                    session.canceled = true;
+                    _activeOwnerByThread.erase(session.activeThreadID);
+                    SKSE::log::trace(
+                        "OSTNET COOP DIRECT SESSION CLOSED session={} thread={}",
+                        sessionID,
+                        session.activeThreadID);
+                }
+            }
+        }
+
         bool InterceptOutgoing(std::string_view payload);
         bool HandleIncoming(
             STRPMApi::ConnectionID senderConnectionID,
