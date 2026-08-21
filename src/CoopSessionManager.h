@@ -75,6 +75,7 @@ namespace OStimTogether
             std::string latestNodePayload;
             std::string latestSpeedPayload;
             bool active{ false };
+            bool canceled{ false };
             std::uint64_t generation{ 0 };
         };
 
