@@ -2,6 +2,7 @@
 #include "STRPMTransport.h"
 
 #include "ActorResolver.h"
+#include "CoopSessionManager.h"
 
 namespace OStimTogether
 {
@@ -236,6 +237,12 @@ namespace OStimTogether
         _listener = listener;
         _resolverListenerRegistered = false;
 
+        {
+            std::scoped_lock lock(_proxyMutex);
+            _proxyByConnection.clear();
+            _connectionByProxy.clear();
+        }
+
         if (_resolver && _resolver->registerListener) {
             const auto result =
                 _resolver->registerListener(
@@ -299,10 +306,19 @@ namespace OStimTogether
         _resolver = nullptr;
         _diagnostics = nullptr;
         _api = nullptr;
+
+        {
+            std::scoped_lock lock(_proxyMutex);
+            _proxyByConnection.clear();
+            _connectionByProxy.clear();
+        }
+
         SKSE::log::info("OSTNET STRPM stopped");
     }
 
-    bool STRPMTransport::Send(std::string_view payload)
+    bool STRPMTransport::SendRaw(
+        STRPMApi::Target target,
+        std::string_view payload)
     {
         if (!_running.load() ||
             !_api ||
@@ -310,9 +326,6 @@ namespace OStimTogether
             payload.empty()) {
             return false;
         }
-
-        STRPMApi::Target target{};
-        target.kind = STRPMApi::TargetKind::kAllPlayers;
 
         const auto result =
             _api->send(
@@ -325,18 +338,52 @@ namespace OStimTogether
 
         if (result != STRPMApi::Result::kOk) {
             SKSE::log::warn(
-                "OSTNET STRPM TX failed result={} bytes={} transport=STRPM-only",
+                "OSTNET STRPM TX failed result={} targetKind={} targetConnection={} bytes={} transport=STRPM-only",
                 ResultName(result),
+                static_cast<std::uint32_t>(target.kind),
+                target.connectionID,
                 payload.size());
             LogRuntimeStatus("tx-failed");
             return false;
         }
 
         SKSE::log::info(
-            "OSTNET STRPM TX bytes={} {}",
+            "OSTNET STRPM TX targetKind={} targetConnection={} bytes={} {}",
+            static_cast<std::uint32_t>(target.kind),
+            target.connectionID,
             payload.size(),
             payload);
         return true;
+    }
+
+    bool STRPMTransport::Send(std::string_view payload)
+    {
+        if (payload.empty()) {
+            return false;
+        }
+
+        if (CoopSessionManager::GetSingleton().
+                InterceptOutgoing(payload)) {
+            return true;
+        }
+
+        STRPMApi::Target target{};
+        target.kind = STRPMApi::TargetKind::kAllPlayers;
+        return SendRaw(target, payload);
+    }
+
+    bool STRPMTransport::SendTo(
+        STRPMApi::ConnectionID connectionID,
+        std::string_view payload)
+    {
+        if (connectionID == 0 || payload.empty()) {
+            return false;
+        }
+
+        STRPMApi::Target target{};
+        target.kind = STRPMApi::TargetKind::kPlayer;
+        target.connectionID = connectionID;
+        return SendRaw(target, payload);
     }
 
     std::optional<RE::FormID> STRPMTransport::ResolveProxy(
@@ -355,6 +402,21 @@ namespace OStimTogether
         }
 
         return static_cast<RE::FormID>(formID);
+    }
+
+    std::optional<STRPMApi::ConnectionID>
+        STRPMTransport::ResolveConnection(RE::FormID proxyFormID) const
+    {
+        if (proxyFormID == 0) {
+            return std::nullopt;
+        }
+
+        std::scoped_lock lock(_proxyMutex);
+        const auto it = _connectionByProxy.find(proxyFormID);
+        if (it == _connectionByProxy.end() || it->second == 0) {
+            return std::nullopt;
+        }
+        return it->second;
     }
 
     void __cdecl STRPMTransport::OnMessage(
@@ -394,6 +456,13 @@ namespace OStimTogether
                 [connectionID,
                  sender,
                  payload = std::move(payload)]() mutable {
+                    if (CoopSessionManager::GetSingleton().HandleIncoming(
+                            connectionID,
+                            sender,
+                            payload)) {
+                        return;
+                    }
+
                     ActorResolver::GetSingleton().HandleSTRPMPacket(
                         connectionID,
                         std::move(sender),
@@ -414,6 +483,41 @@ namespace OStimTogether
     void STRPMTransport::HandleProxyMapping(
         const STRPMApi::ProxyMappingEvent& event)
     {
+        {
+            std::scoped_lock lock(_proxyMutex);
+
+            if (event.oldFormID != 0) {
+                const auto reverseIt =
+                    _connectionByProxy.find(event.oldFormID);
+                if (reverseIt != _connectionByProxy.end() &&
+                    reverseIt->second == event.connectionID) {
+                    _connectionByProxy.erase(reverseIt);
+                }
+            }
+
+            switch (event.type) {
+            case STRPMApi::ProxyMappingEventType::kAdded:
+            case STRPMApi::ProxyMappingEventType::kUpdated:
+                if (event.connectionID != 0 && event.newFormID != 0) {
+                    _proxyByConnection[event.connectionID] = event.newFormID;
+                    _connectionByProxy[event.newFormID] = event.connectionID;
+                }
+                break;
+
+            case STRPMApi::ProxyMappingEventType::kRemoved:
+                _proxyByConnection.erase(event.connectionID);
+                break;
+
+            case STRPMApi::ProxyMappingEventType::kCleared:
+                _proxyByConnection.clear();
+                _connectionByProxy.clear();
+                break;
+
+            default:
+                break;
+            }
+        }
+
         SKSE::log::info(
             "OSTNET STRPM PROXY event={} connection={} old={:08X} new={:08X}",
             MappingEventName(event.type),
