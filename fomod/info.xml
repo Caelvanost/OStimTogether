@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.23.0</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI, with remote consent and shared participant controls. OCum Ascended support is an optional FOMOD component.</Description>
+  <Version>0.23.1</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI, with non-modal remote consent and shared participant controls. OCum Ascended support is an optional FOMOD component.</Description>
 </fomod>
