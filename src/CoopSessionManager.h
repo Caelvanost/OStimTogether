@@ -19,16 +19,17 @@ namespace OStimTogether
 
         bool HandleConsentKey(std::uint32_t) { return false; }
 
+        // Called from InputHandler before OStim receives its keyboard event.
+        // Returns true when the OStim scene-start key was consumed because the
+        // crosshair target is a mapped STR player proxy and consent is pending.
+        bool TryGateDirectSceneStart(std::uint32_t keyCode);
+
         bool InterceptOutgoing(std::string_view payload);
         bool HandleIncoming(
             STRPMApi::ConnectionID senderConnectionID,
             std::string_view sender,
             std::string_view payload);
 
-        // StartApprovedOwnerSession arms the accepted replay immediately
-        // before calling OStim StartScene(). A listener registered before the
-        // manager can use this to distinguish that approved replay from the
-        // disposable initial preflight thread.
         bool IsApprovedReplayArmed() const
         {
             std::scoped_lock lock(_mutex);
@@ -69,6 +70,7 @@ namespace OStimTogether
             std::string nodeID;
             std::unordered_set<STRPMApi::ConnectionID> participants;
             std::unordered_set<STRPMApi::ConnectionID> accepted;
+            bool directStartIntent{ false };
             bool invitesSent{ false };
             bool restarting{ false };
             bool active{ false };
@@ -106,6 +108,7 @@ namespace OStimTogether
 
         bool LoadOStimAPIs();
         bool IsDynamicSTRProxy(RE::Actor* actor) const;
+        bool HasPendingDirectIntent() const;
 
         std::optional<PendingMirrorStart> TakePendingMirrorStart(
             OStim::Thread* thread,
@@ -114,6 +117,9 @@ namespace OStimTogether
         std::unordered_set<STRPMApi::ConnectionID>
             ResolveRemoteParticipants(OStim::Thread* thread) const;
 
+        void BeginDirectStartIntent(
+            RE::Actor* target,
+            STRPMApi::ConnectionID connectionID);
         void BeginOwnerPreflight(
             OStim::Thread* thread,
             std::unordered_set<STRPMApi::ConnectionID> participants,
