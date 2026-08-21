@@ -1,13 +1,13 @@
 param(
     [string]$SkyrimDir = "C:\Games\Steam\steamapps\common\Skyrim Special Edition",
-    [string]$OStimSourceDir = "",
-    [string]$UIExtensionsSourceDir = ""
+    [string]$OStimSourceDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SourceDir = Join-Path $Root "Data\Scripts\Source"
+$StubDir = Join-Path $Root "Dependencies\Source"
 $PackageScripts = Join-Path $Root "package\Data\Scripts"
 $Compiler = Join-Path $SkyrimDir "Papyrus Compiler\PapyrusCompiler.exe"
 $GameSources = Join-Path $SkyrimDir "Data\Source\Scripts"
@@ -18,10 +18,30 @@ if (-not (Test-Path $Compiler)) { throw "PapyrusCompiler.exe introuvable: $Compi
 if (-not (Test-Path $Flags)) { throw "TESV_Papyrus_Flags.flg introuvable: $Flags" }
 if (-not (Test-Path (Join-Path $SourceDir "OSKSE.psc"))) { throw "OSKSE.psc patch introuvable" }
 if (-not (Test-Path (Join-Path $SourceDir "OStimTogetherNative.psc"))) { throw "OStimTogetherNative.psc introuvable" }
+if (-not (Test-Path (Join-Path $StubDir "UIExtensions.psc"))) { throw "Stub UIExtensions.psc introuvable" }
+if (-not (Test-Path (Join-Path $StubDir "UIListMenu.psc"))) { throw "Stub UIListMenu.psc introuvable" }
+if (-not (Test-Path (Join-Path $StubDir "UIMenuBase.psc"))) { throw "Stub UIMenuBase.psc introuvable" }
+if (-not (Test-Path (Join-Path $StubDir "UITextEntryMenu.psc"))) { throw "Stub UITextEntryMenu.psc introuvable" }
 
-$Includes = @($SourceDir, $SKSESources, $GameSources)
-if ($OStimSourceDir) { $Includes += $OStimSourceDir }
-if ($UIExtensionsSourceDir) { $Includes += $UIExtensionsSourceDir }
+if (-not $OStimSourceDir) {
+    $DefaultOStimSource = Join-Path $SkyrimDir "Data\Scripts\Source"
+    if (Test-Path (Join-Path $DefaultOStimSource "OSKSE.psc")) {
+        $OStimSourceDir = $DefaultOStimSource
+    }
+}
+
+if (-not $OStimSourceDir -or -not (Test-Path $OStimSourceDir)) {
+    throw "Sources Papyrus OStim introuvables. Passe -OStimSourceDir vers le dossier contenant les sources OStim."
+}
+
+$Includes = @(
+    $SourceDir,
+    $StubDir,
+    $OStimSourceDir,
+    $SKSESources,
+    $GameSources
+)
+$Includes = $Includes | Select-Object -Unique
 $IncludeArg = $Includes -join ";"
 
 New-Item -ItemType Directory -Force -Path $PackageScripts | Out-Null
@@ -30,7 +50,7 @@ foreach ($Source in @("OStimTogetherNative.psc", "OSKSE.psc")) {
     $SourceFile = Join-Path $SourceDir $Source
     & $Compiler $SourceFile "-f=$Flags" "-i=$IncludeArg" "-o=$PackageScripts"
     if ($LASTEXITCODE -ne 0) {
-        throw "Compilation Papyrus echouee pour $Source (code $LASTEXITCODE). Passe -OStimSourceDir vers les sources Papyrus d'OStim et -UIExtensionsSourceDir si necessaire."
+        throw "Compilation Papyrus echouee pour $Source (code $LASTEXITCODE)."
     }
 }
 
@@ -40,4 +60,5 @@ foreach ($Pex in @("OStimTogetherNative.pex", "OSKSE.pex")) {
 }
 
 Write-Host "OK - OStim UI consent patch compile dans $PackageScripts" -ForegroundColor Green
+Write-Host "UIExtensions: stubs de compilation integres au repo; aucune source UIExtensions externe requise." -ForegroundColor Green
 Write-Host "Le fichier OSKSE.pex doit gagner le conflit face a OStim pour suspendre Add Actor avant consentement." -ForegroundColor Yellow
