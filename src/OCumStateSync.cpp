@@ -12,6 +12,19 @@ namespace OStimTogether
         constexpr std::string_view kMarker = "CumOverlays";
         constexpr std::string_view kVaginalObject = "ocumvagmesh";
         constexpr std::string_view kAnalObject = "ocumanmesh";
+
+        bool IsArmorWorn(RE::Actor* actor, RE::TESObjectARMO* armor)
+        {
+            if (!actor || !armor) {
+                return false;
+            }
+
+            const auto inventory = actor->GetInventory();
+            const auto it = inventory.find(armor);
+            return it != inventory.end() &&
+                   it->second.second &&
+                   it->second.second->IsWorn();
+        }
     }
 
     OCumStateSync& OCumStateSync::GetSingleton()
@@ -64,8 +77,8 @@ namespace OStimTogether
         auto* vaginal = data->LookupForm<RE::TESObjectARMO>(0x00000F37, "OCum.esp");
         auto* anal = data->LookupForm<RE::TESObjectARMO>(0x00000F3B, "OCum.esp");
 
-        const bool vaginalEquipped = vaginal && player->IsEquipped(vaginal);
-        const bool analEquipped = anal && player->IsEquipped(anal);
+        const bool vaginalEquipped = IsArmorWorn(player, vaginal);
+        const bool analEquipped = IsArmorWorn(player, anal);
 
         const auto sendObject = [&](std::string_view type, bool equipped) {
             STRPMTransport::GetSingleton().Send(
