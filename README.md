@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.24.1**.
+Current development version: **0.25.0**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
@@ -11,65 +11,95 @@ Versioning rule used by this project:
 
 OStim Together is an SKSE plugin that synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI** as its only multiplayer transport.
 
-## Current cooperative architecture
+## 0.25.0 — consent before any OStim pre-scene UI
 
-For a local scene containing one or more STR remote-player proxies:
+For the normal direct-player flow, consent now happens **before OStim receives the scene-start input at all**.
+
+When the local player presses OStim's scene-start key while aiming at a mapped Skyrim Together player proxy:
 
 ```text
-OStim creates the initial local thread
+scene-start key
     ↓
-PreflightGuard runs before OStimBridge
+OStim Together input gate (runs before OStim's input sink)
     ↓
-thread is classified as consent-preflight before authoritative START work is armed
+remote proxy -> STRPM ConnectionID
     ↓
-CoopSessionManager captures actors + node + furniture
+original key event is consumed
     ↓
-preflight thread is stopped on the next Skyrim task
+"Waiting for consent"
     ↓
-INVITE is sent to remote participant(s)
+targeted INVITE
     ↓
-remote player receives a Skyrim-Souls-safe native MessageBox
+remote SafeMessageBox: Accept / Decline
     ↓
 Accept
     ↓
-OStim Together recreates the authoritative scene
+OStim public StartScene API with actors only
     ↓
-normal START/NODE/SPEED/STOP synchronization begins
+OStim resumes its normal pipeline:
+Furniture selection
+→ Add Actor
+→ role selection
+→ starting animation
+→ fade
+→ real thread creation
 ```
 
-Pure local player/NPC scenes are not preflighted. The consent path activates only when a non-player actor resolves to an STRPM `ConnectionID`.
+This means that for a direct Player1 -> Player2 start, **no Furniture menu, Add Actor menu, fade, undressing or OStim thread is created before Player2 accepts**.
 
-## 0.24.1 — guarded preflight crash fix
-
-0.24.0 stopped the disposable preflight correctly, but OStimBridge's START listener had already run first and armed delayed authoritative work such as Wall startup alignment, proxy pose ownership and other START follow-ups. Those tasks could execute after the preflight thread had been destroyed and crash the initiating client.
-
-0.24.1 adds a dedicated `PreflightGuard` START listener registered **before OStimBridge**. It recognizes a local-player + mapped STR-proxy thread and marks it as suppressed before OStimBridge sees the START event. The accepted replay is explicitly exempted so it becomes the normal authoritative thread.
+The input gate discovers OStim's own configured `keySceneStart` through the public Thread ModAPI. At `kInputLoaded`, OStim Together places its input sink immediately before OStim's sink in `BSInputDeviceManager::sinks`; CommonLib dispatches those sinks in insertion order, so returning `kStop` reliably prevents OStim from seeing the gated key event.
 
 Expected diagnostics:
 
 ```text
-OSTNET PREFLIGHT GUARD READY priority=before-bridge ...
-OSTNET PREFLIGHT GUARD suppress thread=0 reason=remote-consent-pending
-OStim thread START id=0 actors=2 mirror=1
-OSTNET MIRROR suppress TX START localThread=0
-OSTNET COOP PREFLIGHT CAPTURE ...
-OSTNET COOP PREFLIGHT STOP ... result=0
-OSTNET COOP INVITE TX ... localSceneActive=0
+OSTNET INPUT GATE READY order=reordered-before-ostim ...
+OSTNET COOP DIRECT GATE session=... target=... connection=... uiSuppressed=1 furnitureShown=0
+OSTNET COOP INVITE TX session=... localSceneActive=0 source=pre-ui
 ```
 
-After acceptance:
+After Player2 accepts:
 
 ```text
-OSTNET PREFLIGHT GUARD allow approved-replay thread=...
-OSTNET COOP APPROVED THREAD LIVE ...
-OSTNET COOP APPROVED START ...
+OSTNET COOP INVITE RESPONSE RX ... source=pre-ui
+OSTNET COOP APPROVED START ... pipeline=normal-ostim-pre-scene-ui
 ```
 
-## 0.24.0 — consent before persistent local scene
+Only then should OStim display its Furniture/Add Actor flow.
 
-0.24.0 introduced a disposable preflight thread so Player1 does not remain in an active synchronized scene while Player2 is deciding whether to accept. With the public OStim API, actors/furniture are only available after OStim constructs a thread, so the implementation captures that initial thread, stops it outside the OStim callback, and recreates the approved scene after consent.
+### Safe MessageBox
 
-Remote consent uses the same safe native `MessageBoxData` pattern validated in Trade Together: `MessageDataFactoryManager` creates the object, OStim Together fills only body text/buttons/callback, and all runtime-initialized fields are preserved so Skyrim Souls / Unpaused Menus can apply their normal menu flags.
+Remote consent continues to use the same native `MessageBoxData` strategy validated in Trade Together. `MessageDataFactoryManager` creates the message object and OStim Together changes only body text, buttons and callback, preserving factory-initialized fields so Skyrim Souls / Unpaused Menus can apply their normal menu behavior.
+
+### Add Actor limitation / guarded fallback
+
+OStim's `Add Actor` selection is implemented inside `PlayerThreadStarter.cpp` as an internal message-box callback that calls the non-exported `addActor(params, actor)` function. OStim's current public ModAPI does not expose a callback before that actor is committed.
+
+Therefore 0.25.0 does **not** use a fragile version-specific binary hook for that internal lambda. If a scene begins with an NPC and a remote STR proxy is introduced later through OStim's `Add Actor` dialog, OStim Together retains the 0.24.1 guarded thread-preflight fallback:
+
+```text
+NPC flow / Furniture / Add Actor
+→ proxy chosen
+→ OStim finishes its pre-scene flow
+→ disposable final preflight thread is suppressed by PreflightGuard
+→ consent is requested
+→ approved scene is recreated
+```
+
+This guarantees that an unconsented remote player cannot remain in the synchronized scene, but it does not yet pause the `Add Actor` dialog chain at the exact moment the proxy is selected. Implementing that exact UX safely requires either a new upstream OStim pre-add-actor API/event or a separately validated hook for each supported OStim binary.
+
+## Guarded fallback preflight
+
+`PreflightGuard` remains registered before `OStimBridge`. For any remote-proxy scene that bypasses the pre-UI gate, it marks the disposable thread as suppressed before OStimBridge can queue START/Wall/pose work. This prevents the delayed-work-after-stop crash fixed in 0.24.1.
+
+Expected fallback diagnostics:
+
+```text
+OSTNET PREFLIGHT GUARD suppress thread=... reason=remote-consent-pending
+OSTNET MIRROR suppress TX START localThread=...
+OSTNET COOP PREFLIGHT CAPTURE ...
+OSTNET COOP PREFLIGHT STOP ...
+OSTNET COOP INVITE TX ... source=fallback-preflight
+```
 
 ## Shared controls
 
@@ -87,6 +117,7 @@ Speed reads are deferred outside OStim's SPEED callback to avoid reentrant OStim
 
 ## Other synchronization features
 
+- targeted STRPM consent and scene traffic;
 - exact OStim 7.5 furniture synchronization through Threads ABI v3 `getFurnitureObject()`;
 - OStim 7.4c blocked-furniture fallback;
 - delayed authoritative startup for Wall scenes;
@@ -117,7 +148,8 @@ Expected startup diagnostics:
 ```text
 OSTNET STRPM READY channel=ostimtogether ... proxyResolver=1 ...
 OSTNET PREFLIGHT GUARD READY priority=before-bridge ...
-OSTNET COOP READY consent=safe-messagebox preflight=1 sharedControls=1 stopAnyParticipant=1 ...
+OSTNET COOP READY consent=safe-messagebox preUiGate=1 fallbackPreflight=1 sharedControls=1 stopAnyParticipant=1 ...
+OSTNET INPUT GATE READY order=...before-ostim ...
 ```
 
 ## OStim compatibility
@@ -161,7 +193,7 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 Core output:
 
 ```text
-dist/OStimTogether-v0.24.1-Core-Vortex.zip
+dist/OStimTogether-v0.25.0-Core-Vortex.zip
 ```
 
 FOMOD:
@@ -173,7 +205,7 @@ FOMOD:
 Expected output:
 
 ```text
-dist/OStimTogether-v0.24.1-FOMOD.zip
+dist/OStimTogether-v0.25.0-FOMOD.zip
 ```
 
 `release-fomod/` is generated staging and must not be committed.
