@@ -5,6 +5,8 @@
 #include "STRPMTransport.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
 
+#include <RE/C/CrosshairPickData.h>
+
 namespace OStimTogether
 {
     namespace
@@ -141,8 +143,10 @@ namespace OStimTogether
         _threads = base ? static_cast<OStim::ThreadInterface*>(base) : nullptr;
 
         auto* declaration = SKSE::PluginDeclaration::GetSingleton();
-        const auto version = declaration ? declaration->GetVersion() : REL::Version{ 0, 24, 0, 0 };
-        const auto pluginName = declaration ? std::string(declaration->GetName()) : std::string(kPluginName);
+        const auto version = declaration ?
+            declaration->GetVersion() : REL::Version{ 0, 25, 0, 0 };
+        const auto pluginName = declaration ?
+            std::string(declaration->GetName()) : std::string(kPluginName);
 
         const auto requestThread = reinterpret_cast<OStimModAPI::Thread::RequestAPI>(
             reinterpret_cast<void*>(GetProcAddress(module, "RequestPluginAPI_Thread")));
@@ -181,7 +185,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET COOP READY consent=safe-messagebox preflight=1 sharedControls=1 stopAnyParticipant=1 threadsVersion={}",
+            "OSTNET COOP READY consent=safe-messagebox preUiGate=1 fallbackPreflight=1 sharedControls=1 stopAnyParticipant=1 threadsVersion={}",
             _threads->getVersion());
         return true;
     }
@@ -212,6 +216,123 @@ namespace OStimTogether
         return
             (actor->GetFormID() & kDynamicMask) == kDynamicMask &&
             (base->GetFormID() & kDynamicMask) == kDynamicMask;
+    }
+
+    bool CoopSessionManager::HasPendingDirectIntent() const
+    {
+        std::scoped_lock lock(_mutex);
+        return std::any_of(
+            _ownerSessions.begin(),
+            _ownerSessions.end(),
+            [](const auto& entry) {
+                const auto& session = entry.second;
+                return session.directStartIntent &&
+                       !session.active &&
+                       !session.canceled;
+            });
+    }
+
+    bool CoopSessionManager::TryGateDirectSceneStart(std::uint32_t keyCode)
+    {
+        if (!_threadControl || !_sceneControl) {
+            return false;
+        }
+
+        OStimModAPI::Thread::KeyData keys{};
+        _threadControl->GetKeyData(&keys);
+        if (keys.keySceneStart < 0 ||
+            keyCode != static_cast<std::uint32_t>(keys.keySceneStart)) {
+            return false;
+        }
+
+        // While a direct consent request or its accepted OStim setup pipeline
+        // is pending, keep swallowing the scene-start key so a second local
+        // scene cannot be started accidentally.
+        if (HasPendingDirectIntent()) {
+            RE::DebugNotification("Waiting for consent");
+            SKSE::log::trace(
+                "OSTNET COOP DIRECT GATE consume repeated scene-start key={}",
+                keyCode);
+            return true;
+        }
+
+        const auto playerThreadID = _threadControl->GetPlayerThreadID();
+        if (_threadControl->IsThreadValid(playerThreadID)) {
+            // In an active OStim scene this key changes furniture. Preserve
+            // OStim's normal behavior; the consent gate applies only to the
+            // initial scene-start gesture.
+            return false;
+        }
+
+        auto* pick = RE::CrosshairPickData::GetSingleton();
+        if (!pick) {
+            return false;
+        }
+
+        auto targetRef = pick->targetActor.get();
+        if (!targetRef) {
+            targetRef = pick->target.get();
+        }
+        auto* target = targetRef ? targetRef->As<RE::Actor>() : nullptr;
+        if (!IsDynamicSTRProxy(target)) {
+            return false;
+        }
+
+        const auto connection =
+            STRPMTransport::GetSingleton().ResolveConnection(target->GetFormID());
+        if (!connection) {
+            RE::DebugNotification("Remote player is not ready");
+            SKSE::log::warn(
+                "OSTNET COOP DIRECT GATE consume unresolved proxy={:08X}",
+                target->GetFormID());
+            return true;
+        }
+
+        BeginDirectStartIntent(target, *connection);
+        return true;
+    }
+
+    void CoopSessionManager::BeginDirectStartIntent(
+        RE::Actor* target,
+        STRPMApi::ConnectionID connectionID)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || !target || connectionID == 0) {
+            return;
+        }
+
+        OwnerSession session{};
+        session.sessionID = _nextSessionID.fetch_add(1);
+        session.actorFormIDs = {
+            player->GetFormID(),
+            target->GetFormID()
+        };
+        session.participants.insert(connectionID);
+        session.directStartIntent = true;
+
+        const auto sessionID = session.sessionID;
+        {
+            std::scoped_lock lock(_mutex);
+            _ownerSessions[sessionID] = std::move(session);
+        }
+
+        SKSE::log::info(
+            "OSTNET COOP DIRECT GATE session={} target={:08X} connection={} uiSuppressed=1 furnitureShown=0",
+            sessionID,
+            target->GetFormID(),
+            connectionID);
+        RE::DebugNotification("Waiting for consent");
+
+        // Keep transport/UI work out of the input sink. This task runs after
+        // the input event has been stopped, so OStim never sees the original
+        // key press and cannot open Furniture/Add Actor before consent.
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([this, sessionID]() {
+                StopPreflightAndInvite(sessionID);
+            });
+        } else {
+            StopPreflightAndInvite(sessionID);
+        }
     }
 
     std::unordered_set<STRPMApi::ConnectionID>
@@ -303,11 +424,13 @@ namespace OStimTogether
         const auto sessionID = session.sessionID;
         const auto preflightThreadID = session.preflightThreadID;
         const auto participantCount = session.participants.size();
+        std::string capturedNode;
 
         {
             std::scoped_lock lock(_mutex);
             _ownerSessions[sessionID] = std::move(session);
             _pendingOwnerByThread[preflightThreadID] = sessionID;
+            capturedNode = _ownerSessions[sessionID].nodeID;
         }
 
         SKSE::log::info(
@@ -315,7 +438,7 @@ namespace OStimTogether
             sessionID,
             preflightThreadID,
             participantCount,
-            _ownerSessions[sessionID].nodeID);
+            capturedNode);
 
         if (auto* tasks = SKSE::GetTaskInterface()) {
             tasks->AddTask([this, sessionID]() {
@@ -367,10 +490,11 @@ namespace OStimTogether
         }
 
         SKSE::log::info(
-            "OSTNET COOP INVITE TX session={} participants={} node={} localSceneActive=0",
+            "OSTNET COOP INVITE TX session={} participants={} node={} localSceneActive=0 source={}",
             sessionID,
             snapshot.participants.size(),
-            snapshot.nodeID);
+            snapshot.nodeID,
+            snapshot.directStartIntent ? "pre-ui" : "fallback-preflight");
         QueueOwnerTimeout(sessionID);
     }
 
@@ -381,6 +505,7 @@ namespace OStimTogether
             if (auto* tasks = SKSE::GetTaskInterface()) {
                 tasks->AddTask([this, sessionID]() {
                     bool timeout = false;
+                    bool direct = false;
                     {
                         std::scoped_lock lock(_mutex);
                         const auto it = _ownerSessions.find(sessionID);
@@ -388,9 +513,14 @@ namespace OStimTogether
                                   !it->second.active &&
                                   !it->second.restarting &&
                                   !it->second.canceled;
+                        direct = it != _ownerSessions.end() &&
+                                 it->second.directStartIntent;
                     }
                     if (timeout) {
                         CancelOwnerSession(sessionID, "timeout");
+                        if (direct) {
+                            RE::DebugNotification("Consent request timed out");
+                        }
                     }
                 });
             }
@@ -443,6 +573,7 @@ namespace OStimTogether
     {
         bool start = false;
         bool cancel = false;
+        bool direct = false;
         {
             std::scoped_lock lock(_mutex);
             const auto it = _ownerSessions.find(sessionID);
@@ -453,6 +584,7 @@ namespace OStimTogether
                 return;
             }
 
+            direct = it->second.directStartIntent;
             if (!accepted) {
                 it->second.canceled = true;
                 cancel = true;
@@ -466,14 +598,18 @@ namespace OStimTogether
         }
 
         SKSE::log::info(
-            "OSTNET COOP INVITE RESPONSE RX session={} connection={} accepted={} start={}",
+            "OSTNET COOP INVITE RESPONSE RX session={} connection={} accepted={} start={} source={}",
             sessionID,
             participantConnectionID,
             accepted ? 1 : 0,
-            start ? 1 : 0);
+            start ? 1 : 0,
+            direct ? "pre-ui" : "fallback-preflight");
 
         if (cancel) {
             CancelOwnerSession(sessionID, "declined");
+            if (direct) {
+                RE::DebugNotification("Scene request declined");
+            }
         } else if (start) {
             StartApprovedOwnerSession(sessionID);
         }
@@ -531,13 +667,14 @@ namespace OStimTogether
             &newThreadID);
 
         SKSE::log::info(
-            "OSTNET COOP APPROVED START session={} requestedNode={} actors={} furniture={:08X} result={} returnedThread={}",
+            "OSTNET COOP APPROVED START session={} requestedNode={} actors={} furniture={:08X} result={} returnedThread={} pipeline={}",
             sessionID,
             snapshot.nodeID,
             actorCount,
             snapshot.furnitureFormID,
             static_cast<int>(result),
-            newThreadID);
+            newThreadID,
+            snapshot.directStartIntent ? "normal-ostim-pre-scene-ui" : "captured-replay");
 
         if (result != OStimModAPI::Scene::APIResult::OK) {
             std::scoped_lock lock(_mutex);
@@ -582,6 +719,9 @@ namespace OStimTogether
             if (snapshot.activeThreadID >= 0) {
                 _activeOwnerByThread.erase(snapshot.activeThreadID);
             }
+            if (_approvedReplayArmed && *_approvedReplayArmed == sessionID) {
+                _approvedReplayArmed.reset();
+            }
         }
 
         for (const auto connectionID : snapshot.participants) {
@@ -593,9 +733,10 @@ namespace OStimTogether
                     SafeLabel(reason)));
         }
         SKSE::log::info(
-            "OSTNET COOP CANCEL session={} reason={}",
+            "OSTNET COOP CANCEL session={} reason={} source={}",
             sessionID,
-            reason);
+            reason,
+            snapshot.directStartIntent ? "pre-ui" : "fallback-preflight");
     }
 
     bool CoopSessionManager::RouteOwnerPayload(std::string_view payload)
@@ -874,16 +1015,21 @@ namespace OStimTogether
                     _activeOwnerByThread[threadID] = sessionID;
                     _approvedReplayArmed.reset();
                     SKSE::log::info(
-                        "OSTNET COOP APPROVED THREAD LIVE session={} thread={} node={}",
+                        "OSTNET COOP APPROVED THREAD LIVE session={} thread={} node={} source={}",
                         sessionID,
                         threadID,
-                        nodeID);
+                        nodeID,
+                        it->second.directStartIntent ? "pre-ui" : "fallback-preflight");
                     return;
                 }
                 _approvedReplayArmed.reset();
             }
         }
 
+        // Fallback path for OStim flows we cannot currently intercept before
+        // thread creation (notably selecting a remote proxy inside OStim's
+        // internal Add Actor message-box callback). PreflightGuard suppresses
+        // all other OStim Together listeners for this disposable thread.
         auto participants = ResolveRemoteParticipants(thread);
         if (participants.empty()) {
             return;
@@ -1018,6 +1164,15 @@ namespace OStimTogether
                     route->ownerConnectionID,
                     route->ownerThreadID));
                 _mirrorRoutes.erase(routeIt);
+            }
+
+            const auto ownerIt = _activeOwnerByThread.find(localThreadID);
+            if (ownerIt != _activeOwnerByThread.end()) {
+                const auto sessionIt = _ownerSessions.find(ownerIt->second);
+                if (sessionIt != _ownerSessions.end()) {
+                    sessionIt->second.active = false;
+                }
+                _activeOwnerByThread.erase(ownerIt);
             }
         }
 
