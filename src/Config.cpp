@@ -51,6 +51,20 @@ namespace OStimTogether
                 cfg.clearKey,
                 kIniPath));
 
+        cfg.consentAcceptKey = static_cast<std::uint32_t>(
+            GetPrivateProfileIntW(
+                L"General",
+                L"ConsentAcceptKey",
+                cfg.consentAcceptKey,
+                kIniPath));
+
+        cfg.consentDeclineKey = static_cast<std::uint32_t>(
+            GetPrivateProfileIntW(
+                L"General",
+                L"ConsentDeclineKey",
+                cfg.consentDeclineKey,
+                kIniPath));
+
         cfg.intervalMs = static_cast<std::uint32_t>(
             GetPrivateProfileIntW(
                 L"General",
@@ -70,11 +84,7 @@ namespace OStimTogether
             L"DebugNotifications",
             cfg.debugNotifications);
 
-        cfg.intervalMs = Clamp(
-            cfg.intervalMs,
-            25,
-            1000);
-
+        cfg.intervalMs = Clamp(cfg.intervalMs, 25, 1000);
         return cfg;
     }
 }
