@@ -8,6 +8,7 @@
 #include "Input.h"
 #include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
+#include "PreflightGuard.h"
 #include "RaceMenuOverlayBridge.h"
 #include "STRPMTransport.h"
 #include "VisualKeepAlive.h"
@@ -27,88 +28,55 @@ namespace
 
         *path /= "OStimTogether.log";
 
-        auto sink =
-            std::make_shared<
-                spdlog::sinks::basic_file_sink_mt>(
-                    path->string(),
-                    true);
+        auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
+            path->string(), true);
+        auto log = std::make_shared<spdlog::logger>(
+            "OStimTogether", std::move(sink));
 
-        auto log =
-            std::make_shared<spdlog::logger>(
-                "OStimTogether",
-                std::move(sink));
-
-        spdlog::set_default_logger(
-            std::move(log));
-
-        spdlog::set_level(
-            spdlog::level::trace);
-
-        spdlog::flush_on(
-            spdlog::level::trace);
+        spdlog::set_default_logger(std::move(log));
+        spdlog::set_level(spdlog::level::trace);
+        spdlog::flush_on(spdlog::level::trace);
     }
 
-    void OnSKSEMessage(
-        SKSE::MessagingInterface::Message* message)
+    void OnSKSEMessage(SKSE::MessagingInterface::Message* message)
     {
         switch (message->type) {
         case SKSE::MessagingInterface::kPostPostLoad:
-            OStimTogether::RaceMenuOverlayBridge::
-                GetSingleton().Initialize();
+            OStimTogether::RaceMenuOverlayBridge::GetSingleton().Initialize();
 
-            OStimTogether::OStimBridge::
-                GetSingleton().Initialize();
+            // Must be registered before every other OStim Together START
+            // listener. It classifies the disposable pre-consent thread before
+            // OStimBridge can arm authoritative wall/pose/network tasks.
+            OStimTogether::PreflightGuard::GetSingleton().Initialize();
 
-            OStimTogether::CoopSessionManager::
-                GetSingleton().Initialize();
-
-            OStimTogether::MirrorUndressRepair::
-                GetSingleton().Initialize();
-
-            OStimTogether::AddonStateRepair::
-                GetSingleton().Initialize();
+            OStimTogether::OStimBridge::GetSingleton().Initialize();
+            OStimTogether::CoopSessionManager::GetSingleton().Initialize();
+            OStimTogether::MirrorUndressRepair::GetSingleton().Initialize();
+            OStimTogether::AddonStateRepair::GetSingleton().Initialize();
             break;
 
         case SKSE::MessagingInterface::kInputLoaded:
-            OStimTogether::InputHandler::
-                GetSingleton().Register();
+            OStimTogether::InputHandler::GetSingleton().Register();
             break;
 
         case SKSE::MessagingInterface::kDataLoaded:
-            OStimTogether::AddonBridge::
-                GetSingleton().Register();
+            OStimTogether::AddonBridge::GetSingleton().Register();
+            OStimTogether::EquipmentLock::GetSingleton().Start();
 
-            OStimTogether::EquipmentLock::
-                GetSingleton().Start();
-
-            // STRPM is the only multiplayer transport on this branch.
-            // If it is unavailable, synchronization is intentionally disabled
-            // rather than falling back to the unvalidated custom UDP stack.
-            if (!OStimTogether::STRPMTransport::
-                    GetSingleton().Start()) {
+            if (!OStimTogether::STRPMTransport::GetSingleton().Start()) {
                 SKSE::log::error(
                     "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
             }
 
-            OStimTogether::VisualKeepAlive::
-                GetSingleton().Start();
+            OStimTogether::VisualKeepAlive::GetSingleton().Start();
             break;
 
         case SKSE::MessagingInterface::kPreLoadGame:
-            OStimTogether::EquipmentLock::
-                GetSingleton().ClearAllOStimTargets();
-
-            OStimTogether::EquipmentLock::
-                GetSingleton().ClearManual();
-
-            OStimTogether::DefaultOutfitGuard::
-                GetSingleton().RestoreAll();
-
-            OStimTogether::CoopSessionManager::
-                GetSingleton().Reset();
-
-            OStimTogether::OStimBridge::
-                GetSingleton().ResetRemoteState();
+            OStimTogether::EquipmentLock::GetSingleton().ClearAllOStimTargets();
+            OStimTogether::EquipmentLock::GetSingleton().ClearManual();
+            OStimTogether::DefaultOutfitGuard::GetSingleton().RestoreAll();
+            OStimTogether::CoopSessionManager::GetSingleton().Reset();
+            OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
             break;
 
         default:
@@ -126,17 +94,12 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
         "OStim Together v{} loading (STRPM-only transport)",
         OSTIM_TOGETHER_VERSION);
 
-    auto* messaging =
-        SKSE::GetMessagingInterface();
-
+    auto* messaging = SKSE::GetMessagingInterface();
     if (!messaging) {
-        SKSE::log::critical(
-            "No SKSE messaging interface");
+        SKSE::log::critical("No SKSE messaging interface");
         return false;
     }
 
-    messaging->RegisterListener(
-        OnSKSEMessage);
-
+    messaging->RegisterListener(OnSKSEMessage);
     return true;
 }
