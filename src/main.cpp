@@ -8,6 +8,7 @@
 #include "Input.h"
 #include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
+#include "PapyrusConsentBridge.h"
 #include "PreflightGuard.h"
 #include "RaceMenuOverlayBridge.h"
 #include "STRPMTransport.h"
@@ -98,6 +99,13 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     if (!messaging) {
         SKSE::log::critical("No SKSE messaging interface");
         return false;
+    }
+
+    if (auto* papyrus = SKSE::GetPapyrusInterface()) {
+        papyrus->Register(OStimTogether::PapyrusConsentBridge::Register);
+    } else {
+        SKSE::log::warn(
+            "OSTNET PAPYRUS CONSENT bridge unavailable: no Papyrus interface");
     }
 
     messaging->RegisterListener(OnSKSEMessage);
