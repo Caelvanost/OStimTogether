@@ -17,9 +17,6 @@ namespace OStimTogether
         bool Initialize();
         void Reset();
 
-        // Legacy 0.23.x keyboard consent is kept as a no-op compatibility
-        // entry point for Input.cpp. Consent is modal again in 0.24.0 via the
-        // Skyrim-Souls-safe MessageBox implementation.
         bool HandleConsentKey(std::uint32_t) { return false; }
 
         bool InterceptOutgoing(std::string_view payload);
@@ -27,6 +24,16 @@ namespace OStimTogether
             STRPMApi::ConnectionID senderConnectionID,
             std::string_view sender,
             std::string_view payload);
+
+        // StartApprovedOwnerSession arms the accepted replay immediately
+        // before calling OStim StartScene(). A listener registered before the
+        // manager can use this to distinguish that approved replay from the
+        // disposable initial preflight thread.
+        bool IsApprovedReplayArmed() const
+        {
+            std::scoped_lock lock(_mutex);
+            return _approvedReplayArmed.has_value();
+        }
 
     private:
         CoopSessionManager() = default;
@@ -89,13 +96,9 @@ namespace OStimTogether
             bool stop{ false };
         };
 
-        static std::optional<std::string> Field(
-            std::string_view payload,
-            std::string_view key);
-        static std::optional<std::int32_t> ThreadID(
-            std::string_view payload);
-        static std::optional<std::uint64_t> SessionID(
-            std::string_view payload);
+        static std::optional<std::string> Field(std::string_view payload, std::string_view key);
+        static std::optional<std::int32_t> ThreadID(std::string_view payload);
+        static std::optional<std::uint64_t> SessionID(std::string_view payload);
         static std::string SafeLabel(std::string_view value);
         static std::string MirrorKey(
             STRPMApi::ConnectionID ownerConnectionID,
@@ -123,9 +126,7 @@ namespace OStimTogether
             bool accepted);
         void StartApprovedOwnerSession(std::uint64_t sessionID);
         void RetryStartApprovedOwnerSession(std::uint64_t sessionID);
-        void CancelOwnerSession(
-            std::uint64_t sessionID,
-            std::string_view reason);
+        void CancelOwnerSession(std::uint64_t sessionID, std::string_view reason);
 
         void ShowInviteMessageBox(
             STRPMApi::ConnectionID ownerConnectionID,
@@ -167,9 +168,6 @@ namespace OStimTogether
         std::unordered_map<std::int32_t, std::uint64_t> _pendingOwnerByThread;
         std::unordered_map<std::int32_t, std::uint64_t> _activeOwnerByThread;
 
-        // StartScene() invokes OStim listeners synchronously. This arm tells
-        // HandleThreadStart that the next matching local player thread is the
-        // accepted replay and must not be preflighted a second time.
         std::optional<std::uint64_t> _approvedReplayArmed;
 
         std::vector<PendingMirrorStart> _pendingMirrorStarts;
