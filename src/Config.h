@@ -8,6 +8,8 @@ namespace OStimTogether
     {
         std::uint32_t toggleKey{ 0x44 };  // F10
         std::uint32_t clearKey{ 0x57 };   // F11
+        std::uint32_t consentAcceptKey{ 0x15 };  // Y (DirectInput scan code)
+        std::uint32_t consentDeclineKey{ 0x31 }; // N (DirectInput scan code)
         std::uint32_t intervalMs{ 25 };
 
         std::uint32_t slotMask{
