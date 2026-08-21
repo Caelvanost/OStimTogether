@@ -159,14 +159,16 @@ namespace OStimTogether
                 continue;
             }
 
-            if (CoopSessionManager::GetSingleton().
-                    TryGateDirectSceneStart(key)) {
+            auto& coop = CoopSessionManager::GetSingleton();
+            coop.CleanupCompletedDirectSessions();
+
+            if (coop.TryGateDirectSceneStart(key)) {
                 _suppressedSceneStartKey = key;
                 stopPropagation = true;
                 continue;
             }
 
-            if (CoopSessionManager::GetSingleton().HandleConsentKey(key)) {
+            if (coop.HandleConsentKey(key)) {
                 continue;
             }
 
