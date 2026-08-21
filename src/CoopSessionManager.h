@@ -24,6 +24,16 @@ namespace OStimTogether
         // crosshair target is a mapped STR player proxy and consent is pending.
         bool TryGateDirectSceneStart(std::uint32_t keyCode);
 
+        // Called by the patched OSKSE.UIExtMessageBox bridge after the user
+        // selects an entry. If the selected label resolves to an STR player
+        // proxy, starts a consent request and returns a positive gate ID.
+        // Non-player/non-proxy labels return 0 and OStim continues normally.
+        std::int32_t BeginAddActorConsent(std::string_view selectedLabel);
+
+        // 0 = still waiting, 1 = accepted and the next OStim thread is armed,
+        // -1 = declined/timed out/canceled.
+        std::int32_t PollAddActorConsent(std::int32_t gateID);
+
         // A completed direct-start session keeps its historical thread ID for
         // diagnostics/routing cleanup. Mark it closed before evaluating a new
         // scene-start input so it cannot be mistaken for a still-pending
@@ -197,6 +207,13 @@ namespace OStimTogether
         std::unordered_map<std::int32_t, std::uint64_t> _activeOwnerByThread;
 
         std::optional<std::uint64_t> _approvedReplayArmed;
+
+        // Temporary consent requests created while OStim's UIExtensions
+        // Add Actor list is paused. A gate may be attached to an already armed
+        // direct-start session (e.g. adding a third remote player) or may arm
+        // itself as the next authoritative owner session.
+        std::unordered_map<std::uint64_t, std::optional<std::uint64_t>>
+            _addActorGateParents;
 
         std::vector<PendingMirrorStart> _pendingMirrorStarts;
         std::unordered_map<std::int32_t, MirrorRoute> _mirrorRoutes;
