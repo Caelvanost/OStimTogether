@@ -25,6 +25,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/AddActorConsentGate.cpp
         src/CoopSessionManager.cpp
         src/CoopSessionManager.h
+        src/OCumStateSync.cpp
+        src/OCumStateSync.h
         src/PapyrusConsentBridge.cpp
         src/PapyrusConsentBridge.h
         src/PreflightGuard.cpp
