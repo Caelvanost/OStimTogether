@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.23.0**.
+Current development version: **0.23.1**.
 
 The root `VERSION` file is the single source of truth for the project version. CMake, the DLL startup log, the Vortex archive name and the FOMOD archive name are derived from it.
 
@@ -44,7 +44,7 @@ When STRPM is unavailable or not connected, OStim Together drops multiplayer syn
 ## Current features
 
 - mirrored OStim `START`, `NODE`, `SPEED`, and `STOP` state;
-- remote consent request before a player's local character is entered into another player's synchronized OStim scene;
+- non-modal remote consent before a player's local character is entered into another player's synchronized OStim scene;
 - targeted STRPM scene traffic to the actual remote participants instead of broadcasting cooperative scene state to every connected player;
 - shared animation navigation and speed controls: any participant can control the scene, while the initiator remains the authoritative state owner;
 - shared scene termination: if any participant stops their local mirrored scene, a `CONTROL_STOP` request stops the authoritative OStim thread and the resulting `STOP` is replicated to every participant;
@@ -63,36 +63,60 @@ When STRPM is unavailable or not connected, OStim Together drops multiplayer syn
 - cached remote addon state reapplication after OStim node changes;
 - OStim Standalone 7.4c and 7.5b graph-layout compatibility.
 
+## 0.23.1 non-modal consent / startup-freeze fix
+
+0.23.0 initially used a native Skyrim `MessageBox` for remote consent and transmitted the invitation directly while still unwinding OStim's START/fade path. With Skyrim Souls / Unpaused Menus this could freeze the initiating client during the fade before the remote player ever received the consent dialog.
+
+0.23.1 removes the modal menu path completely.
+
+The authoritative START callback now only captures the cooperative session and returns to OStim. The actual targeted STRPM `INVITE` is dispatched **150 ms later** from Skyrim's task queue, after the OStim callback/fade-start path has unwound.
+
+Expected sender-side diagnostics:
+
+```text
+OSTNET COOP START CAPTURED thread=... participants=... dispatchDelayMs=150 callbackSafe=1
+OSTNET COOP INVITE TX DEFERRED thread=... participants=... status=pending
+```
+
+The receiving player now gets a normal non-blocking notification:
+
+```text
+OStim Together: <player> invites you - Y accept / N decline
+```
+
+No `MessageBoxData`, UIExtensions dialog, paused menu, or modal callback is created. This is intended to remain compatible with Skyrim Souls / Unpaused Menus.
+
+Default DirectInput scan codes are:
+
+```ini
+ConsentAcceptKey=21
+ConsentDeclineKey=49
+```
+
+which correspond to **Y** and **N** on the default keyboard mapping. These keys are only consumed while an OStim Together invitation is pending; otherwise they behave normally.
+
+The invitation still expires after 30 seconds. Timeout, decline, shared controls and shared STOP retain the 0.23.0 cooperative-session behavior.
+
+Expected receiver diagnostics:
+
+```text
+OSTNET COOP INVITE NONMODAL ownerConnection=... thread=... sender="..." acceptKey=21 declineKey=49
+OSTNET COOP INVITE RESPONSE TX ... accepted=1 source=keyboard
+```
+
 ## 0.23.0 cooperative scene sessions
 
 ### Consent before the remote mirror starts
 
 When the authoritative local OStim thread contains one or more STR remote-player proxies, OStim Together resolves each proxy back to its STRPM `ConnectionID` and sends a targeted invitation instead of immediately sending `START`.
 
-The remote player receives a native confirmation dialog:
-
-```text
-<player> wants to start an OStim scene with you. Accept?
-[Accept] [Decline]
-```
-
 The initiator's local OStim thread may already exist while consent is pending, but **the remote mirror is not created until all remote participants accept**.
 
-If a participant declines or the request is unanswered for 30 seconds, OStim Together cancels the invitation and stops the initiating local scene. A stale message-box callback cannot resurrect a canceled request.
-
-Expected diagnostics:
-
-```text
-OSTNET COOP READY consent=1 sharedControls=1 stopAnyParticipant=1 ...
-OSTNET COOP INVITE TX thread=... participants=... status=pending
-OSTNET COOP INVITE PROMPT ownerConnection=... thread=...
-OSTNET COOP INVITE RESPONSE TX ... accepted=1
-OSTNET COOP ACTIVE thread=... participants=...
-```
+If a participant declines or the request is unanswered for 30 seconds, OStim Together cancels the invitation and stops the initiating local scene.
 
 ### Shared animation controls
 
-The initiating player remains the **authoritative OStim thread owner**, but remote participants can now use their normal OStim controls on the mirrored scene.
+The initiating player remains the **authoritative OStim thread owner**, but remote participants can use their normal OStim controls on the mirrored scene.
 
 A remote local node/speed change is converted to a targeted request:
 
@@ -103,16 +127,7 @@ CONTROL_SPEED|thread=<owner thread>|speed=<speed>
 
 The owner validates that the sender is an accepted participant, applies the request through OStim's public ModAPI, and the ordinary authoritative `NODE` or `SPEED` packet then fans out to all participants.
 
-This prevents peer-to-peer state conflicts and avoids feedback loops. Network-applied node/speed changes are marked as expected mirror updates and are not echoed back as new control requests.
-
-Expected diagnostics:
-
-```text
-OSTNET COOP MIRROR ROUTE localThread=... ownerConnection=... ownerThread=...
-OSTNET COOP CONTROL NODE TX ...
-OSTNET COOP CONTROL NODE connection=... result=...
-OSTNET COOP CONTROL SPEED TX ...
-```
+Network-applied node/speed changes are marked as expected mirror updates and are not echoed back as new control requests.
 
 ### Any participant can end the scene
 
@@ -123,13 +138,6 @@ CONTROL_STOP|thread=<owner thread>
 ```
 
 The owner calls OStim `StopScene()` on the authoritative thread. The normal authoritative `STOP` then reaches every participant. This fixes the old behavior where the remote player's local scene could end and redress while the initiator still saw that player's proxy continuing the scene.
-
-Expected diagnostics:
-
-```text
-OSTNET COOP CONTROL STOP TX localThread=... ownerThread=...
-OSTNET COOP CONTROL STOP connection=... thread=... result=...
-```
 
 ## 0.22.x synchronization repairs
 
@@ -158,7 +166,7 @@ Expected startup diagnostics include:
 
 ```text
 OSTNET STRPM READY channel=ostimtogether ... proxyResolver=1 ...
-OSTNET COOP READY consent=1 sharedControls=1 stopAnyParticipant=1 ...
+OSTNET COOP READY consent=nonmodal sharedControls=1 stopAnyParticipant=1 ...
 ```
 
 ## OStim compatibility
@@ -204,6 +212,8 @@ The FOMOD layout is:
 [General]
 ToggleKey=68
 ClearKey=87
+ConsentAcceptKey=21
+ConsentDeclineKey=49
 IntervalMs=25
 DebugNotifications=1
 
@@ -224,10 +234,10 @@ Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 .\build-vortex.ps1
 ```
 
-With `VERSION` set to `0.23.0`, the Core output is:
+With `VERSION` set to `0.23.1`, the Core output is:
 
 ```text
-dist/OStimTogether-v0.23.0-Core-Vortex.zip
+dist/OStimTogether-v0.23.1-Core-Vortex.zip
 ```
 
 For the optional OCum integration, produce/copy its ESP and PEX as documented under `optional/OCumIntegration/`, then run:
@@ -239,7 +249,7 @@ For the optional OCum integration, produce/copy its ESP and PEX as documented un
 The FOMOD output is:
 
 ```text
-dist/OStimTogether-v0.23.0-FOMOD.zip
+dist/OStimTogether-v0.23.1-FOMOD.zip
 ```
 
 Changing `VERSION` automatically changes both archive names, the CMake project version and the version reported by the DLL at startup. `build-fomod.ps1` also stamps the staged FOMOD `info.xml` with the same value.
