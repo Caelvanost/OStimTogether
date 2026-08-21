@@ -22,6 +22,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/AddonBridge.h
         src/AddonStateRepair.cpp
         src/AddonStateRepair.h
+        src/CoopSessionManager.cpp
+        src/CoopSessionManager.h
         src/Config.cpp
         src/Config.h
         src/EquipmentLock.cpp
