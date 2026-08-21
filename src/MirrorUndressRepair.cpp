@@ -24,14 +24,62 @@ namespace OStimTogether
                    (base->GetFormID() & kDynamicMask) == kDynamicMask;
         }
 
-        bool HasWorn(
-            RE::Actor* actor,
+        std::uint32_t SlotMask(
             RE::BGSBipedObjectForm::BipedObjectSlot slot)
         {
-            // CommonLibSSE-NG 3.5.3 exposes the Actor overload used by the
-            // project's Windows toolchain as GetWornArmor(slot). Do not pass
-            // the newer optional no-init argument here.
-            return actor && actor->GetWornArmor(slot) != nullptr;
+            return static_cast<std::uint32_t>(slot);
+        }
+
+        constexpr std::uint32_t kResidualApparelMask =
+            static_cast<std::uint32_t>(
+                RE::BGSBipedObjectForm::BipedObjectSlot::kHead) |
+            static_cast<std::uint32_t>(
+                RE::BGSBipedObjectForm::BipedObjectSlot::kHair) |
+            static_cast<std::uint32_t>(
+                RE::BGSBipedObjectForm::BipedObjectSlot::kHands) |
+            static_cast<std::uint32_t>(
+                RE::BGSBipedObjectForm::BipedObjectSlot::kForearms) |
+            static_cast<std::uint32_t>(
+                RE::BGSBipedObjectForm::BipedObjectSlot::kFeet) |
+            static_cast<std::uint32_t>(
+                RE::BGSBipedObjectForm::BipedObjectSlot::kCalves) |
+            static_cast<std::uint32_t>(
+                RE::BGSBipedObjectForm::BipedObjectSlot::kCirclet) |
+            static_cast<std::uint32_t>(
+                RE::BGSBipedObjectForm::BipedObjectSlot::kEars);
+
+        bool ResolveMirrorPlayer(
+            OStim::Thread* thread,
+            OStim::ThreadActor*& outThreadActor,
+            RE::Actor*& outPlayer)
+        {
+            outThreadActor = nullptr;
+            outPlayer = nullptr;
+
+            if (!thread) {
+                return false;
+            }
+
+            bool hasSTRProxy = false;
+
+            for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+                auto* ta = thread->getActor(i);
+                auto* actor = ta ?
+                    static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
+
+                if (!actor) {
+                    continue;
+                }
+
+                if (actor->IsPlayerRef()) {
+                    outThreadActor = ta;
+                    outPlayer = actor;
+                } else if (IsLikelySTRRemotePlayerProxy(actor)) {
+                    hasSTRProxy = true;
+                }
+            }
+
+            return outThreadActor && outPlayer && hasSTRProxy;
         }
     }
 
@@ -44,6 +92,11 @@ namespace OStimTogether
     void MirrorUndressRepair::StartListener::listen(OStim::Thread* thread)
     {
         MirrorUndressRepair::GetSingleton().HandleStart(thread);
+    }
+
+    void MirrorUndressRepair::StopListener::listen(OStim::Thread* thread)
+    {
+        MirrorUndressRepair::GetSingleton().HandleStop(thread);
     }
 
     bool MirrorUndressRepair::Initialize()
@@ -85,6 +138,7 @@ namespace OStimTogether
         }
 
         _threads->registerThreadStartListener(&_startListener);
+        _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
             "MirrorUndressRepair READY threadsVersion={}",
@@ -98,32 +152,14 @@ namespace OStimTogether
             return;
         }
 
-        bool hasLocalPlayer = false;
-        bool hasSTRProxy = false;
-
-        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
-            auto* ta = thread->getActor(i);
-            auto* actor = ta ?
-                static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
-
-            if (!actor) {
-                continue;
-            }
-
-            hasLocalPlayer = hasLocalPlayer || actor->IsPlayerRef();
-            hasSTRProxy = hasSTRProxy || IsLikelySTRRemotePlayerProxy(actor);
-        }
-
-        if (!hasLocalPlayer || !hasSTRProxy) {
+        OStim::ThreadActor* playerTA = nullptr;
+        RE::Actor* player = nullptr;
+        if (!ResolveMirrorPlayer(thread, playerTA, player)) {
             return;
         }
 
         const auto threadID = thread->getThreadID();
 
-        // OStim's START callback precedes some of its initial equipment work.
-        // Use a small bounded set of checks so a body strip that finishes
-        // after the first sample can still expose a residual helmet/glove/boot
-        // regression. Fully clothed scenes remain untouched on every pass.
         constexpr std::array delays{
             std::chrono::milliseconds(180),
             std::chrono::milliseconds(600),
@@ -146,6 +182,31 @@ namespace OStimTogether
         }
     }
 
+    void MirrorUndressRepair::HandleStop(OStim::Thread* thread)
+    {
+        if (!thread) {
+            return;
+        }
+
+        const auto threadID = thread->getThreadID();
+
+        std::thread([this, threadID]() {
+            // Let OStim finish its own Redress path first. Re-equipping the
+            // handful of items that this repair forcibly removed afterwards
+            // is idempotent and preserves the player's pre-scene equipment.
+            std::this_thread::sleep_for(std::chrono::milliseconds(900));
+
+            auto* tasks = SKSE::GetTaskInterface();
+            if (!tasks) {
+                return;
+            }
+
+            tasks->AddTask([this, threadID]() {
+                RestoreResidual(threadID);
+            });
+        }).detach();
+    }
+
     void MirrorUndressRepair::Repair(std::int32_t threadID)
     {
         if (!_threads) {
@@ -159,62 +220,256 @@ namespace OStimTogether
 
         OStim::ThreadActor* playerTA = nullptr;
         RE::Actor* player = nullptr;
-        bool hasSTRProxy = false;
+        if (!ResolveMirrorPlayer(thread, playerTA, player)) {
+            return;
+        }
 
-        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
-            auto* ta = thread->getActor(i);
-            auto* actor = ta ?
-                static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
+        const auto inventory = player->GetInventory();
 
-            if (!actor) {
+        bool bodyWorn = false;
+        std::uint32_t wornArmorCount = 0;
+        std::uint32_t residualCount = 0;
+
+        for (const auto& [object, data] : inventory) {
+            if (!object || !data.second || !data.second->IsWorn()) {
                 continue;
             }
 
-            if (actor->IsPlayerRef()) {
-                playerTA = ta;
-                player = actor;
-            } else if (IsLikelySTRRemotePlayerProxy(actor)) {
-                hasSTRProxy = true;
+            auto* armor = object->As<RE::TESObjectARMO>();
+            if (!armor) {
+                continue;
             }
-        }
 
-        if (!playerTA || !player || !hasSTRProxy) {
-            return;
-        }
+            ++wornArmorCount;
 
-        using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
+            const auto mask = static_cast<std::uint32_t>(
+                armor->GetSlotMask());
 
-        const bool body = HasWorn(player, Slot::kBody);
-        const bool head = HasWorn(player, Slot::kHead);
-        const bool hands = HasWorn(player, Slot::kHands) ||
-                           HasWorn(player, Slot::kForearms);
-        const bool feet = HasWorn(player, Slot::kFeet) ||
-                          HasWorn(player, Slot::kCalves);
+            if ((mask & SlotMask(
+                    RE::BGSBipedObjectForm::BipedObjectSlot::kBody)) != 0) {
+                bodyWorn = true;
+            }
 
-        // Target the observed STR mirror regression specifically: the body is
-        // already stripped by OStim, but a residual primary armor piece such
-        // as Elir's helmet remains equipped. Do not force fully clothed scenes
-        // to undress.
-        if (body || (!head && !hands && !feet)) {
+            if ((mask & kResidualApparelMask) != 0) {
+                ++residualCount;
+            }
+
             SKSE::log::info(
-                "OSTNET MIRROR UNDRESS CHECK thread={} actor={:08X} body={} head={} hands={} feet={} action=none",
+                "OSTNET MIRROR WORN thread={} actor={:08X} item={:08X} slots=0x{:08X} residual={}",
                 threadID,
                 player->GetFormID(),
-                body ? 1 : 0,
-                head ? 1 : 0,
-                hands ? 1 : 0,
-                feet ? 1 : 0);
+                object->GetFormID(),
+                mask,
+                (mask & kResidualApparelMask) != 0 ? 1 : 0);
+        }
+
+        if (bodyWorn) {
+            SKSE::log::info(
+                "OSTNET MIRROR UNDRESS CHECK thread={} actor={:08X} worn={} residual={} body=1 action=wait",
+                threadID,
+                player->GetFormID(),
+                wornArmorCount,
+                residualCount);
             return;
         }
 
+        if (residualCount == 0) {
+            SKSE::log::info(
+                "OSTNET MIRROR UNDRESS CHECK thread={} actor={:08X} worn={} residual=0 body=0 action=clean",
+                threadID,
+                player->GetFormID(),
+                wornArmorCount);
+            return;
+        }
+
+        // Give OStim one last chance through its own undressing backend first.
+        // Some setups use OUndress/Papyrus and complete asynchronously.
         playerTA->undress();
 
         SKSE::log::info(
-            "OSTNET MIRROR UNDRESS REPAIR thread={} actor={:08X} body=0 head={} hands={} feet={} action=OStim-undress",
+            "OSTNET MIRROR UNDRESS REPAIR thread={} actor={:08X} body=0 residual={} action=OStim-undress+verify",
             threadID,
             player->GetFormID(),
-            head ? 1 : 0,
-            hands ? 1 : 0,
-            feet ? 1 : 0);
+            residualCount);
+
+        constexpr std::array verifyDelays{
+            std::chrono::milliseconds(220),
+            std::chrono::milliseconds(650)
+        };
+
+        for (const auto delay : verifyDelays) {
+            std::thread([this, threadID, delay]() {
+                std::this_thread::sleep_for(delay);
+
+                auto* tasks = SKSE::GetTaskInterface();
+                if (!tasks) {
+                    return;
+                }
+
+                tasks->AddTask([this, threadID]() {
+                    ForceResidualUnequip(threadID);
+                });
+            }).detach();
+        }
+    }
+
+    void MirrorUndressRepair::ForceResidualUnequip(std::int32_t threadID)
+    {
+        if (!_threads) {
+            return;
+        }
+
+        auto* thread = _threads->getThread(threadID);
+        if (!thread) {
+            return;
+        }
+
+        OStim::ThreadActor* playerTA = nullptr;
+        RE::Actor* player = nullptr;
+        if (!ResolveMirrorPlayer(thread, playerTA, player)) {
+            return;
+        }
+
+        auto* equipManager = RE::ActorEquipManager::GetSingleton();
+        if (!equipManager) {
+            return;
+        }
+
+        const auto inventory = player->GetInventory();
+
+        // Never convert an intentionally clothed scene into a nude one. This
+        // force path is enabled only after the body slot has already been
+        // stripped by OStim itself.
+        for (const auto& [object, data] : inventory) {
+            if (!object || !data.second || !data.second->IsWorn()) {
+                continue;
+            }
+
+            auto* armor = object->As<RE::TESObjectARMO>();
+            if (!armor) {
+                continue;
+            }
+
+            const auto mask = static_cast<std::uint32_t>(
+                armor->GetSlotMask());
+            if ((mask & SlotMask(
+                    RE::BGSBipedObjectForm::BipedObjectSlot::kBody)) != 0) {
+                SKSE::log::info(
+                    "OSTNET MIRROR RESIDUAL FORCE thread={} actor={:08X} abort=body-restored",
+                    threadID,
+                    player->GetFormID());
+                return;
+            }
+        }
+
+        std::vector<RE::FormID> removed;
+
+        for (const auto& [object, data] : inventory) {
+            if (!object || !data.second || !data.second->IsWorn()) {
+                continue;
+            }
+
+            auto* armor = object->As<RE::TESObjectARMO>();
+            if (!armor) {
+                continue;
+            }
+
+            const auto mask = static_cast<std::uint32_t>(
+                armor->GetSlotMask());
+            if ((mask & kResidualApparelMask) == 0) {
+                continue;
+            }
+
+            removed.push_back(object->GetFormID());
+
+            SKSE::log::info(
+                "OSTNET MIRROR RESIDUAL UNEQUIP thread={} actor={:08X} item={:08X} slots=0x{:08X}",
+                threadID,
+                player->GetFormID(),
+                object->GetFormID(),
+                mask);
+
+            equipManager->UnequipObject(
+                player,
+                object,
+                nullptr,
+                1,
+                nullptr,
+                false,
+                true,
+                false,
+                true);
+        }
+
+        if (removed.empty()) {
+            return;
+        }
+
+        {
+            std::scoped_lock lock(_mutex);
+            auto& snapshot = _residualByThread[threadID];
+            snapshot.actorFormID = player->GetFormID();
+            for (const auto id : removed) {
+                if (std::find(
+                        snapshot.items.begin(),
+                        snapshot.items.end(),
+                        id) == snapshot.items.end()) {
+                    snapshot.items.push_back(id);
+                }
+            }
+        }
+    }
+
+    void MirrorUndressRepair::RestoreResidual(std::int32_t threadID)
+    {
+        ResidualSnapshot snapshot;
+
+        {
+            std::scoped_lock lock(_mutex);
+            const auto it = _residualByThread.find(threadID);
+            if (it == _residualByThread.end()) {
+                return;
+            }
+            snapshot = std::move(it->second);
+            _residualByThread.erase(it);
+        }
+
+        RE::Actor* actor = nullptr;
+        if (snapshot.actorFormID == 0x14) {
+            actor = RE::PlayerCharacter::GetSingleton();
+        } else {
+            auto* form = RE::TESForm::LookupByID(snapshot.actorFormID);
+            actor = form ? form->As<RE::Actor>() : nullptr;
+        }
+
+        auto* equipManager = RE::ActorEquipManager::GetSingleton();
+        if (!actor || !equipManager) {
+            return;
+        }
+
+        for (const auto formID : snapshot.items) {
+            auto* form = RE::TESForm::LookupByID(formID);
+            auto* object = form ? form->As<RE::TESBoundObject>() : nullptr;
+            if (!object || !object->As<RE::TESObjectARMO>()) {
+                continue;
+            }
+
+            equipManager->EquipObject(
+                actor,
+                object,
+                nullptr,
+                1,
+                nullptr,
+                true,
+                true,
+                false,
+                true);
+
+            SKSE::log::info(
+                "OSTNET MIRROR RESIDUAL RESTORE thread={} actor={:08X} item={:08X}",
+                threadID,
+                actor->GetFormID(),
+                formID);
+        }
     }
 }
