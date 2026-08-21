@@ -52,6 +52,14 @@ namespace OStimTogether
         gate.participants.insert(*connection);
         gate.nodeID = "add-actor";
 
+        // This is a consent-only pseudo-session, not an OStim scene request.
+        // HandleInviteResponse uses the normal accepted-session path and may
+        // call StartApprovedOwnerSession(). A deliberately invalid actor FormID
+        // makes that function exit through actor-missing before it can ever
+        // invoke OStim StartScene(). PollAddActorConsent then re-arms the gate
+        // for the REAL thread OStim creates after UIExtMessageBox returns.
+        gate.actorFormIDs.push_back(0);
+
         const auto gateID = gate.sessionID;
         if (gateID > static_cast<std::uint64_t>(
                          std::numeric_limits<std::int32_t>::max())) {
@@ -139,12 +147,10 @@ namespace OStimTogether
                     *parent,
                     ownerIt->second.participants.size());
             } else {
-                // HandleInviteResponse may already have attempted StartScene()
-                // for this temporary gate. Re-arm it as the owner of the real
-                // thread OStim creates only after the paused UI callback returns.
                 gate.canceled = false;
                 gate.restarting = true;
                 gate.active = false;
+                gate.actorFormIDs.clear();
                 _approvedReplayArmed = id;
 
                 SKSE::log::info(
