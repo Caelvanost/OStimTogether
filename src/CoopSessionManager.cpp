@@ -1,11 +1,9 @@
 #include "PCH.h"
 #include "CoopSessionManager.h"
 
-#include "Config.h"
+#include "SafeMessageBox.h"
 #include "STRPMTransport.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
-
-#include <cctype>
 
 namespace OStimTogether
 {
@@ -13,23 +11,16 @@ namespace OStimTogether
     {
         constexpr const char* kPluginName = "OStimTogether";
         constexpr auto kConsentTimeout = std::chrono::seconds(30);
-        constexpr auto kInviteDispatchDelay = std::chrono::milliseconds(150);
+        constexpr auto kRestartRetryDelay = std::chrono::milliseconds(100);
 
-        bool IsDynamicSTRProxy(RE::Actor* actor)
+        std::string GetNodeID(OStim::Thread* thread)
         {
-            if (!actor || actor->IsPlayerRef()) {
-                return false;
+            if (!thread) {
+                return {};
             }
-
-            auto* base = actor->GetActorBase();
-            if (!base) {
-                return false;
-            }
-
-            constexpr RE::FormID kDynamicMask = 0xFF000000;
-            return
-                (actor->GetFormID() & kDynamicMask) == kDynamicMask &&
-                (base->GetFormID() & kDynamicMask) == kDynamicMask;
+            auto* node = thread->getCurrentNode();
+            const auto* id = node ? node->getNodeID() : nullptr;
+            return id ? id : "";
         }
     }
 
@@ -65,25 +56,20 @@ namespace OStimTogether
     {
         const auto needle = fmt::format("{}=", key);
         std::size_t from = 0;
-
         while (from < payload.size()) {
             const auto pos = payload.find(needle, from);
             if (pos == std::string_view::npos) {
                 return std::nullopt;
             }
-
             if (pos == 0 || payload[pos - 1] == '|') {
                 const auto begin = pos + needle.size();
                 const auto end = payload.find('|', begin);
                 return std::string(payload.substr(
                     begin,
-                    end == std::string_view::npos ?
-                        payload.size() - begin : end - begin));
+                    end == std::string_view::npos ? payload.size() - begin : end - begin));
             }
-
             from = pos + needle.size();
         }
-
         return std::nullopt;
     }
 
@@ -91,10 +77,9 @@ namespace OStimTogether
         std::string_view payload)
     {
         const auto value = Field(payload, "thread");
-        if (!value || value->empty()) {
+        if (!value) {
             return std::nullopt;
         }
-
         try {
             return static_cast<std::int32_t>(std::stol(*value));
         } catch (...) {
@@ -102,11 +87,18 @@ namespace OStimTogether
         }
     }
 
-    std::string CoopSessionManager::MirrorKey(
-        STRPMApi::ConnectionID ownerConnectionID,
-        std::int32_t remoteThreadID)
+    std::optional<std::uint64_t> CoopSessionManager::SessionID(
+        std::string_view payload)
     {
-        return fmt::format("{}|{}", ownerConnectionID, remoteThreadID);
+        const auto value = Field(payload, "session");
+        if (!value) {
+            return std::nullopt;
+        }
+        try {
+            return static_cast<std::uint64_t>(std::stoull(*value));
+        } catch (...) {
+            return std::nullopt;
+        }
     }
 
     std::string CoopSessionManager::SafeLabel(std::string_view value)
@@ -120,6 +112,13 @@ namespace OStimTogether
         return result;
     }
 
+    std::string CoopSessionManager::MirrorKey(
+        STRPMApi::ConnectionID ownerConnectionID,
+        std::int32_t ownerThreadID)
+    {
+        return fmt::format("{}|{}", ownerConnectionID, ownerThreadID);
+    }
+
     bool CoopSessionManager::LoadOStimAPIs()
     {
         auto* messaging = SKSE::GetMessagingInterface();
@@ -129,34 +128,26 @@ namespace OStimTogether
         }
 
         OStim::InterfaceExchangeMessage exchange{};
-        const bool exchanged = messaging->Dispatch(
-            OStim::InterfaceExchangeMessage::MESSAGE_TYPE,
-            &exchange,
-            sizeof(exchange),
-            nullptr);
-
-        if (!exchanged || !exchange.interfaceMap) {
+        if (!messaging->Dispatch(
+                OStim::InterfaceExchangeMessage::MESSAGE_TYPE,
+                &exchange,
+                sizeof(exchange),
+                nullptr) ||
+            !exchange.interfaceMap) {
             return false;
         }
 
-        auto* base = exchange.interfaceMap->queryInterface(
-            OStim::ThreadInterface::NAME);
+        auto* base = exchange.interfaceMap->queryInterface(OStim::ThreadInterface::NAME);
         _threads = base ? static_cast<OStim::ThreadInterface*>(base) : nullptr;
 
         auto* declaration = SKSE::PluginDeclaration::GetSingleton();
-        const auto version = declaration ?
-            declaration->GetVersion() : REL::Version{ 0, 23, 1, 0 };
-        const auto pluginName = declaration ?
-            std::string(declaration->GetName()) : std::string(kPluginName);
+        const auto version = declaration ? declaration->GetVersion() : REL::Version{ 0, 24, 0, 0 };
+        const auto pluginName = declaration ? std::string(declaration->GetName()) : std::string(kPluginName);
 
-        const auto requestThread = reinterpret_cast<
-            OStimModAPI::Thread::RequestAPI>(
-                reinterpret_cast<void*>(
-                    GetProcAddress(module, "RequestPluginAPI_Thread")));
-        const auto requestScene = reinterpret_cast<
-            OStimModAPI::Scene::RequestAPI>(
-                reinterpret_cast<void*>(
-                    GetProcAddress(module, "RequestPluginAPI_Scene")));
+        const auto requestThread = reinterpret_cast<OStimModAPI::Thread::RequestAPI>(
+            reinterpret_cast<void*>(GetProcAddress(module, "RequestPluginAPI_Thread")));
+        const auto requestScene = reinterpret_cast<OStimModAPI::Scene::RequestAPI>(
+            reinterpret_cast<void*>(GetProcAddress(module, "RequestPluginAPI_Scene")));
 
         if (requestThread) {
             _threadControl = requestThread(
@@ -179,10 +170,8 @@ namespace OStimTogether
         if (_initialized.exchange(true)) {
             return _threads && _threadControl && _sceneControl;
         }
-
         if (!LoadOStimAPIs()) {
-            SKSE::log::error(
-                "OSTNET COOP unavailable: OStim thread/scene APIs missing");
+            SKSE::log::error("OSTNET COOP unavailable: OStim thread/scene APIs missing");
             return false;
         }
 
@@ -191,11 +180,8 @@ namespace OStimTogether
         _threads->registerSpeedChangedListener(&_speedListener);
         _threads->registerThreadStopListener(&_stopListener);
 
-        const auto cfg = Config::Load();
         SKSE::log::info(
-            "OSTNET COOP READY consent=nonmodal sharedControls=1 stopAnyParticipant=1 acceptKey={} declineKey={} threadsVersion={}",
-            cfg.consentAcceptKey,
-            cfg.consentDeclineKey,
+            "OSTNET COOP READY consent=safe-messagebox preflight=1 sharedControls=1 stopAnyParticipant=1 threadsVersion={}",
             _threads->getVersion());
         return true;
     }
@@ -203,162 +189,166 @@ namespace OStimTogether
     void CoopSessionManager::Reset()
     {
         std::scoped_lock lock(_mutex);
-        _authoritative.clear();
-        _pendingInvites.clear();
+        _ownerSessions.clear();
+        _pendingOwnerByThread.clear();
+        _activeOwnerByThread.clear();
+        _approvedReplayArmed.reset();
         _pendingMirrorStarts.clear();
         _mirrorRoutes.clear();
         _mirrorByRemote.clear();
         _mirrorSuppressions.clear();
-        _generation.fetch_add(1);
     }
 
-    bool CoopSessionManager::HandleConsentKey(std::uint32_t keyCode)
+    bool CoopSessionManager::IsDynamicSTRProxy(RE::Actor* actor) const
     {
-        static const Config config = Config::Load();
-        const bool accept = keyCode == config.consentAcceptKey;
-        const bool decline = keyCode == config.consentDeclineKey;
-        if (!accept && !decline) {
+        if (!actor || actor->IsPlayerRef()) {
             return false;
         }
-
-        {
-            std::scoped_lock lock(_mutex);
-            if (_pendingInvites.empty()) {
-                return false;
-            }
+        auto* base = actor->GetActorBase();
+        if (!base) {
+            return false;
         }
-
-        AnswerOldestInvite(accept);
-        return true;
+        constexpr RE::FormID kDynamicMask = 0xFF000000;
+        return
+            (actor->GetFormID() & kDynamicMask) == kDynamicMask &&
+            (base->GetFormID() & kDynamicMask) == kDynamicMask;
     }
 
     std::unordered_set<STRPMApi::ConnectionID>
-        CoopSessionManager::ResolveSceneParticipants(
-            std::string_view startPayload) const
+        CoopSessionManager::ResolveRemoteParticipants(OStim::Thread* thread) const
     {
         std::unordered_set<STRPMApi::ConnectionID> result;
-        const auto actors = Field(startPayload, "actors");
-        if (!actors || actors->empty()) {
+        if (!thread || !thread->isPlayerThread()) {
             return result;
         }
 
-        std::size_t begin = 0;
-        while (begin <= actors->size()) {
-            const auto end = actors->find(',', begin);
-            const auto entry = std::string_view(*actors).substr(
-                begin,
-                end == std::string::npos ?
-                    actors->size() - begin : end - begin);
-
-            const auto firstColon = entry.find(':');
-            const auto secondColon = firstColon == std::string_view::npos ?
-                std::string_view::npos : entry.find(':', firstColon + 1);
-
-            if (firstColon != std::string_view::npos &&
-                secondColon != std::string_view::npos) {
-                const auto role = entry.substr(
-                    firstColon + 1,
-                    secondColon - firstColon - 1);
-
-                // On the authoritative client the actual local player is
-                // role=player. Every other STR participant is represented by
-                // a dynamic proxy whose FormID can be reversed to ConnectionID.
-                if (role != "player") {
-                    try {
-                        const auto formID = static_cast<RE::FormID>(
-                            std::stoul(
-                                std::string(entry.substr(0, firstColon)),
-                                nullptr,
-                                16));
-                        if (const auto connection =
-                                STRPMTransport::GetSingleton().ResolveConnection(formID)) {
-                            result.insert(*connection);
-                        }
-                    } catch (...) {
-                    }
-                }
+        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+            auto* ta = thread->getActor(i);
+            auto* actor = ta ? static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
+            if (!IsDynamicSTRProxy(actor)) {
+                continue;
             }
-
-            if (end == std::string::npos) {
-                break;
+            if (const auto connection =
+                    STRPMTransport::GetSingleton().ResolveConnection(actor->GetFormID())) {
+                result.insert(*connection);
             }
-            begin = end + 1;
         }
-
         return result;
     }
 
-    bool CoopSessionManager::BeginConsent(std::string_view startPayload)
+    std::optional<CoopSessionManager::PendingMirrorStart>
+        CoopSessionManager::TakePendingMirrorStart(
+            OStim::Thread* thread,
+            std::string_view nodeID)
     {
-        const auto threadID = ThreadID(startPayload);
-        if (!threadID) {
-            return false;
+        if (!thread || !thread->isPlayerThread()) {
+            return std::nullopt;
         }
 
-        auto participants = ResolveSceneParticipants(startPayload);
-        if (participants.empty()) {
-            return false;
+        const auto now = std::chrono::steady_clock::now();
+        _pendingMirrorStarts.erase(
+            std::remove_if(
+                _pendingMirrorStarts.begin(),
+                _pendingMirrorStarts.end(),
+                [now](const PendingMirrorStart& entry) {
+                    return now - entry.created > std::chrono::seconds(5);
+                }),
+            _pendingMirrorStarts.end());
+
+        auto it = std::find_if(
+            _pendingMirrorStarts.begin(),
+            _pendingMirrorStarts.end(),
+            [nodeID](const PendingMirrorStart& entry) {
+                return entry.nodeID.empty() || nodeID.empty() || entry.nodeID == nodeID;
+            });
+        if (it == _pendingMirrorStarts.end()) {
+            return std::nullopt;
         }
 
-        AuthoritativeSession session{};
-        session.threadID = *threadID;
-        session.startPayload = std::string(startPayload);
+        const auto result = *it;
+        _pendingMirrorStarts.erase(it);
+        return result;
+    }
+
+    void CoopSessionManager::BeginOwnerPreflight(
+        OStim::Thread* thread,
+        std::unordered_set<STRPMApi::ConnectionID> participants,
+        std::string nodeID)
+    {
+        if (!thread || participants.empty()) {
+            return;
+        }
+
+        OwnerSession session{};
+        session.sessionID = _nextSessionID.fetch_add(1);
+        session.preflightThreadID = thread->getThreadID();
+        session.nodeID = std::move(nodeID);
         session.participants = std::move(participants);
-        session.generation = _generation.fetch_add(1);
 
-        const auto generation = session.generation;
+        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+            auto* ta = thread->getActor(i);
+            auto* actor = ta ? static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
+            if (actor) {
+                session.actorFormIDs.push_back(actor->GetFormID());
+            }
+        }
+
+        if (_threads && _threads->getVersion() >= 3) {
+            auto* furniture = static_cast<RE::TESObjectREFR*>(thread->getFurnitureObject());
+            if (furniture) {
+                session.furnitureFormID = furniture->GetFormID();
+            }
+        }
+
+        const auto sessionID = session.sessionID;
+        const auto preflightThreadID = session.preflightThreadID;
         const auto participantCount = session.participants.size();
+
         {
             std::scoped_lock lock(_mutex);
-            _authoritative[*threadID] = std::move(session);
+            _ownerSessions[sessionID] = std::move(session);
+            _pendingOwnerByThread[preflightThreadID] = sessionID;
         }
 
         SKSE::log::info(
-            "OSTNET COOP START CAPTURED thread={} participants={} dispatchDelayMs={} callbackSafe=1",
-            *threadID,
+            "OSTNET COOP PREFLIGHT CAPTURE session={} thread={} participants={} node={} action=stop-before-consent",
+            sessionID,
+            preflightThreadID,
             participantCount,
-            kInviteDispatchDelay.count());
+            _ownerSessions[sessionID].nodeID);
 
-        // Important: do not call STRPM send while we are still inside OStim's
-        // START callback/fade path. The worker only sleeps; actual session work
-        // is queued back onto Skyrim's task interface after the callback has
-        // fully unwound.
-        std::thread([this, threadID = *threadID, generation]() {
-            std::this_thread::sleep_for(kInviteDispatchDelay);
-            if (auto* tasks = SKSE::GetTaskInterface()) {
-                tasks->AddTask([this, threadID, generation]() {
-                    DispatchInvitesDeferred(threadID, generation);
-                });
-            }
-        }).detach();
-
-        QueueConsentTimeout(*threadID, generation);
-        return true;
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([this, sessionID]() {
+                StopPreflightAndInvite(sessionID);
+            });
+        }
     }
 
-    void CoopSessionManager::DispatchInvitesDeferred(
-        std::int32_t threadID,
-        std::uint64_t generation)
+    void CoopSessionManager::StopPreflightAndInvite(std::uint64_t sessionID)
     {
-        std::unordered_set<STRPMApi::ConnectionID> participants;
-        std::string node;
-        std::string inviter = "Player";
-
+        OwnerSession snapshot{};
         {
             std::scoped_lock lock(_mutex);
-            const auto it = _authoritative.find(threadID);
-            if (it == _authoritative.end() ||
-                it->second.canceled ||
-                it->second.active ||
-                it->second.invitesSent ||
-                it->second.generation != generation) {
+            const auto it = _ownerSessions.find(sessionID);
+            if (it == _ownerSessions.end() || it->second.canceled) {
                 return;
             }
+            snapshot = it->second;
             it->second.invitesSent = true;
-            participants = it->second.participants;
-            node = Field(it->second.startPayload, "node").value_or("");
         }
 
+        if (_sceneControl && snapshot.preflightThreadID >= 0) {
+            const auto result = _sceneControl->StopScene(
+                kPluginName,
+                static_cast<std::uint32_t>(snapshot.preflightThreadID));
+            SKSE::log::info(
+                "OSTNET COOP PREFLIGHT STOP session={} thread={} result={}",
+                sessionID,
+                snapshot.preflightThreadID,
+                static_cast<int>(result));
+        }
+
+        std::string inviter = "Player";
         if (auto* player = RE::PlayerCharacter::GetSingleton()) {
             const auto* name = player->GetName();
             if (name && *name) {
@@ -366,375 +356,295 @@ namespace OStimTogether
             }
         }
 
-        for (const auto connectionID : participants) {
+        for (const auto connectionID : snapshot.participants) {
             STRPMTransport::GetSingleton().SendTo(
                 connectionID,
                 fmt::format(
-                    "INVITE|thread={}|inviter={}|node={}",
-                    threadID,
+                    "INVITE|session={}|inviter={}|node={}",
+                    sessionID,
                     inviter,
-                    SafeLabel(node)));
+                    SafeLabel(snapshot.nodeID)));
         }
 
         SKSE::log::info(
-            "OSTNET COOP INVITE TX DEFERRED thread={} participants={} node={} status=pending",
-            threadID,
-            participants.size(),
-            node);
-        RE::DebugNotification(
-            "OStim Together: waiting for remote consent");
+            "OSTNET COOP INVITE TX session={} participants={} node={} localSceneActive=0",
+            sessionID,
+            snapshot.participants.size(),
+            snapshot.nodeID);
+        QueueOwnerTimeout(sessionID);
     }
 
-    void CoopSessionManager::QueueConsentTimeout(
-        std::int32_t threadID,
-        std::uint64_t generation)
+    void CoopSessionManager::QueueOwnerTimeout(std::uint64_t sessionID)
     {
-        std::thread([this, threadID, generation]() {
+        std::thread([this, sessionID]() {
             std::this_thread::sleep_for(kConsentTimeout);
             if (auto* tasks = SKSE::GetTaskInterface()) {
-                tasks->AddTask([this, threadID, generation]() {
-                    bool timedOut = false;
+                tasks->AddTask([this, sessionID]() {
+                    bool timeout = false;
                     {
                         std::scoped_lock lock(_mutex);
-                        const auto it = _authoritative.find(threadID);
-                        timedOut =
-                            it != _authoritative.end() &&
-                            !it->second.active &&
-                            !it->second.canceled &&
-                            it->second.generation == generation;
+                        const auto it = _ownerSessions.find(sessionID);
+                        timeout = it != _ownerSessions.end() &&
+                                  !it->second.active &&
+                                  !it->second.restarting &&
+                                  !it->second.canceled;
                     }
-                    if (timedOut) {
-                        CancelAuthoritativeSession(
-                            threadID,
-                            "consent-timeout",
-                            true);
-                        RE::DebugNotification(
-                            "OStim Together: consent request timed out");
+                    if (timeout) {
+                        CancelOwnerSession(sessionID, "timeout");
                     }
                 });
             }
         }).detach();
     }
 
-    void CoopSessionManager::RegisterIncomingInvite(
+    void CoopSessionManager::ShowInviteMessageBox(
         STRPMApi::ConnectionID ownerConnectionID,
-        std::int32_t remoteThreadID,
+        std::uint64_t sessionID,
         std::string sender)
     {
         const auto senderLabel = SafeLabel(sender);
-        bool inserted = false;
-        {
-            std::scoped_lock lock(_mutex);
-            const auto duplicate = std::find_if(
-                _pendingInvites.begin(),
-                _pendingInvites.end(),
-                [ownerConnectionID, remoteThreadID](const PendingInvite& invite) {
-                    return invite.ownerConnectionID == ownerConnectionID &&
-                           invite.remoteThreadID == remoteThreadID;
-                });
-            if (duplicate == _pendingInvites.end()) {
-                _pendingInvites.push_back(PendingInvite{
-                    ownerConnectionID,
-                    remoteThreadID,
-                    senderLabel,
-                    std::chrono::steady_clock::now() });
-                inserted = true;
-            }
-        }
-
-        if (!inserted) {
-            return;
-        }
-
-        const auto cfg = Config::Load();
-        RE::DebugNotification(fmt::format(
-            "OStim Together: {} invites you - Y accept / N decline",
-            senderLabel).c_str());
-
         SKSE::log::info(
-            "OSTNET COOP INVITE NONMODAL ownerConnection={} thread={} sender=\"{}\" acceptKey={} declineKey={}",
+            "OSTNET COOP INVITE MESSAGEBOX ownerConnection={} session={} sender=\"{}\"",
             ownerConnectionID,
-            remoteThreadID,
-            senderLabel,
-            cfg.consentAcceptKey,
-            cfg.consentDeclineKey);
+            sessionID,
+            senderLabel);
 
-        QueueIncomingInviteTimeout(ownerConnectionID, remoteThreadID);
+        ShowSafeMessageBox(
+            fmt::format("{} wants to start an OStim scene with you.", senderLabel),
+            "Accept",
+            "Decline",
+            [this, ownerConnectionID, sessionID](unsigned int choice) {
+                SendInviteResponse(ownerConnectionID, sessionID, choice == 0);
+            });
     }
 
-    void CoopSessionManager::QueueIncomingInviteTimeout(
+    void CoopSessionManager::SendInviteResponse(
         STRPMApi::ConnectionID ownerConnectionID,
-        std::int32_t remoteThreadID)
-    {
-        std::thread([this, ownerConnectionID, remoteThreadID]() {
-            std::this_thread::sleep_for(kConsentTimeout);
-            if (auto* tasks = SKSE::GetTaskInterface()) {
-                tasks->AddTask([this, ownerConnectionID, remoteThreadID]() {
-                    bool expired = false;
-                    {
-                        std::scoped_lock lock(_mutex);
-                        const auto it = std::find_if(
-                            _pendingInvites.begin(),
-                            _pendingInvites.end(),
-                            [ownerConnectionID, remoteThreadID](const PendingInvite& invite) {
-                                return invite.ownerConnectionID == ownerConnectionID &&
-                                       invite.remoteThreadID == remoteThreadID;
-                            });
-                        if (it != _pendingInvites.end()) {
-                            _pendingInvites.erase(it);
-                            expired = true;
-                        }
-                    }
-                    if (expired) {
-                        STRPMTransport::GetSingleton().SendTo(
-                            ownerConnectionID,
-                            fmt::format(
-                                "INVITE_RESPONSE|thread={}|accepted=0",
-                                remoteThreadID));
-                        RE::DebugNotification(
-                            "OStim Together: scene invitation expired");
-                        SKSE::log::info(
-                            "OSTNET COOP INVITE EXPIRED ownerConnection={} thread={}",
-                            ownerConnectionID,
-                            remoteThreadID);
-                    }
-                });
-            }
-        }).detach();
-    }
-
-    void CoopSessionManager::AnswerOldestInvite(bool accepted)
-    {
-        std::optional<PendingInvite> invite;
-        {
-            std::scoped_lock lock(_mutex);
-            if (_pendingInvites.empty()) {
-                return;
-            }
-            invite = _pendingInvites.front();
-            _pendingInvites.erase(_pendingInvites.begin());
-        }
-
-        if (invite) {
-            AnswerConsent(
-                invite->ownerConnectionID,
-                invite->remoteThreadID,
-                accepted);
-        }
-    }
-
-    void CoopSessionManager::AnswerConsent(
-        STRPMApi::ConnectionID ownerConnectionID,
-        std::int32_t remoteThreadID,
+        std::uint64_t sessionID,
         bool accepted)
     {
         STRPMTransport::GetSingleton().SendTo(
             ownerConnectionID,
             fmt::format(
-                "INVITE_RESPONSE|thread={}|accepted={}",
-                remoteThreadID,
+                "INVITE_RESPONSE|session={}|accepted={}",
+                sessionID,
                 accepted ? 1 : 0));
-
-        RE::DebugNotification(
-            accepted ?
-                "OStim Together: scene accepted" :
-                "OStim Together: scene declined");
-
         SKSE::log::info(
-            "OSTNET COOP INVITE RESPONSE TX ownerConnection={} thread={} accepted={} source=keyboard",
+            "OSTNET COOP INVITE RESPONSE TX ownerConnection={} session={} accepted={} source=safe-messagebox",
             ownerConnectionID,
-            remoteThreadID,
+            sessionID,
             accepted ? 1 : 0);
     }
 
-    void CoopSessionManager::HandleConsentResponse(
+    void CoopSessionManager::HandleInviteResponse(
         STRPMApi::ConnectionID participantConnectionID,
-        std::int32_t threadID,
+        std::uint64_t sessionID,
         bool accepted)
     {
-        bool activate = false;
-        bool reject = false;
-
+        bool start = false;
+        bool cancel = false;
         {
             std::scoped_lock lock(_mutex);
-            const auto it = _authoritative.find(threadID);
-            if (it == _authoritative.end() ||
-                it->second.active ||
+            const auto it = _ownerSessions.find(sessionID);
+            if (it == _ownerSessions.end() ||
                 it->second.canceled ||
+                it->second.active ||
                 !it->second.participants.contains(participantConnectionID)) {
                 return;
             }
 
             if (!accepted) {
                 it->second.canceled = true;
-                reject = true;
+                cancel = true;
             } else {
                 it->second.accepted.insert(participantConnectionID);
-                activate =
-                    it->second.accepted.size() ==
-                    it->second.participants.size();
+                start = it->second.accepted.size() == it->second.participants.size();
+                if (start) {
+                    it->second.restarting = true;
+                }
             }
         }
 
         SKSE::log::info(
-            "OSTNET COOP INVITE RESPONSE RX thread={} connection={} accepted={} activate={}",
-            threadID,
+            "OSTNET COOP INVITE RESPONSE RX session={} connection={} accepted={} start={}",
+            sessionID,
             participantConnectionID,
             accepted ? 1 : 0,
-            activate ? 1 : 0);
+            start ? 1 : 0);
 
-        if (reject) {
-            CancelAuthoritativeSession(threadID, "declined", true);
-            RE::DebugNotification(
-                "OStim Together: remote player declined the scene");
-        } else if (activate) {
-            ActivateAuthoritativeSession(threadID);
+        if (cancel) {
+            CancelOwnerSession(sessionID, "declined");
+        } else if (start) {
+            StartApprovedOwnerSession(sessionID);
         }
     }
 
-    void CoopSessionManager::ActivateAuthoritativeSession(
-        std::int32_t threadID)
+    void CoopSessionManager::StartApprovedOwnerSession(std::uint64_t sessionID)
     {
-        std::unordered_set<STRPMApi::ConnectionID> participants;
-        std::string startPayload;
-        std::string nodePayload;
-        std::string speedPayload;
-
+        OwnerSession snapshot{};
         {
             std::scoped_lock lock(_mutex);
-            const auto it = _authoritative.find(threadID);
-            if (it == _authoritative.end() ||
-                it->second.canceled ||
-                it->second.active) {
+            const auto it = _ownerSessions.find(sessionID);
+            if (it == _ownerSessions.end() || it->second.canceled) {
                 return;
             }
-            it->second.active = true;
-            participants = it->second.participants;
-            startPayload = it->second.startPayload;
-            nodePayload = it->second.latestNodePayload;
-            speedPayload = it->second.latestSpeedPayload;
+            snapshot = it->second;
         }
 
-        for (const auto connectionID : participants) {
-            STRPMTransport::GetSingleton().SendTo(connectionID, startPayload);
-            if (!nodePayload.empty()) {
-                STRPMTransport::GetSingleton().SendTo(connectionID, nodePayload);
-            }
-            if (!speedPayload.empty()) {
-                STRPMTransport::GetSingleton().SendTo(connectionID, speedPayload);
-            }
+        if (_threadControl &&
+            snapshot.preflightThreadID >= 0 &&
+            _threadControl->IsThreadValid(
+                static_cast<std::uint32_t>(snapshot.preflightThreadID))) {
+            RetryStartApprovedOwnerSession(sessionID);
+            return;
         }
 
-        SKSE::log::info(
-            "OSTNET COOP ACTIVE thread={} participants={} cachedNode={} cachedSpeed={}",
-            threadID,
-            participants.size(),
-            nodePayload.empty() ? 0 : 1,
-            speedPayload.empty() ? 0 : 1);
-        RE::DebugNotification(
-            "OStim Together: remote player accepted");
-    }
+        std::array<RE::Actor*, 256> actors{};
+        std::size_t actorCount = 0;
+        for (const auto formID : snapshot.actorFormIDs) {
+            auto* form = RE::TESForm::LookupByID(formID);
+            auto* actor = form ? form->As<RE::Actor>() : nullptr;
+            if (!actor || actorCount >= actors.size() - 1) {
+                CancelOwnerSession(sessionID, "actor-missing");
+                return;
+            }
+            actors[actorCount++] = actor;
+        }
 
-    void CoopSessionManager::CancelAuthoritativeSession(
-        std::int32_t threadID,
-        std::string_view reason,
-        bool stopLocalThread)
-    {
-        std::unordered_set<STRPMApi::ConnectionID> participants;
+        RE::TESObjectREFR* furniture = nullptr;
+        if (snapshot.furnitureFormID != 0) {
+            auto* form = RE::TESForm::LookupByID(snapshot.furnitureFormID);
+            furniture = form ? form->As<RE::TESObjectREFR>() : nullptr;
+        }
+
         {
             std::scoped_lock lock(_mutex);
-            const auto it = _authoritative.find(threadID);
-            if (it == _authoritative.end()) {
+            _approvedReplayArmed = sessionID;
+        }
+
+        std::uint32_t newThreadID = 0;
+        const auto result = _sceneControl->StartScene(
+            kPluginName,
+            furniture,
+            snapshot.nodeID.c_str(),
+            actors.data(),
+            &newThreadID);
+
+        SKSE::log::info(
+            "OSTNET COOP APPROVED START session={} requestedNode={} actors={} furniture={:08X} result={} returnedThread={}",
+            sessionID,
+            snapshot.nodeID,
+            actorCount,
+            snapshot.furnitureFormID,
+            static_cast<int>(result),
+            newThreadID);
+
+        if (result != OStimModAPI::Scene::APIResult::OK) {
+            std::scoped_lock lock(_mutex);
+            if (_approvedReplayArmed && *_approvedReplayArmed == sessionID) {
+                _approvedReplayArmed.reset();
+            }
+            auto it = _ownerSessions.find(sessionID);
+            if (it != _ownerSessions.end()) {
+                it->second.canceled = true;
+            }
+        }
+    }
+
+    void CoopSessionManager::RetryStartApprovedOwnerSession(std::uint64_t sessionID)
+    {
+        std::thread([this, sessionID]() {
+            std::this_thread::sleep_for(kRestartRetryDelay);
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([this, sessionID]() {
+                    StartApprovedOwnerSession(sessionID);
+                });
+            }
+        }).detach();
+    }
+
+    void CoopSessionManager::CancelOwnerSession(
+        std::uint64_t sessionID,
+        std::string_view reason)
+    {
+        OwnerSession snapshot{};
+        {
+            std::scoped_lock lock(_mutex);
+            const auto it = _ownerSessions.find(sessionID);
+            if (it == _ownerSessions.end()) {
                 return;
             }
             it->second.canceled = true;
-            participants = it->second.participants;
+            snapshot = it->second;
+            if (snapshot.preflightThreadID >= 0) {
+                _pendingOwnerByThread.erase(snapshot.preflightThreadID);
+            }
+            if (snapshot.activeThreadID >= 0) {
+                _activeOwnerByThread.erase(snapshot.activeThreadID);
+            }
         }
 
-        for (const auto connectionID : participants) {
+        for (const auto connectionID : snapshot.participants) {
             STRPMTransport::GetSingleton().SendTo(
                 connectionID,
                 fmt::format(
-                    "INVITE_CANCEL|thread={}|reason={}",
-                    threadID,
+                    "INVITE_CANCEL|session={}|reason={}",
+                    sessionID,
                     SafeLabel(reason)));
         }
-
         SKSE::log::info(
-            "OSTNET COOP CANCEL thread={} reason={} participants={} stopLocal={}",
-            threadID,
-            reason,
-            participants.size(),
-            stopLocalThread ? 1 : 0);
-
-        if (stopLocalThread && _sceneControl) {
-            const auto result = _sceneControl->StopScene(
-                kPluginName,
-                static_cast<std::uint32_t>(threadID));
-            SKSE::log::info(
-                "OSTNET COOP CANCEL STOP thread={} result={}",
-                threadID,
-                static_cast<int>(result));
-        }
+            "OSTNET COOP CANCEL session={} reason={}",
+            sessionID,
+            reason);
     }
 
-    bool CoopSessionManager::RouteAuthoritativePayload(
-        std::string_view payload)
+    bool CoopSessionManager::RouteOwnerPayload(std::string_view payload)
     {
         const auto threadID = ThreadID(payload);
         if (!threadID) {
             return false;
         }
 
-        std::unordered_set<STRPMApi::ConnectionID> participants;
-        bool active = false;
-        bool canceled = false;
-        const bool isStop = payload.starts_with("STOP|");
-        const bool isNode = payload.starts_with("NODE|");
-        const bool isSpeed = payload.starts_with("SPEED|");
-
+        std::uint64_t sessionID = 0;
+        bool pending = false;
+        OwnerSession snapshot{};
         {
             std::scoped_lock lock(_mutex);
-            auto it = _authoritative.find(*threadID);
-            if (it == _authoritative.end()) {
+            const auto pendingIt = _pendingOwnerByThread.find(*threadID);
+            if (pendingIt != _pendingOwnerByThread.end()) {
+                sessionID = pendingIt->second;
+                pending = true;
+            } else {
+                const auto activeIt = _activeOwnerByThread.find(*threadID);
+                if (activeIt != _activeOwnerByThread.end()) {
+                    sessionID = activeIt->second;
+                }
+            }
+
+            if (sessionID == 0) {
                 return false;
             }
-
-            active = it->second.active;
-            canceled = it->second.canceled;
-            participants = it->second.participants;
-
-            if (!active && !canceled) {
-                if (isNode) {
-                    it->second.latestNodePayload = std::string(payload);
-                } else if (isSpeed) {
-                    it->second.latestSpeedPayload = std::string(payload);
-                }
+            const auto sessionIt = _ownerSessions.find(sessionID);
+            if (sessionIt == _ownerSessions.end()) {
+                return false;
             }
+            snapshot = sessionIt->second;
 
-            if (isStop) {
-                _authoritative.erase(it);
+            if (pending && payload.starts_with("STOP|")) {
+                _pendingOwnerByThread.erase(*threadID);
             }
         }
 
-        if (canceled) {
+        if (pending || !snapshot.active || snapshot.canceled) {
+            SKSE::log::trace(
+                "OSTNET COOP suppress preflight TX session={} thread={} payload={}",
+                sessionID,
+                *threadID,
+                payload.substr(0, payload.find('|')));
             return true;
         }
 
-        if (!active) {
-            if (isStop) {
-                for (const auto connectionID : participants) {
-                    STRPMTransport::GetSingleton().SendTo(
-                        connectionID,
-                        fmt::format(
-                            "INVITE_CANCEL|thread={}|reason=local-stop",
-                            *threadID));
-                }
-            }
-            return true;
-        }
-
-        for (const auto connectionID : participants) {
+        for (const auto connectionID : snapshot.participants) {
             STRPMTransport::GetSingleton().SendTo(connectionID, payload);
         }
         return true;
@@ -742,13 +652,11 @@ namespace OStimTogether
 
     bool CoopSessionManager::InterceptOutgoing(std::string_view payload)
     {
-        if (payload.starts_with("START|")) {
-            return BeginConsent(payload);
-        }
-        if (payload.starts_with("NODE|") ||
+        if (payload.starts_with("START|") ||
+            payload.starts_with("NODE|") ||
             payload.starts_with("SPEED|") ||
             payload.starts_with("STOP|")) {
-            return RouteAuthoritativePayload(payload);
+            return RouteOwnerPayload(payload);
         }
         return false;
     }
@@ -762,15 +670,20 @@ namespace OStimTogether
             return true;
         }
 
+        OwnerSession snapshot{};
         bool authorized = false;
         {
             std::scoped_lock lock(_mutex);
-            const auto it = _authoritative.find(*threadID);
-            authorized =
-                it != _authoritative.end() &&
-                it->second.active &&
-                !it->second.canceled &&
-                it->second.participants.contains(senderConnectionID);
+            const auto activeIt = _activeOwnerByThread.find(*threadID);
+            if (activeIt != _activeOwnerByThread.end()) {
+                const auto sessionIt = _ownerSessions.find(activeIt->second);
+                if (sessionIt != _ownerSessions.end()) {
+                    snapshot = sessionIt->second;
+                    authorized = snapshot.active &&
+                                 !snapshot.canceled &&
+                                 snapshot.participants.contains(senderConnectionID);
+                }
+            }
         }
 
         if (!authorized) {
@@ -784,7 +697,7 @@ namespace OStimTogether
 
         if (payload.starts_with("CONTROL_NODE|")) {
             const auto node = Field(payload, "node");
-            if (node && !node->empty() && _threadControl) {
+            if (node && _threadControl) {
                 const auto result = _threadControl->NavigateToScene(
                     static_cast<std::uint32_t>(*threadID),
                     node->c_str());
@@ -799,12 +712,13 @@ namespace OStimTogether
         }
 
         if (payload.starts_with("CONTROL_SPEED|")) {
-            const auto value = Field(payload, "speed");
-            if (value && _threadControl) {
+            const auto speedValue = Field(payload, "speed");
+            if (speedValue && _threadControl) {
                 try {
-                    const auto speed = static_cast<std::int32_t>(std::stol(*value));
+                    const auto speed = static_cast<std::int32_t>(std::stol(*speedValue));
                     const auto result = _threadControl->SetSpeed(
-                        static_cast<std::uint32_t>(*threadID), speed);
+                        static_cast<std::uint32_t>(*threadID),
+                        speed);
                     SKSE::log::info(
                         "OSTNET COOP CONTROL SPEED connection={} thread={} speed={} result={}",
                         senderConnectionID,
@@ -830,7 +744,6 @@ namespace OStimTogether
             }
             return true;
         }
-
         return false;
     }
 
@@ -842,10 +755,9 @@ namespace OStimTogether
         if (!threadID) {
             return;
         }
-
         const auto key = MirrorKey(ownerConnectionID, *threadID);
-        std::scoped_lock lock(_mutex);
 
+        std::scoped_lock lock(_mutex);
         if (payload.starts_with("START|")) {
             _pendingMirrorStarts.push_back(PendingMirrorStart{
                 ownerConnectionID,
@@ -859,16 +771,13 @@ namespace OStimTogether
         if (routeIt == _mirrorByRemote.end()) {
             return;
         }
-
         auto& suppression = _mirrorSuppressions[routeIt->second];
         if (payload.starts_with("NODE|")) {
             suppression.expectedNode = Field(payload, "node");
         } else if (payload.starts_with("SPEED|")) {
-            const auto speed = Field(payload, "speed");
-            if (speed) {
+            if (const auto speedValue = Field(payload, "speed")) {
                 try {
-                    suppression.expectedSpeed =
-                        static_cast<std::int32_t>(std::stol(*speed));
+                    suppression.expectedSpeed = static_cast<std::int32_t>(std::stol(*speedValue));
                 } catch (...) {
                 }
             }
@@ -883,42 +792,29 @@ namespace OStimTogether
         std::string_view payload)
     {
         if (payload.starts_with("INVITE|")) {
-            if (const auto threadID = ThreadID(payload)) {
-                RegisterIncomingInvite(
+            if (const auto sessionID = SessionID(payload)) {
+                ShowInviteMessageBox(
                     senderConnectionID,
-                    *threadID,
+                    *sessionID,
                     std::string(sender));
             }
             return true;
         }
 
         if (payload.starts_with("INVITE_RESPONSE|")) {
-            const auto threadID = ThreadID(payload);
+            const auto sessionID = SessionID(payload);
             const auto accepted = Field(payload, "accepted");
-            if (threadID && accepted) {
-                HandleConsentResponse(
+            if (sessionID && accepted) {
+                HandleInviteResponse(
                     senderConnectionID,
-                    *threadID,
+                    *sessionID,
                     *accepted == "1");
             }
             return true;
         }
 
         if (payload.starts_with("INVITE_CANCEL|")) {
-            if (const auto threadID = ThreadID(payload)) {
-                std::scoped_lock lock(_mutex);
-                _pendingInvites.erase(
-                    std::remove_if(
-                        _pendingInvites.begin(),
-                        _pendingInvites.end(),
-                        [senderConnectionID, threadID](const PendingInvite& invite) {
-                            return invite.ownerConnectionID == senderConnectionID &&
-                                   invite.remoteThreadID == *threadID;
-                        }),
-                    _pendingInvites.end());
-            }
-            RE::DebugNotification(
-                "OStim Together: scene invitation canceled");
+            RE::DebugNotification("OStim Together: scene invitation canceled");
             return true;
         }
 
@@ -934,97 +830,65 @@ namespace OStimTogether
             payload.starts_with("STOP|")) {
             NoteIncomingAuthoritative(senderConnectionID, payload);
         }
-
         return false;
-    }
-
-    bool CoopSessionManager::LooksLikeRemoteMirror(OStim::Thread* thread) const
-    {
-        if (!thread || !thread->isPlayerThread()) {
-            return false;
-        }
-
-        bool hasSelf = false;
-        bool hasProxy = false;
-        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
-            auto* ta = thread->getActor(i);
-            auto* actor = ta ?
-                static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
-            if (!actor) {
-                continue;
-            }
-            hasSelf = hasSelf || actor->IsPlayerRef();
-            hasProxy = hasProxy || IsDynamicSTRProxy(actor);
-        }
-        return hasSelf && hasProxy;
     }
 
     void CoopSessionManager::HandleThreadStart(OStim::Thread* thread)
     {
-        if (!LooksLikeRemoteMirror(thread)) {
+        if (!thread || !thread->isPlayerThread()) {
             return;
         }
 
-        const auto localThreadID = thread->getThreadID();
-        auto* node = thread->getCurrentNode();
-        const std::string nodeID =
-            node && node->getNodeID() ? node->getNodeID() : "";
+        const auto threadID = thread->getThreadID();
+        const auto nodeID = GetNodeID(thread);
 
-        std::optional<PendingMirrorStart> chosen;
         {
             std::scoped_lock lock(_mutex);
-            const auto now = std::chrono::steady_clock::now();
-            _pendingMirrorStarts.erase(
-                std::remove_if(
-                    _pendingMirrorStarts.begin(),
-                    _pendingMirrorStarts.end(),
-                    [now](const PendingMirrorStart& entry) {
-                        return now - entry.created > std::chrono::seconds(5);
-                    }),
-                _pendingMirrorStarts.end());
-
-            auto it = std::find_if(
-                _pendingMirrorStarts.begin(),
-                _pendingMirrorStarts.end(),
-                [&nodeID](const PendingMirrorStart& entry) {
-                    return entry.nodeID.empty() || nodeID.empty() ||
-                           entry.nodeID == nodeID;
-                });
-            if (it == _pendingMirrorStarts.end() && !_pendingMirrorStarts.empty()) {
-                it = _pendingMirrorStarts.begin();
-            }
-            if (it != _pendingMirrorStarts.end()) {
-                chosen = *it;
-                _pendingMirrorStarts.erase(it);
-            }
-
-            if (chosen) {
-                _mirrorRoutes[localThreadID] = MirrorRoute{
-                    chosen->ownerConnectionID,
-                    chosen->remoteThreadID };
+            if (const auto pendingMirror = TakePendingMirrorStart(thread, nodeID)) {
+                _mirrorRoutes[threadID] = MirrorRoute{
+                    pendingMirror->ownerConnectionID,
+                    pendingMirror->ownerThreadID };
                 _mirrorByRemote[MirrorKey(
-                    chosen->ownerConnectionID,
-                    chosen->remoteThreadID)] = localThreadID;
-
-                auto& suppression = _mirrorSuppressions[localThreadID];
-                if (!chosen->nodeID.empty()) {
-                    suppression.expectedNode = chosen->nodeID;
+                    pendingMirror->ownerConnectionID,
+                    pendingMirror->ownerThreadID)] = threadID;
+                auto& suppression = _mirrorSuppressions[threadID];
+                if (!pendingMirror->nodeID.empty()) {
+                    suppression.expectedNode = pendingMirror->nodeID;
                 }
-                // Do not call GetCurrentSpeed() from OStim's START callback.
-                // OStim may still hold its internal thread lock here. The
-                // authoritative START/SPEED packets establish suppression
-                // state after the callback has unwound.
+                SKSE::log::info(
+                    "OSTNET COOP MIRROR ROUTE localThread={} ownerConnection={} ownerThread={} node={}",
+                    threadID,
+                    pendingMirror->ownerConnectionID,
+                    pendingMirror->ownerThreadID,
+                    nodeID);
+                return;
+            }
+
+            if (_approvedReplayArmed) {
+                const auto sessionID = *_approvedReplayArmed;
+                const auto it = _ownerSessions.find(sessionID);
+                if (it != _ownerSessions.end() && !it->second.canceled) {
+                    it->second.activeThreadID = threadID;
+                    it->second.active = true;
+                    it->second.restarting = false;
+                    _activeOwnerByThread[threadID] = sessionID;
+                    _approvedReplayArmed.reset();
+                    SKSE::log::info(
+                        "OSTNET COOP APPROVED THREAD LIVE session={} thread={} node={}",
+                        sessionID,
+                        threadID,
+                        nodeID);
+                    return;
+                }
+                _approvedReplayArmed.reset();
             }
         }
 
-        if (chosen) {
-            SKSE::log::info(
-                "OSTNET COOP MIRROR ROUTE localThread={} ownerConnection={} ownerThread={} node={}",
-                localThreadID,
-                chosen->ownerConnectionID,
-                chosen->remoteThreadID,
-                nodeID);
+        auto participants = ResolveRemoteParticipants(thread);
+        if (participants.empty()) {
+            return;
         }
+        BeginOwnerPreflight(thread, std::move(participants), nodeID);
     }
 
     void CoopSessionManager::HandleThreadNode(OStim::Thread* thread)
@@ -1032,11 +896,8 @@ namespace OStimTogether
         if (!thread) {
             return;
         }
-
         const auto localThreadID = thread->getThreadID();
-        auto* node = thread->getCurrentNode();
-        const std::string nodeID =
-            node && node->getNodeID() ? node->getNodeID() : "";
+        const auto nodeID = GetNodeID(thread);
         if (nodeID.empty()) {
             return;
         }
@@ -1051,8 +912,7 @@ namespace OStimTogether
             }
             route = routeIt->second;
             auto& suppression = _mirrorSuppressions[localThreadID];
-            if (suppression.expectedNode &&
-                *suppression.expectedNode == nodeID) {
+            if (suppression.expectedNode && *suppression.expectedNode == nodeID) {
                 suppression.expectedNode.reset();
                 suppressed = true;
             }
@@ -1061,18 +921,16 @@ namespace OStimTogether
         if (suppressed || !route) {
             return;
         }
-
         STRPMTransport::GetSingleton().SendTo(
             route->ownerConnectionID,
             fmt::format(
                 "CONTROL_NODE|thread={}|node={}",
-                route->remoteThreadID,
+                route->ownerThreadID,
                 SafeLabel(nodeID)));
         SKSE::log::info(
-            "OSTNET COOP CONTROL NODE TX localThread={} ownerConnection={} ownerThread={} node={}",
+            "OSTNET COOP CONTROL NODE TX localThread={} ownerThread={} node={}",
             localThreadID,
-            route->ownerConnectionID,
-            route->remoteThreadID,
+            route->ownerThreadID,
             nodeID);
     }
 
@@ -1081,12 +939,7 @@ namespace OStimTogether
         if (!thread || !_threadControl) {
             return;
         }
-
         const auto localThreadID = thread->getThreadID();
-
-        // First determine whether this is actually a cooperative mirror using
-        // only our own state. Never re-enter OStim ModAPI for ordinary local,
-        // NPC, or auxiliary threads.
         {
             std::scoped_lock lock(_mutex);
             if (!_mirrorRoutes.contains(localThreadID)) {
@@ -1094,69 +947,52 @@ namespace OStimTogether
             }
         }
 
-        // OStim invokes speed listeners while it may still own its internal
-        // thread lock. GetCurrentSpeed() re-enters that lock and can deadlock
-        // the game (the same rule already enforced by OStimBridge::HandleSpeed).
-        // Defer all ModAPI access until the listener has fully returned.
-        auto* tasks = SKSE::GetTaskInterface();
-        if (!tasks) {
-            SKSE::log::warn(
-                "OSTNET COOP SPEED defer unavailable localThread={}",
-                localThreadID);
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([this, localThreadID]() {
+                HandleDeferredMirrorSpeed(localThreadID);
+            });
+        }
+    }
+
+    void CoopSessionManager::HandleDeferredMirrorSpeed(std::int32_t localThreadID)
+    {
+        if (!_threadControl || !_threadControl->IsThreadValid(
+                static_cast<std::uint32_t>(localThreadID))) {
             return;
         }
+        const auto speed = _threadControl->GetCurrentSpeed(
+            static_cast<std::uint32_t>(localThreadID));
 
-        tasks->AddTask([this, localThreadID]() {
-            if (!_threadControl) {
+        std::optional<MirrorRoute> route;
+        bool suppressed = false;
+        {
+            std::scoped_lock lock(_mutex);
+            const auto routeIt = _mirrorRoutes.find(localThreadID);
+            if (routeIt == _mirrorRoutes.end()) {
                 return;
             }
-
-            std::optional<MirrorRoute> route;
-            {
-                std::scoped_lock lock(_mutex);
-                const auto routeIt = _mirrorRoutes.find(localThreadID);
-                if (routeIt == _mirrorRoutes.end()) {
-                    return;
-                }
-                route = routeIt->second;
+            route = routeIt->second;
+            auto& suppression = _mirrorSuppressions[localThreadID];
+            if (suppression.expectedSpeed && *suppression.expectedSpeed == speed) {
+                suppression.expectedSpeed.reset();
+                suppressed = true;
             }
+        }
 
-            const auto speed = _threadControl->GetCurrentSpeed(
-                static_cast<std::uint32_t>(localThreadID));
-
-            bool suppressed = false;
-            {
-                std::scoped_lock lock(_mutex);
-                const auto routeIt = _mirrorRoutes.find(localThreadID);
-                if (routeIt == _mirrorRoutes.end()) {
-                    return;
-                }
-                route = routeIt->second;
-                auto& suppression = _mirrorSuppressions[localThreadID];
-                if (suppression.expectedSpeed &&
-                    *suppression.expectedSpeed == speed) {
-                    suppression.expectedSpeed.reset();
-                    suppressed = true;
-                }
-            }
-
-            if (suppressed || !route) {
-                return;
-            }
-
-            STRPMTransport::GetSingleton().SendTo(
-                route->ownerConnectionID,
-                fmt::format(
-                    "CONTROL_SPEED|thread={}|speed={}",
-                    route->remoteThreadID,
-                    speed));
-            SKSE::log::info(
-                "OSTNET COOP CONTROL SPEED TX DEFERRED localThread={} ownerConnection={} ownerThread={} speed={}",
-                localThreadID,
-                route->ownerConnectionID,
-                route->remoteThreadID,
-                speed);
-        });
+        if (suppressed || !route) {
+            return;
+        }
+        STRPMTransport::GetSingleton().SendTo(
+            route->ownerConnectionID,
+            fmt::format(
+                "CONTROL_SPEED|thread={}|speed={}",
+                route->ownerThreadID,
+                speed));
+        SKSE::log::info(
+            "OSTNET COOP CONTROL SPEED TX DEFERRED localThread={} ownerThread={} speed={}",
+            localThreadID,
+            route->ownerThreadID,
+            speed);
     }
 
     void CoopSessionManager::HandleThreadStop(OStim::Thread* thread)
@@ -1164,42 +1000,37 @@ namespace OStimTogether
         if (!thread) {
             return;
         }
-
         const auto localThreadID = thread->getThreadID();
+
         std::optional<MirrorRoute> route;
         bool suppressed = false;
-
         {
             std::scoped_lock lock(_mutex);
             const auto routeIt = _mirrorRoutes.find(localThreadID);
-            if (routeIt == _mirrorRoutes.end()) {
-                return;
+            if (routeIt != _mirrorRoutes.end()) {
+                route = routeIt->second;
+                const auto suppressionIt = _mirrorSuppressions.find(localThreadID);
+                if (suppressionIt != _mirrorSuppressions.end()) {
+                    suppressed = suppressionIt->second.stop;
+                    _mirrorSuppressions.erase(suppressionIt);
+                }
+                _mirrorByRemote.erase(MirrorKey(
+                    route->ownerConnectionID,
+                    route->ownerThreadID));
+                _mirrorRoutes.erase(routeIt);
             }
-
-            route = routeIt->second;
-            const auto suppressionIt = _mirrorSuppressions.find(localThreadID);
-            if (suppressionIt != _mirrorSuppressions.end()) {
-                suppressed = suppressionIt->second.stop;
-                _mirrorSuppressions.erase(suppressionIt);
-            }
-
-            _mirrorByRemote.erase(MirrorKey(
-                route->ownerConnectionID,
-                route->remoteThreadID));
-            _mirrorRoutes.erase(routeIt);
         }
 
-        if (!suppressed && route) {
+        if (route && !suppressed) {
             STRPMTransport::GetSingleton().SendTo(
                 route->ownerConnectionID,
                 fmt::format(
                     "CONTROL_STOP|thread={}",
-                    route->remoteThreadID));
+                    route->ownerThreadID));
             SKSE::log::info(
-                "OSTNET COOP CONTROL STOP TX localThread={} ownerConnection={} ownerThread={}",
+                "OSTNET COOP CONTROL STOP TX localThread={} ownerThread={}",
                 localThreadID,
-                route->ownerConnectionID,
-                route->remoteThreadID);
+                route->ownerThreadID);
         }
     }
 }
