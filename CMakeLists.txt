@@ -24,6 +24,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/AddonStateRepair.h
         src/CoopSessionManager.cpp
         src/CoopSessionManager.h
+        src/PreflightGuard.cpp
+        src/PreflightGuard.h
         src/SafeMessageBox.cpp
         src/SafeMessageBox.h
         src/Config.cpp
