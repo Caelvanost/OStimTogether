@@ -201,6 +201,7 @@ namespace OStimTogether
         _mirrorRoutes.clear();
         _mirrorByRemote.clear();
         _mirrorSuppressions.clear();
+        _addActorGateParents.clear();
     }
 
     bool CoopSessionManager::IsDynamicSTRProxy(RE::Actor* actor) const
@@ -245,9 +246,6 @@ namespace OStimTogether
             return false;
         }
 
-        // While a direct consent request or its accepted OStim setup pipeline
-        // is pending, keep swallowing the scene-start key so a second local
-        // scene cannot be started accidentally.
         if (HasPendingDirectIntent()) {
             RE::DebugNotification("Waiting for consent");
             SKSE::log::trace(
@@ -258,9 +256,6 @@ namespace OStimTogether
 
         const auto playerThreadID = _threadControl->GetPlayerThreadID();
         if (_threadControl->IsThreadValid(playerThreadID)) {
-            // In an active OStim scene this key changes furniture. Preserve
-            // OStim's normal behavior; the consent gate applies only to the
-            // initial scene-start gesture.
             return false;
         }
 
@@ -323,9 +318,6 @@ namespace OStimTogether
             connectionID);
         RE::DebugNotification("Waiting for consent");
 
-        // Keep transport/UI work out of the input sink. This task runs after
-        // the input event has been stopped, so OStim never sees the original
-        // key press and cannot open Furniture/Add Actor before consent.
         if (auto* tasks = SKSE::GetTaskInterface()) {
             tasks->AddTask([this, sessionID]() {
                 StopPreflightAndInvite(sessionID);
@@ -510,6 +502,7 @@ namespace OStimTogether
                         std::scoped_lock lock(_mutex);
                         const auto it = _ownerSessions.find(sessionID);
                         timeout = it != _ownerSessions.end() &&
+                                  it->second.activeThreadID < 0 &&
                                   !it->second.active &&
                                   !it->second.restarting &&
                                   !it->second.canceled;
@@ -713,12 +706,25 @@ namespace OStimTogether
             }
             it->second.canceled = true;
             snapshot = it->second;
+
             if (snapshot.preflightThreadID >= 0) {
-                _pendingOwnerByThread.erase(snapshot.preflightThreadID);
+                const auto pendingIt =
+                    _pendingOwnerByThread.find(snapshot.preflightThreadID);
+                if (pendingIt != _pendingOwnerByThread.end() &&
+                    pendingIt->second == sessionID) {
+                    _pendingOwnerByThread.erase(pendingIt);
+                }
             }
+
             if (snapshot.activeThreadID >= 0) {
-                _activeOwnerByThread.erase(snapshot.activeThreadID);
+                const auto activeIt =
+                    _activeOwnerByThread.find(snapshot.activeThreadID);
+                if (activeIt != _activeOwnerByThread.end() &&
+                    activeIt->second == sessionID) {
+                    _activeOwnerByThread.erase(activeIt);
+                }
             }
+
             if (_approvedReplayArmed && *_approvedReplayArmed == sessionID) {
                 _approvedReplayArmed.reset();
             }
@@ -839,11 +845,16 @@ namespace OStimTogether
         if (payload.starts_with("CONTROL_NODE|")) {
             const auto node = Field(payload, "node");
             if (node && _threadControl) {
-                const auto result = _threadControl->NavigateToScene(
+                // Participant controls are multi-master. Apply the exact node
+                // selected on the remote mirror; NavigateToScene() only
+                // accepts a navigation entry reachable from the owner's
+                // current node and can therefore return OK while doing
+                // nothing when transition chains are out of phase.
+                const auto result = _threadControl->NavigateToSearchResult(
                     static_cast<std::uint32_t>(*threadID),
                     node->c_str());
                 SKSE::log::info(
-                    "OSTNET COOP CONTROL NODE connection={} thread={} node={} result={}",
+                    "OSTNET COOP CONTROL NODE connection={} thread={} node={} result={} apply=exact-change-node",
                     senderConnectionID,
                     *threadID,
                     *node,
@@ -912,13 +923,50 @@ namespace OStimTogether
         if (routeIt == _mirrorByRemote.end()) {
             return;
         }
-        auto& suppression = _mirrorSuppressions[routeIt->second];
+
+        const auto localThreadID = routeIt->second;
+        auto& suppression = _mirrorSuppressions[localThreadID];
+
         if (payload.starts_with("NODE|")) {
-            suppression.expectedNode = Field(payload, "node");
+            const auto incomingNode = Field(payload, "node");
+            bool alreadyCurrent = false;
+            if (incomingNode && _threads) {
+                auto* mirrorThread = _threads->getThread(localThreadID);
+                const auto currentNode = GetNodeID(mirrorThread);
+                alreadyCurrent = !currentNode.empty() &&
+                                 currentNode == *incomingNode;
+            }
+
+            if (alreadyCurrent) {
+                suppression.expectedNode.reset();
+                SKSE::log::trace(
+                    "OSTNET COOP ECHO NODE not-armed localThread={} node={} reason=already-current",
+                    localThreadID,
+                    incomingNode.value_or(""));
+            } else {
+                suppression.expectedNode = incomingNode;
+            }
         } else if (payload.starts_with("SPEED|")) {
             if (const auto speedValue = Field(payload, "speed")) {
                 try {
-                    suppression.expectedSpeed = static_cast<std::int32_t>(std::stol(*speedValue));
+                    const auto incomingSpeed =
+                        static_cast<std::int32_t>(std::stol(*speedValue));
+                    const bool alreadyCurrent =
+                        _threadControl &&
+                        _threadControl->IsThreadValid(
+                            static_cast<std::uint32_t>(localThreadID)) &&
+                        _threadControl->GetCurrentSpeed(
+                            static_cast<std::uint32_t>(localThreadID)) == incomingSpeed;
+
+                    if (alreadyCurrent) {
+                        suppression.expectedSpeed.reset();
+                        SKSE::log::trace(
+                            "OSTNET COOP ECHO SPEED not-armed localThread={} speed={} reason=already-current",
+                            localThreadID,
+                            incomingSpeed);
+                    } else {
+                        suppression.expectedSpeed = incomingSpeed;
+                    }
                 } catch (...) {
                 }
             }
@@ -1026,10 +1074,6 @@ namespace OStimTogether
             }
         }
 
-        // Fallback path for OStim flows we cannot currently intercept before
-        // thread creation (notably selecting a remote proxy inside OStim's
-        // internal Add Actor message-box callback). PreflightGuard suppresses
-        // all other OStim Together listeners for this disposable thread.
         auto participants = ResolveRemoteParticipants(thread);
         if (participants.empty()) {
             return;
