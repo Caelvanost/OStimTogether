@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "VisualKeepAlive.h"
+#include "FreeSceneRootSync.h"
 #include "OStimBridge.h"
 
 namespace OStimTogether
@@ -83,12 +84,12 @@ namespace OStimTogether
                             OStimBridge::GetSingleton()
                                 .RefreshRemoteMirrors();
 
-                            // v0.28.1 intentionally performs no remote
-                            // skeleton-root writes here. The v0.28.0
-                            // FreeSceneRootSync experiment could deform the
-                            // complete actor hierarchy when local transforms
-                            // from one animated skeleton were copied into an
-                            // independently evaluated proxy skeleton.
+                            // v0.30.0: apply only NPC Root [Root].local.translate
+                            // for free-standing player proxies. No rotation,
+                            // scale, world-transform, child-tree or actor
+                            // reference writes occur here.
+                            FreeSceneRootSync::GetSingleton()
+                                .Tick();
 
                             VisualKeepAlive::GetSingleton().
                                 _refreshQueued.store(false);
