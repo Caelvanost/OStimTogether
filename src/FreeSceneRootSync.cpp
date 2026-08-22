@@ -13,11 +13,11 @@ namespace OStimTogether
     {
         constexpr wchar_t kSTRPMModuleName[] = L"STRPluginMessagingAPI.dll";
         constexpr char kRootChannel[] = "ostimtogether.root";
-        constexpr auto kSendInterval = std::chrono::milliseconds(33);
-        constexpr auto kRemoteStateLifetime = std::chrono::milliseconds(250);
-        constexpr auto kLogInterval = std::chrono::milliseconds(500);
-        constexpr float kMaxRootTranslation = 10000.0F;
         constexpr char kRootNodeName[] = "NPC Root [Root]";
+        constexpr auto kSendInterval = std::chrono::milliseconds(33);
+        constexpr auto kRemoteStateLifetime = std::chrono::milliseconds(200);
+        constexpr auto kLogInterval = std::chrono::milliseconds(500);
+        constexpr float kMaxRootTranslation = 512.0F;
 
         bool Finite(float value) noexcept
         {
@@ -36,26 +36,15 @@ namespace OStimTogether
         StopTransport();
     }
 
-    bool FreeSceneRootSync::RootTransform::IsFinite() const noexcept
+    bool FreeSceneRootSync::RootTranslation::IsFinite() const noexcept
     {
-        if (!Finite(translate.x) ||
-            !Finite(translate.y) ||
-            !Finite(translate.z) ||
-            std::abs(translate.x) > kMaxRootTranslation ||
-            std::abs(translate.y) > kMaxRootTranslation ||
-            std::abs(translate.z) > kMaxRootTranslation) {
-            return false;
-        }
-
-        for (std::size_t row = 0; row < 3; ++row) {
-            for (std::size_t column = 0; column < 3; ++column) {
-                const auto value = rotate.entry[row][column];
-                if (!Finite(value) || std::abs(value) > 2.0F) {
-                    return false;
-                }
-            }
-        }
-        return true;
+        return
+            Finite(value.x) &&
+            Finite(value.y) &&
+            Finite(value.z) &&
+            std::abs(value.x) <= kMaxRootTranslation &&
+            std::abs(value.y) <= kMaxRootTranslation &&
+            std::abs(value.z) <= kMaxRootTranslation;
     }
 
     void FreeSceneRootSync::StartListener::listen(OStim::Thread* thread)
@@ -77,7 +66,7 @@ namespace OStimTogether
         auto* messaging = SKSE::GetMessagingInterface();
         if (!messaging) {
             SKSE::log::warn(
-                "OSTNET ROOT SYNC unavailable: no SKSE messaging interface");
+                "OSTNET ROOT TRANSLATION unavailable: no SKSE messaging interface");
             return false;
         }
 
@@ -90,7 +79,7 @@ namespace OStimTogether
 
         if (!dispatched || !exchange.interfaceMap) {
             SKSE::log::warn(
-                "OSTNET ROOT SYNC unavailable: OStim interface exchange failed");
+                "OSTNET ROOT TRANSLATION unavailable: OStim interface exchange failed");
             return false;
         }
 
@@ -98,14 +87,14 @@ namespace OStimTogether
             exchange.interfaceMap->queryInterface(OStim::ThreadInterface::NAME));
         if (!_threads) {
             SKSE::log::warn(
-                "OSTNET ROOT SYNC unavailable: Threads interface missing");
+                "OSTNET ROOT TRANSLATION unavailable: Threads interface missing");
             return false;
         }
 
         _threadInterfaceVersion = _threads->getVersion();
         if (_threadInterfaceVersion < 3) {
             SKSE::log::info(
-                "OSTNET ROOT SYNC disabled threadsVersion={} reason=no-exact-furniture-state",
+                "OSTNET ROOT TRANSLATION disabled threadsVersion={} reason=no-exact-furniture-state",
                 _threadInterfaceVersion);
             return false;
         }
@@ -114,7 +103,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET ROOT SYNC READY threadsVersion={} node=\"{}\" sendMs={} referenceWrites=0",
+            "OSTNET ROOT TRANSLATION READY threadsVersion={} node=\"{}\" sendMs={} translationOnly=1 rotationWrites=0 scaleWrites=0 worldWrites=0 treeWrites=0 referenceWrites=0",
             _threadInterfaceVersion,
             kRootNodeName,
             kSendInterval.count());
@@ -130,29 +119,26 @@ namespace OStimTogether
         const auto module = GetModuleHandleW(kSTRPMModuleName);
         if (!module) {
             SKSE::log::warn(
-                "OSTNET ROOT SYNC TRANSPORT unavailable: STRPluginMessagingAPI.dll not loaded");
+                "OSTNET ROOT TRANSLATION TRANSPORT unavailable: STRPluginMessagingAPI.dll not loaded");
             return false;
         }
 
-        const auto queryInterface =
-            reinterpret_cast<STRPMApi::QueryInterfaceFn>(
-                GetProcAddress(
-                    module,
-                    STRPMApi::kQueryInterfaceExportName));
+        const auto queryInterface = reinterpret_cast<STRPMApi::QueryInterfaceFn>(
+            GetProcAddress(module, STRPMApi::kQueryInterfaceExportName));
         if (!queryInterface) {
             SKSE::log::warn(
-                "OSTNET ROOT SYNC TRANSPORT unavailable: missing export {}",
-                STRPMApi::kQueryInterfaceExportName);
+                "OSTNET ROOT TRANSLATION TRANSPORT unavailable: missing STRPM export");
             return false;
         }
 
         const STRPMApi::Interface* api = nullptr;
-        const auto queryResult =
-            queryInterface(STRPMApi::kInterfaceVersion, &api);
+        const auto queryResult = queryInterface(
+            STRPMApi::kInterfaceVersion,
+            &api);
         if (queryResult != STRPMApi::Result::kOk ||
             !api || !api->registerChannel || !api->send) {
             SKSE::log::warn(
-                "OSTNET ROOT SYNC TRANSPORT unavailable: interface result={}",
+                "OSTNET ROOT TRANSLATION TRANSPORT unavailable result={}",
                 static_cast<std::uint32_t>(queryResult));
             return false;
         }
@@ -165,7 +151,7 @@ namespace OStimTogether
             &listener);
         if (registerResult != STRPMApi::Result::kOk) {
             SKSE::log::warn(
-                "OSTNET ROOT SYNC TRANSPORT register failed channel={} result={}",
+                "OSTNET ROOT TRANSLATION TRANSPORT register failed channel={} result={}",
                 kRootChannel,
                 static_cast<std::uint32_t>(registerResult));
             return false;
@@ -177,7 +163,7 @@ namespace OStimTogether
         _lastTransportWarn = {};
 
         SKSE::log::info(
-            "OSTNET ROOT SYNC TRANSPORT READY channel={} realtimeFlags=0 reliable=0 ordered=0",
+            "OSTNET ROOT TRANSLATION TRANSPORT READY channel={} realtimeFlags=0 reliable=0 ordered=0 translationOnly=1",
             kRootChannel);
         return true;
     }
@@ -198,7 +184,8 @@ namespace OStimTogether
         _api = nullptr;
         Reset();
 
-        SKSE::log::info("OSTNET ROOT SYNC TRANSPORT stopped");
+        SKSE::log::info(
+            "OSTNET ROOT TRANSLATION TRANSPORT stopped");
     }
 
     void FreeSceneRootSync::Reset()
@@ -206,6 +193,7 @@ namespace OStimTogether
         _activePlayerThreadID = -1;
         _lastSend = {};
         _lastSendLog = {};
+        _lastTransportWarn = {};
         _remoteStates.clear();
     }
 
@@ -221,7 +209,7 @@ namespace OStimTogether
         _remoteStates.clear();
 
         SKSE::log::info(
-            "OSTNET ROOT SYNC ARM thread={} freeStanding={} actors={}",
+            "OSTNET ROOT TRANSLATION ARM thread={} freeStanding={} actors={}",
             _activePlayerThreadID,
             IsFreeStandingThread(thread) ? 1 : 0,
             thread->getActorCount());
@@ -234,7 +222,7 @@ namespace OStimTogether
         }
 
         SKSE::log::info(
-            "OSTNET ROOT SYNC STOP thread={} remoteStates={}",
+            "OSTNET ROOT TRANSLATION STOP thread={} remoteStates={}",
             _activePlayerThreadID,
             _remoteStates.size());
         Reset();
@@ -282,68 +270,37 @@ namespace OStimTogether
             return nullptr;
         }
 
-        auto* root = actor->Get3D();
-        if (!root) {
+        auto* modelRoot = actor->Get3D();
+        if (!modelRoot) {
             return nullptr;
         }
 
-        return root->GetObjectByName(RE::BSFixedString(kRootNodeName));
+        return modelRoot->GetObjectByName(RE::BSFixedString(kRootNodeName));
     }
 
-    void FreeSceneRootSync::UpdateNodeWorldTransform(RE::NiAVObject* node)
-    {
-        if (!node) {
-            return;
-        }
-
-        if (node->parent) {
-            node->world.rotate =
-                node->local.rotate * node->parent->world.rotate;
-            node->world.scale =
-                node->local.scale * node->parent->world.scale;
-            node->world.translate =
-                node->parent->world.rotate *
-                    (node->local.translate * node->parent->world.scale) +
-                node->parent->world.translate;
-        } else {
-            node->world = node->local;
-        }
-    }
-
-    void FreeSceneRootSync::UpdateTreeTransforms(RE::NiAVObject* node)
-    {
-        if (!node) {
-            return;
-        }
-
-        UpdateNodeWorldTransform(node);
-
-        if (auto* asNode = node->AsNode()) {
-            for (auto& child : asNode->GetChildren()) {
-                if (child) {
-                    UpdateTreeTransforms(child.get());
-                }
-            }
-        }
-    }
-
-    void FreeSceneRootSync::ApplyRootTransform(
+    bool FreeSceneRootSync::ApplyRootTranslation(
         RE::Actor* actor,
-        const RootTransform& transform)
+        const RootTranslation& translation,
+        RE::NiPoint3& before,
+        RE::NiPoint3& after)
     {
         auto* animatedRoot = FindAnimatedRoot(actor);
-        if (!animatedRoot || !transform.IsFinite()) {
-            return;
+        if (!animatedRoot || !translation.IsFinite()) {
+            return false;
         }
 
-        // Deliberately touch only the animated skeleton root. Do not call
-        // Actor::SetPosition, TESObjectREFR::SetPosition, TranslateTo or
-        // Update3DPosition: STR retains complete ownership of the network
-        // reference while this local transform supplies the missing paired-
-        // animation displacement for the rendered proxy.
-        animatedRoot->local.translate = transform.translate;
-        animatedRoot->local.rotate = transform.rotate;
-        UpdateTreeTransforms(animatedRoot);
+        before = animatedRoot->local.translate;
+
+        // Safety-critical rule for v0.30.0:
+        // - local translation only;
+        // - never copy remote rotation or scale;
+        // - never write root->world;
+        // - never recurse through children;
+        // - never touch TESObjectREFR/Actor world position.
+        animatedRoot->local.translate = translation.value;
+
+        after = animatedRoot->local.translate;
+        return true;
     }
 
     std::optional<std::string> FreeSceneRootSync::Field(
@@ -375,13 +332,11 @@ namespace OStimTogether
         void* userData)
     {
         if (message && userData) {
-            static_cast<FreeSceneRootSync*>(userData)->
-                HandleRootMessage(*message);
+            static_cast<FreeSceneRootSync*>(userData)->HandleRootMessage(*message);
         }
     }
 
-    void FreeSceneRootSync::HandleRootMessage(
-        const STRPMApi::Message& message)
+    void FreeSceneRootSync::HandleRootMessage(const STRPMApi::Message& message)
     {
         if (!message.data ||
             message.size == 0 ||
@@ -410,7 +365,7 @@ namespace OStimTogether
     {
         if (!_threads ||
             senderConnectionID == 0 ||
-            !payload.starts_with("ROOTBONE|")) {
+            !payload.starts_with("ROOTTRANS|")) {
             return;
         }
 
@@ -426,28 +381,19 @@ namespace OStimTogether
             RemoteState state{};
             state.remoteThreadID = static_cast<std::int32_t>(
                 std::stol(*threadValue));
-            state.transform.translate = {
+            state.translation.value = {
                 std::stof(*tx),
                 std::stof(*ty),
                 std::stof(*tz)
             };
 
-            for (std::size_t row = 0; row < 3; ++row) {
-                for (std::size_t column = 0; column < 3; ++column) {
-                    const auto key = fmt::format("r{}{}", row, column);
-                    const auto value = Field(payload, key);
-                    if (!value) {
-                        return;
-                    }
-                    state.transform.rotate.entry[row][column] =
-                        std::stof(*value);
-                }
-            }
-
-            if (!state.transform.IsFinite()) {
+            if (!state.translation.IsFinite()) {
                 SKSE::log::warn(
-                    "OSTNET ROOT SYNC RX reject connection={} reason=invalid-transform",
-                    senderConnectionID);
+                    "OSTNET ROOT TRANSLATION RX reject connection={} value=({:.3f},{:.3f},{:.3f}) reason=invalid-or-out-of-range",
+                    senderConnectionID,
+                    state.translation.value.x,
+                    state.translation.value.y,
+                    state.translation.value.z);
                 return;
             }
 
@@ -459,7 +405,7 @@ namespace OStimTogether
             _remoteStates[senderConnectionID] = state;
         } catch (...) {
             SKSE::log::warn(
-                "OSTNET ROOT SYNC RX reject connection={} reason=parse",
+                "OSTNET ROOT TRANSLATION RX reject connection={} reason=parse",
                 senderConnectionID);
         }
     }
@@ -491,21 +437,16 @@ namespace OStimTogether
             if (auto* animatedRoot = FindAnimatedRoot(player)) {
                 if (_lastSend.time_since_epoch().count() == 0 ||
                     now - _lastSend >= kSendInterval) {
-                    RootTransform local{};
-                    local.translate = animatedRoot->local.translate;
-                    local.rotate = animatedRoot->local.rotate;
+                    RootTranslation local{};
+                    local.value = animatedRoot->local.translate;
 
                     if (local.IsFinite()) {
-                        const auto& r = local.rotate.entry;
                         const auto payload = fmt::format(
-                            "ROOTBONE|thread={}|tx={:.6f}|ty={:.6f}|tz={:.6f}|r00={:.7f}|r01={:.7f}|r02={:.7f}|r10={:.7f}|r11={:.7f}|r12={:.7f}|r20={:.7f}|r21={:.7f}|r22={:.7f}",
+                            "ROOTTRANS|thread={}|tx={:.6f}|ty={:.6f}|tz={:.6f}",
                             _activePlayerThreadID,
-                            local.translate.x,
-                            local.translate.y,
-                            local.translate.z,
-                            r[0][0], r[0][1], r[0][2],
-                            r[1][0], r[1][1], r[1][2],
-                            r[2][0], r[2][1], r[2][2]);
+                            local.value.x,
+                            local.value.y,
+                            local.value.z);
 
                         STRPMApi::Target target{};
                         target.kind = STRPMApi::TargetKind::kAllPlayers;
@@ -523,10 +464,9 @@ namespace OStimTogether
                                 now - _lastTransportWarn >= kLogInterval) {
                                 _lastTransportWarn = now;
                                 SKSE::log::warn(
-                                    "OSTNET ROOT SYNC TX failed result={} thread={} bytes={}",
+                                    "OSTNET ROOT TRANSLATION TX failed result={} thread={}",
                                     static_cast<std::uint32_t>(result),
-                                    _activePlayerThreadID,
-                                    payload.size());
+                                    _activePlayerThreadID);
                             }
                         } else if (
                             _lastSendLog.time_since_epoch().count() == 0 ||
@@ -534,13 +474,12 @@ namespace OStimTogether
                             _lastSendLog = now;
                             auto* node = thread->getCurrentNode();
                             SKSE::log::info(
-                                "OSTNET ROOT SYNC TX thread={} node={} local=({:.3f},{:.3f},{:.3f}) channel={} referenceWrites=0",
+                                "OSTNET ROOT TRANSLATION TX thread={} node={} local=({:.3f},{:.3f},{:.3f}) rotationSent=0 scaleSent=0",
                                 _activePlayerThreadID,
                                 node && node->getNodeID() ? node->getNodeID() : "",
-                                local.translate.x,
-                                local.translate.y,
-                                local.translate.z,
-                                kRootChannel);
+                                local.value.x,
+                                local.value.y,
+                                local.value.z);
                         }
                     }
                 }
@@ -560,46 +499,38 @@ namespace OStimTogether
                 RE::TESForm::LookupByID(*proxyFormID) : nullptr;
             auto* proxy = form ? form->As<RE::Actor>() : nullptr;
 
-            // Scene membership is the authorization boundary for realtime
-            // root state. A connected client whose proxy is not an actor in
-            // this exact local OStim thread cannot affect any skeleton.
             if (!proxy || !ThreadContainsActor(thread, proxy)) {
                 ++it;
                 continue;
             }
 
             RE::NiPoint3 before{};
-            bool hadBefore = false;
-            if (auto* root = FindAnimatedRoot(proxy)) {
-                before = root->local.translate;
-                hadBefore = true;
-            }
+            RE::NiPoint3 after{};
+            const bool applied = ApplyRootTranslation(
+                proxy,
+                state.translation,
+                before,
+                after);
 
-            ApplyRootTransform(proxy, state.transform);
-
-            if (state.lastLog.time_since_epoch().count() == 0 ||
-                now - state.lastLog >= kLogInterval) {
+            if (applied &&
+                (state.lastLog.time_since_epoch().count() == 0 ||
+                 now - state.lastLog >= kLogInterval)) {
                 state.lastLog = now;
-                RE::NiPoint3 after{};
-                bool hadAfter = false;
-                if (auto* root = FindAnimatedRoot(proxy)) {
-                    after = root->local.translate;
-                    hadAfter = true;
-                }
-
+                const auto ref = proxy->GetPosition();
                 SKSE::log::info(
-                    "OSTNET ROOT SYNC APPLY connection={} proxy={:08X} remoteThread={} hadRoot={}/{} before=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) after=({:.3f},{:.3f},{:.3f}) referenceWrites=0",
+                    "OSTNET ROOT TRANSLATION APPLY connection={} proxy={:08X} remoteThread={} ref=({:.3f},{:.3f},{:.3f}) before=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) after=({:.3f},{:.3f},{:.3f}) translationOnly=1 rotationWrites=0 scaleWrites=0 worldWrites=0 treeWrites=0 referenceWrites=0",
                     it->first,
                     proxy->GetFormID(),
                     state.remoteThreadID,
-                    hadBefore ? 1 : 0,
-                    hadAfter ? 1 : 0,
+                    ref.x,
+                    ref.y,
+                    ref.z,
                     before.x,
                     before.y,
                     before.z,
-                    state.transform.translate.x,
-                    state.transform.translate.y,
-                    state.transform.translate.z,
+                    state.translation.value.x,
+                    state.translation.value.y,
+                    state.translation.value.z,
                     after.x,
                     after.y,
                     after.z);
