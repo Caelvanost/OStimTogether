@@ -1,34 +1,61 @@
 # OStim Together
 
-Current development version: **0.29.0**.
+Current development version: **0.30.4**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
 
+## 0.30.4
+
+### Free-standing alignment: use OStim's own replay path
+
+The 0.30.3 two-client logs showed that the clock-calibrated phase barrier itself was active, but its direct animation-event replay was not actually accepted by either actor. Every synchronized replay reported:
+
+```text
+OSTNET PHASE REPLAY ... mode=direct-animation-event directNotify=0/2 notifyFailures=2
+```
+
+for both Player1 and Player2, across every tested free-standing node. The scene center and participant order were already consistent, but the phase correction therefore never restarted the paired animations through a working path.
+
+0.30.4 keeps the same `ostimtogether.phase` PREP/READY/COMMIT timing barrier but forces replay through OStim's public ModAPI:
+
+```text
+Thread::SetSpeed(currentSpeed)
+```
+
+This is the same native path OStim uses itself:
+
+```text
+Thread::SetSpeed
+→ ThreadActor::playAnimation
+→ GameActor::playAnimation
+→ queued NotifyAnimationGraph
+```
+
+It naturally preserves OStim's role animation index, playback speed and `singleSpeed` handling. The phase replay still performs **no** `SetActorAlignment`, direct `SetPosition`, `Update3DPosition`, or skeleton-transform write.
+
+Expected 0.30.4 phase log:
+
+```text
+OSTNET PHASE REPLAY ... mode=fallback-set-speed fallbackSetSpeed=1 fallbackResult=0 fallbackReason=actor-0-event-probe-native-ostim-phase-replay
+```
+
+The fallback label is historical: in 0.30.4 this is the intentionally selected replay path.
+
+The 0.30.3 `NPC Root [Root]` translation channel is also disabled at runtime. Both clients reported `local=(0,0,0)` throughout the tested scenes, so it carried no useful alignment delta. 0.30.4 performs no root-translation writes.
+
+Furniture and wall scenes are unchanged.
+
 ## 0.29.0
 
 ### Free-standing alignment: synchronize animation phase, not remote transforms
 
-The 0.28.1 two-client logs finally isolated a timing problem that world-position and skeleton-root corrections could not solve safely.
+The 0.28.1 two-client logs isolated a timing problem that world-position and skeleton-root corrections could not solve safely.
 
-On the authoritative client, the local OStim thread was already alive and animating when its `START` packet was emitted. On the mirror client the packet was received and mirror construction began immediately, but the mirror's real OStim `thread START` event occurred roughly **0.9 seconds later**.
+On the authoritative client, the local OStim thread is already alive and animating before the mirror client's real OStim thread is fully constructed. That phase offset matters for ordinary no-furniture root-motion animations even when both clients agree on the world-space scene origin.
 
-That phase offset matters for ordinary no-furniture root-motion animations:
-
-```text
-Player1 real Kahel animation phase ~= T + 0.9 s
-        ↓ STR movement replication
-Player2 Kahel proxy reference
-
-Player2 local OStim animation phase ~= T
-```
-
-The scene center and actor order can therefore be correct while the remote STR reference represents one animation phase and the locally rendered paired animation represents another.
-
-Furniture scenes hide most of this because a fixed object provides the dominant anchor. Free-standing scenes do not.
-
-0.29.0 introduces a dedicated reliable/ordered phase channel:
+0.29.0 introduced a dedicated reliable/ordered phase channel:
 
 ```text
 ostimtogether.phase
@@ -42,44 +69,14 @@ owner OStim thread/node becomes active
 → each remote waits until its real local OStim mirror exists on that node
 → PHASE_READY
 → owner waits for every participant
-→ PHASE_COMMIT(current speed, common relative delay)
-→ every client uses OStim native alignment on all actors
-→ every client replays SetSpeed(currentSpeed)
-→ paired animations restart at nearly the same phase
+→ PHASE_COMMIT(current speed, calibrated future deadline)
+→ every client replays the current OStim animation at that deadline
 → short OStim TranslateTo on STR proxies is released with StopTranslation
 ```
 
 The owner is only the phase coordinator. This does **not** add approval or veto semantics to the multi-master controls.
 
-The phase replay deliberately uses OStim's public ModAPI only:
-
-- `GetActorAlignment()`;
-- `SetActorAlignment()`;
-- `SetSpeed()`.
-
-It performs **no** direct `SetPosition`, `Update3DPosition`, root-bone transform or recursive skeleton writes.
-
-The first `NODE` event emitted by OStim during thread construction occurs before the real `thread START`. 0.29.0 tracks started player threads and ignores those pre-start NODE callbacks so an incomplete initial thread cannot create a false phase generation.
-
-Expected startup logs:
-
-```text
-OSTNET PHASE SYNC READY threadsVersion=3 mode=free-scene-barrier nativeAlign=1 skeletonWrites=0 replayDelayMs=150
-OSTNET PHASE SYNC TRANSPORT READY channel=ostimtogether.phase reliable=1 ordered=1
-OSTNET ROOT SYNC DISABLED reason=unsafe-remote-skeleton-write skeletonWrites=0
-```
-
-Expected START/NODE synchronization:
-
-```text
-OSTNET PHASE PREP TX thread=0 token=... node=... reason=START participants=1
-OSTNET PHASE READY TX localThread=0 ownerThread=0 token=... node=... speed=...
-OSTNET PHASE READY RX thread=0 token=... ready=1/1
-OSTNET PHASE COMMIT TX thread=0 token=... node=... speed=... action=native-realign-replay
-OSTNET PHASE REPLAY localThread=0 token=... mirror=0 aligned=2/2 ... skeletonWrites=0
-OSTNET PHASE REPLAY localThread=0 token=... mirror=1 aligned=2/2 ... skeletonWrites=0
-OSTNET PHASE RELEASE localThread=0 token=... proxies=1 action=stop-translation-only
-```
+The first `NODE` event emitted by OStim during thread construction occurs before the real `thread START`. The phase component tracks started player threads and ignores those pre-start NODE callbacks so an incomplete initial thread cannot create a false phase generation.
 
 Furniture and wall scenes are intentionally excluded and retain their established anchored handling.
 
@@ -89,15 +86,15 @@ Furniture and wall scenes are intentionally excluded and retain their establishe
 
 0.28.0 experimented with copying the remote player's `NPC Root [Root]` local transform into the corresponding STR proxy. Runtime testing showed that writing translation/rotation into an independently evaluated skeleton and recursively rebuilding the subtree could catastrophically deform the actor.
 
-0.28.1 disabled that experiment completely. The safety rule remains in 0.29.0:
+0.28.1 disabled that experiment. The safety rule remains:
 
 ```text
-remote skeleton writes = 0
-NPC Root [Root] synchronization = disabled
-recursive skeleton transform rebuild = disabled
+remote skeleton rotation writes = 0
+remote skeleton scale writes = 0
+recursive skeleton transform rebuild = 0
 ```
 
-The root-sync source files may remain in the development tree for historical/probe work, but they are not registered or executed by the plugin runtime.
+0.30.4 additionally disables the later translation-only experiment because its measured value was always zero in the tested free-standing scenes.
 
 ## 0.27.4
 
@@ -171,7 +168,9 @@ On Accept, the remote client sends its current OCum state before `INVITE_RESPONS
 - OStim 7.4c furniture fallback;
 - Wall-scene startup handling;
 - shared native OStim NODE/SPEED/STOP controls;
-- free-standing START/NODE phase barrier in 0.29.0;
+- clock-calibrated free-standing START/NODE phase barrier;
+- native OStim phase replay through `SetSpeed(currentSpeed)` in 0.30.4;
+- proxy-only auxiliary OStim thread cleanup;
 - equipment/outfit protection and residual apparel restoration;
 - RaceMenu/SKEE overlay rebuild support;
 - generic addon state reapplication;
@@ -184,7 +183,7 @@ Validated OStim runtime layouts:
 - OStim 7.4c — `7.4.0.3`;
 - OStim 7.5b — `7.5.0.2`.
 
-The 0.29.0 free-scene phase barrier requires Threads API v3 for exact furniture exclusion and therefore targets the validated OStim 7.5b path. Furniture/wall paths remain unchanged.
+The free-scene phase barrier requires Threads API v3 for exact furniture exclusion and therefore targets the validated OStim 7.5b path. Furniture/wall paths remain unchanged.
 
 The required `OSKSE.pex` compatibility patch is based on the OStim 7.5b `OSKSE.psc` interface. Revalidate it when updating OStim.
 
@@ -204,7 +203,7 @@ compat\OStimUIConsent\package\Data\Scripts\OSKSE.pex
 compat\OStimUIConsent\package\Data\Scripts\OStimTogetherNative.pex
 ```
 
-No Papyrus source changed for **0.29.0**, so existing compiled PEX files can be reused.
+No Papyrus source changed for **0.30.4**, so existing compiled PEX files can be reused.
 
 Build the FOMOD:
 
@@ -216,7 +215,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.29.0-FOMOD.zip
+dist\OStimTogether-v0.30.4-FOMOD.zip
 ```
 
 FOMOD layout:
