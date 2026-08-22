@@ -6,12 +6,18 @@
 #include "OStimAPI/ThreadInterface.h"
 #include "OStimAPI/ModThreadControl.h"
 
-// v0.30.4: the direct NotifyAnimationGraph replay path is not accepted by
-// either actor in the validated OStim 7.5b runtime (notify=0 for every role).
-// Keep the event probe available to the rest of the project, but force this
-// translation unit onto FreeScenePhaseSync's existing ModAPI SetSpeed fallback.
-// OStim Thread::SetSpeed() is the native replay primitive and does not perform
-// actor alignment or direct world/skeleton writes.
+// v0.30.4 proved that OStim's own SetSpeed() is the correct animation replay
+// primitive. v0.30.5 also restores the native OStim alignment step immediately
+// before that replay. OStim Thread::ChangeNode() normally performs:
+//
+//   alignActors() -> SetSpeed() -> playAnimation()
+//
+// The phase barrier previously replayed only SetSpeed(), after STR had already
+// had time to update remote proxy references. PhaseThreadControl reproduces the
+// missing public-API alignment stage by re-submitting each actor's CURRENT
+// OStim alignment through GetActorAlignment()/SetActorAlignment() before the
+// SetSpeed task is queued. No direct reference, 3D-root or skeleton write is
+// performed by OStim Together.
 #define OSTIM_TOGETHER_FORCE_NATIVE_PHASE_REPLAY 1
 
 namespace OStimTogether
@@ -81,6 +87,110 @@ namespace OStimTogether
             std::int64_t prepRemoteReceiveUs{ 0 };
         };
 
+        // Narrow adapter used only by FreeScenePhaseSync. It deliberately
+        // intercepts SetSpeed() so the synchronized replay uses the same
+        // align-then-play order as OStim's native ChangeNode(). All other
+        // methods used by this component are direct pass-throughs.
+        class PhaseThreadControl
+        {
+        public:
+            PhaseThreadControl() = default;
+
+            PhaseThreadControl& operator=(
+                OStimModAPI::Thread::IThreadInterface* value) noexcept
+            {
+                _raw = value;
+                return *this;
+            }
+
+            explicit operator bool() const noexcept
+            {
+                return _raw != nullptr;
+            }
+
+            bool operator!() const noexcept
+            {
+                return _raw == nullptr;
+            }
+
+            friend bool operator!=(
+                const PhaseThreadControl& value,
+                std::nullptr_t) noexcept
+            {
+                return value._raw != nullptr;
+            }
+
+            PhaseThreadControl* operator->() noexcept
+            {
+                return this;
+            }
+
+            const PhaseThreadControl* operator->() const noexcept
+            {
+                return this;
+            }
+
+            std::uint32_t GetPlayerThreadID() noexcept
+            {
+                return _raw ? _raw->GetPlayerThreadID() : 0;
+            }
+
+            bool IsThreadValid(std::uint32_t threadID) noexcept
+            {
+                return _raw && _raw->IsThreadValid(threadID);
+            }
+
+            std::int32_t GetCurrentSpeed(std::uint32_t threadID) noexcept
+            {
+                return _raw ? _raw->GetCurrentSpeed(threadID) : 0;
+            }
+
+            OStimModAPI::Thread::APIResult SetSpeed(
+                std::uint32_t threadID,
+                std::int32_t speed) noexcept
+            {
+                if (!_raw) {
+                    return OStimModAPI::Thread::APIResult::Invalid;
+                }
+
+                const auto actorCount = _raw->GetActorCount(threadID);
+                std::uint32_t aligned = 0;
+                std::uint32_t failed = 0;
+
+                for (std::uint32_t i = 0; i < actorCount; ++i) {
+                    OStimModAPI::Thread::ActorAlignmentData alignment{};
+                    if (!_raw->GetActorAlignment(threadID, i, &alignment)) {
+                        ++failed;
+                        continue;
+                    }
+
+                    const auto result =
+                        _raw->SetActorAlignment(threadID, i, &alignment);
+                    if (result == OStimModAPI::Thread::APIResult::OK) {
+                        ++aligned;
+                    } else {
+                        ++failed;
+                    }
+                }
+
+                SKSE::log::info(
+                    "OSTNET PHASE NATIVE ALIGN thread={} actors={}/{} failed={} action=get-current-alignment-then-set-speed directPositionWrites=0 skeletonWrites=0",
+                    threadID,
+                    aligned,
+                    actorCount,
+                    failed);
+
+                // OStim ModAPI queues all SetActorAlignment tasks and this
+                // SetSpeed task on the same SKSE task queue in call order.
+                // Therefore the current OStim alignment is re-applied before
+                // Thread::SetSpeed() restarts the paired role animations.
+                return _raw->SetSpeed(threadID, speed);
+            }
+
+        private:
+            OStimModAPI::Thread::IThreadInterface* _raw{ nullptr };
+        };
+
         bool LoadOStimAPIs();
         bool IsFreeStandingThread(OStim::Thread* thread) const;
         bool IsDynamicSTRProxy(RE::Actor* actor) const;
@@ -128,7 +238,7 @@ namespace OStimTogether
         bool SendTo(STRPMApi::ConnectionID connectionID, std::string_view payload);
 
         OStim::ThreadInterface* _threads{ nullptr };
-        OStimModAPI::Thread::IThreadInterface* _threadControl{ nullptr };
+        PhaseThreadControl _threadControl{};
         std::uint32_t _threadInterfaceVersion{ 0 };
 
         StartListener _startListener;
