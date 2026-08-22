@@ -1,10 +1,80 @@
 # OStim Together
 
-Current development version: **0.27.0**.
+Current development version: **0.27.1**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
+
+## 0.27.1
+
+### Free-standing scenes: native motion ownership
+
+Runtime logs from 0.27.0 showed that Skyrim Together and OStim were already moving participating players consistently, while OStim Together was continuously restoring obsolete START/NODE world coordinates. The remote STR proxy and the real remote PlayerCharacter could therefore agree with each other, then be pulled back toward the old scene origin by OStim Together. The mirror also re-applied `SetActorAlignment()` to local NPCs every refresh while SELF and player proxies were following animation/root motion.
+
+For OStim 7.5b no-furniture, non-wall scenes, 0.27.1 removes those competing position owners after the initial scene construction:
+
+```text
+START common origin
+→ create mirror at the same initial center
+→ native OStim initial alignment
+→ short settle window
+→ disable OStim Together full STR-proxy pose guard
+→ StopTranslation once on the STR proxy
+→ no replacement reference guard
+→ no periodic SetActorAlignment on mirror NPCs
+→ no authoritative SELF world-pose reassert on free NODE packets
+```
+
+After the settle:
+
+```text
+remote STR proxy  -> STR network movement + animation
+local SELF        -> OStim + animation/root motion
+local NPCs        -> OStim + animation/root motion
+OStim Together    -> node/speed/stop synchronization only
+```
+
+Furniture and wall scenes retain the established anchored alignment paths.
+
+Free-standing `NODE` packets deliberately omit `poses=`. The node ID is still synchronized, but START/NODE poses are no longer treated as permanent world coordinates after a free scene has begun.
+
+Expected logs:
+
+```text
+OSTNET FREE SCENE ALIGN READY ... mode=noFurniture-native-ownership continuousCorrections=0
+OSTNET RESOLVE START ... continuousMirrorAlign=0
+OSTNET|v1|NODE|... poseMode=free-native
+OSTNET FREE SCENE NATIVE OWNERSHIP ... continuousCorrections=0 proxyOwner=STR actorsOwner=OStim-animation
+```
+
+### Shared-control routing fixes
+
+0.27.0 exposed the native OStim SceneMenu on every involved player's mirror, but the first multiplayer tests revealed two independent routing bugs.
+
+A stale consent timeout could fire after an older scene had already ended. Because OStim commonly reuses `thread=0`, the old session could erase `_activeOwnerByThread[0]` after a newer scene had already claimed that thread ID. 0.27.1 now times out only sessions that never obtained an active thread, and cancel cleanup removes a thread route only when it still belongs to the same session.
+
+`CONTROL_NODE` also previously used `NavigateToScene()`. OStim's implementation returns `OK` when the task is queued, but `Thread::Navigate()` only succeeds when the supplied ID is a valid navigation entry from the owner's current node. If Player2 and Player1 were at different points in a transition chain, Player2 could advance locally while Player1 stayed on the previous node.
+
+0.27.1 applies participant node commands with `NavigateToSearchResult()`, which resolves the exact node ID and queues `Thread::ChangeNode()` directly:
+
+```text
+Player2 selects/reaches node X
+→ CONTROL_NODE(thread, X)
+→ membership guard only
+→ owner relay applies exact ChangeNode(X)
+→ resulting NODE is fanned to all participants
+```
+
+There is still **no owner approval or veto**. The original starter remains only the relay/sequencing point for the shared session.
+
+The mirror anti-echo state is also no longer armed when an incoming authoritative NODE or SPEED already matches the mirror's current state, preventing stale suppression from swallowing a later real participant command.
+
+Expected control log:
+
+```text
+OSTNET COOP CONTROL NODE connection=... thread=... node=... result=0 apply=exact-change-node
+```
 
 ## 0.27.0
 
@@ -31,71 +101,39 @@ OSTNET SHARED CONTROL ENABLE thread=... nativeMenu=1 participantCommands=1 multi
 
 Shared scene control is **multi-master**. No scene participant has to obtain command approval from the player who originally started the scene.
 
-```text
-participant selects an OStim node
-→ that participant's local OStim thread changes immediately
-→ CONTROL_NODE is emitted automatically
-→ the existing owner route acts only as a transport relay / ordering point
-→ membership guard checks only that the sender belongs to the active scene
-→ NavigateToScene is applied automatically
-→ resulting scene state is fanned to every participant
-```
-
-There is no owner veto, confirmation dialog, permission decision, or gameplay-level validation step. The only guard retained is the active-session membership check needed to reject control traffic from clients whose characters are not participants in that scene.
-
 The same model is used for speed and stop:
 
 ```text
+CONTROL_NODE
 CONTROL_SPEED
 CONTROL_STOP
 ```
 
 This means Player1, Player2, and additional accepted participants can all control the same scene with equal control rights. The original starter is not privileged after consent and scene creation.
 
-For concurrent commands, the owner route is used only as a deterministic **relay/sequencer** so every client converges on one ordering. Commands are not accepted or rejected according to which participant issued them; among active participants, the transport arrival order determines the resulting shared state.
+For concurrent commands, the owner route is used only as a deterministic relay/sequencer so every client converges on one ordering. Commands are not accepted or rejected according to which participant issued them; among active participants, transport arrival order determines the resulting shared state.
 
-Current 0.27.0 shared-control scope:
+Current shared-control scope:
 
 - native OStim scene navigation from the current node;
-- OStim search/navigation results, because they resolve to normal node changes;
+- OStim search/navigation results;
 - speed up/down;
-- stop/end scene through the existing synchronized stop path.
+- stop/end scene through the synchronized stop path.
 
-Actor alignment-editor offsets and arbitrary OStim Scene Options that invoke local Papyrus functions are **not yet declared synchronized state**. They remain outside the 0.27.0 shared-control contract until OStim Together has explicit protocol messages for those values.
+Actor alignment-editor offsets and arbitrary OStim Scene Options that invoke local Papyrus functions are **not yet declared synchronized state**. They remain outside the shared-control contract until OStim Together has explicit protocol messages for those values.
 
 ## 0.26.2
 
 ### Free-standing scene alignment
 
-Logs from 0.26.1 showed that ordinary scenes with no furniture could gradually separate remote-player proxies from local actors even though furniture scenes stayed aligned.
+0.26.2 was the first attempt to stop the long-lived STR proxy pose guard from fighting free-standing animation root motion. It released the proxy to STR after the initial stabilization window. Runtime tests in 0.27.0 later showed that a replacement reference guard and periodic mirror NPC alignment still competed with valid OStim/STR motion; those remaining continuous corrections are removed in 0.27.1.
 
-The cause was the long-lived STR proxy pose guard. OStim Together deliberately stopped continuously pinning the real local PlayerCharacter because that fought animation root motion, but the dynamic STR proxy was still forced back to its computed scene pose every rendered frame. In standing/free animation packs, the local player and NPCs could therefore follow animation root motion while the remote proxy remained pinned near the original scene center.
-
-0.26.2 keeps the existing initial stabilization, then releases only that continuous proxy position ownership for ordinary free-standing scenes:
-
-```text
-OStim START
-→ normal initial OStim alignment
-→ existing short STR-proxy settle window (~200 ms)
-→ 250 ms: disable continuous proxy pose guard
-→ StopTranslation on the STR proxy
-→ STR + animation root motion own the proxy for the rest of the scene
-```
-
-This correction is deliberately narrow:
+The 0.26.2 scope remains important historically:
 
 - OStim 7.5b / Threads ABI v3 only, where `getFurnitureObject()` can prove the scene has no furniture;
 - scenes with an actual furniture reference are unchanged;
 - wall scenes are unchanged and keep their dedicated stabilization path;
 - OStim 7.4c keeps the previous behavior rather than relying on a furniture heuristic.
-
-Expected log for an affected free-standing scene:
-
-```text
-OSTNET FREE SCENE ALIGN armed thread=... furniture=none action=release-proxy-after-initial-align
-OSTNET STR PROXY POSE GUARD disabled thread=... reason=free-scene-no-furniture owner=STR rootMotion=enabled
-OSTNET FREE SCENE PROXY RELEASE thread=... proxies=1 action=stop-translation owner=STR rootMotion=enabled
-```
 
 ## 0.26.1
 
@@ -140,7 +178,7 @@ As of 0.26.1, `OSKSE.pex` and `OStimTogetherNative.pex` are always included in *
 
 OStim Together's `OSKSE.pex` must win its file conflict against OStim's original `OSKSE.pex`.
 
-### 0.26.1 Add Actor acceptance fix
+### Add Actor acceptance fix
 
 0.26.0 used the generic accepted-session path for the temporary Add Actor consent pseudo-session. That pseudo-session intentionally had no real OStim actor list, so after the remote player clicked Accept it briefly produced:
 
@@ -196,7 +234,7 @@ OSTNET ADDON OBJ RX ... type=ocumanmesh ...
 - OStim 7.4c furniture fallback;
 - Wall-scene startup handling;
 - shared native OStim node/speed/stop control for every accepted player participant;
-- STR proxy pose stabilization, with root-motion release for ordinary 7.5b free scenes;
+- native motion ownership for ordinary OStim 7.5b no-furniture scenes;
 - equipment/outfit protection and residual apparel restoration;
 - RaceMenu/SKEE overlay rebuild support;
 - generic addon state reapplication;
@@ -213,7 +251,7 @@ The required `OSKSE.pex` compatibility patch is based on the OStim 7.5b `OSKSE.p
 
 ## Build
 
-First compile the mandatory Add Actor Papyrus compatibility patch. UIExtensions and the small OStim dependencies required only for compilation are stubbed inside the repository, so no external UIExtensions source tree is required:
+First compile the mandatory Add Actor Papyrus compatibility patch when its Papyrus sources change. UIExtensions and the small OStim dependencies required only for compilation are stubbed inside the repository, so no external UIExtensions source tree is required:
 
 ```powershell
 .\compat\OStimUIConsent\compile-ui-consent.ps1 `
@@ -229,6 +267,8 @@ compat\OStimUIConsent\package\Data\Scripts\OStimTogetherNative.pex
 
 Both `build-vortex.ps1` and `build-fomod.ps1` treat those files as mandatory Core inputs.
 
+For 0.27.1 no Papyrus source changed, so existing compiled PEX files can be reused.
+
 Then build the FOMOD:
 
 ```powershell
@@ -239,7 +279,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.27.0-FOMOD.zip
+dist\OStimTogether-v0.27.1-FOMOD.zip
 ```
 
 FOMOD layout:
