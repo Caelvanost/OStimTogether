@@ -8,13 +8,6 @@
 
 namespace OStimTogether
 {
-    // Free-standing paired animations may carry root motion in the actor
-    // reference. STR then replicates that reference from the remote machine.
-    // If the local OStim mirror starts ~1 second later, the replicated remote
-    // phase and the locally rendered animation phase disagree even though the
-    // scene center is correct. This component synchronizes animation PHASE,
-    // not transforms: all mirrors report ready, then every client uses OStim's
-    // own alignment API and replays the current speed after the same delay.
     class FreeScenePhaseSync
     {
     public:
@@ -125,5 +118,6 @@ namespace OStimTogether
         std::optional<OwnerPhase> _ownerPhase;
         std::vector<RemotePrep> _remotePreps;
         std::unordered_map<std::string, std::uint64_t> _lastReadyToken;
+        std::unordered_set<std::int32_t> _startedThreads;
     };
 }
