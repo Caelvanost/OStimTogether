@@ -12,6 +12,7 @@
 #include "PapyrusConsentBridge.h"
 #include "PreflightGuard.h"
 #include "RaceMenuOverlayBridge.h"
+#include "SharedSceneControl.h"
 #include "STRPMTransport.h"
 #include "VisualKeepAlive.h"
 
@@ -59,6 +60,14 @@ namespace
             OStimTogether::FreeSceneAlignmentFix::GetSingleton().Initialize();
 
             OStimTogether::CoopSessionManager::GetSingleton().Initialize();
+
+            // OStim mirror threads are created with NO_PLAYER_CONTROL for
+            // safety. Re-enable OStim's own SceneMenu only after the core
+            // routing listeners are registered so any local NODE/SPEED/STOP
+            // action is immediately converted into an owner-authoritative
+            // multiplayer control request.
+            OStimTogether::SharedSceneControl::GetSingleton().Initialize();
+
             OStimTogether::MirrorUndressRepair::GetSingleton().Initialize();
             OStimTogether::AddonStateRepair::GetSingleton().Initialize();
             break;
