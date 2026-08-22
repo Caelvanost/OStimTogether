@@ -44,7 +44,7 @@ if (-not (Test-Path $OptionalPex)) {
 $UIConsentOSKSE = Join-Path $UIConsentPackage "Data\Scripts\OSKSE.pex"
 $UIConsentNative = Join-Path $UIConsentPackage "Data\Scripts\OStimTogetherNative.pex"
 if (-not (Test-Path $UIConsentOSKSE) -or -not (Test-Path $UIConsentNative)) {
-    throw "Patch Papyrus Add Actor non compile.`nExecute compat\OStimUIConsent\compile-ui-consent.ps1 avec les chemins de sources OStim/UIExtensions, puis relance build-fomod.ps1."
+    throw "Patch Papyrus Add Actor obligatoire non compile.`nExecute compat\OStimUIConsent\compile-ui-consent.ps1 puis relance build-fomod.ps1."
 }
 
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
@@ -52,17 +52,17 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 $CoreStage = Join-Path $Stage "00 Core"
 $OCumStage = Join-Path $Stage "10 OCum Ascended"
-$UIConsentStage = Join-Path $Stage "20 OStim Add Actor Consent Gate"
 $FomodStage = Join-Path $Stage "fomod"
 
 New-Item -ItemType Directory -Force -Path $CoreStage | Out-Null
 New-Item -ItemType Directory -Force -Path $OCumStage | Out-Null
-New-Item -ItemType Directory -Force -Path $UIConsentStage | Out-Null
 New-Item -ItemType Directory -Force -Path $FomodStage | Out-Null
 
 Copy-Item (Join-Path $CorePackage "*") $CoreStage -Recurse -Force
+# Add Actor consent is core functionality. Overlay the compiled OSKSE.pex and
+# OStimTogetherNative.pex directly into 00 Core so the FOMOD cannot omit it.
+Copy-Item (Join-Path $UIConsentPackage "*") $CoreStage -Recurse -Force
 Copy-Item (Join-Path $OptionalPackage "*") $OCumStage -Recurse -Force
-Copy-Item (Join-Path $UIConsentPackage "*") $UIConsentStage -Recurse -Force
 Copy-Item (Join-Path $FomodSource "*") $FomodStage -Recurse -Force
 
 $StagedInfo = Join-Path $FomodStage "info.xml"
@@ -84,3 +84,4 @@ Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Zip -Force
 Write-Host ""
 Write-Host "OK - OStim Together v$Version FOMOD STRPM cree :" -ForegroundColor Green
 Write-Host $Zip
+Write-Host "Add Actor consent gate inclus obligatoirement dans 00 Core." -ForegroundColor Green
