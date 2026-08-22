@@ -7,13 +7,12 @@
 
 namespace OStimTogether
 {
-    // Free-standing OStim scenes place every actor reference on a shared scene
-    // origin and obtain the visible per-role displacement from the animated
-    // skeleton root. Skyrim Together correctly owns the remote player's
-    // TESObjectREFR position, but its proxy can lose/overwrite that visual root
-    // displacement. This component synchronizes only the animated
-    // "NPC Root [Root]" local transform on a dedicated latest-state STRPM
-    // channel. It never writes actor/reference world position.
+    // Free-standing paired animations can carry their visible per-role
+    // displacement in NPC Root [Root]. Skyrim Together owns the remote
+    // TESObjectREFR position, so this component synchronizes ONLY the local
+    // translation of that animated root. It never copies rotation/scale,
+    // never writes world transforms or descendants, and never moves the actor
+    // reference itself.
     class FreeSceneRootSync
     {
     public:
@@ -24,8 +23,7 @@ namespace OStimTogether
         void StopTransport();
         void Reset();
 
-        // Called from VisualKeepAlive on Skyrim's game thread once per
-        // coalesced rendered-frame task.
+        // Called on Skyrim's game thread from VisualKeepAlive.
         void Tick();
 
     private:
@@ -47,10 +45,9 @@ namespace OStimTogether
             void listen(OStim::Thread* thread) override;
         };
 
-        struct RootTransform
+        struct RootTranslation
         {
-            RE::NiPoint3 translate{};
-            RE::NiMatrix3 rotate{};
+            RE::NiPoint3 value{};
 
             [[nodiscard]] bool IsFinite() const noexcept;
         };
@@ -58,7 +55,7 @@ namespace OStimTogether
         struct RemoteState
         {
             std::int32_t remoteThreadID{ -1 };
-            RootTransform transform{};
+            RootTranslation translation{};
             std::chrono::steady_clock::time_point received{};
             std::chrono::steady_clock::time_point lastLog{};
         };
@@ -81,11 +78,11 @@ namespace OStimTogether
             RE::Actor* actor) const;
 
         static RE::NiAVObject* FindAnimatedRoot(RE::Actor* actor);
-        static void UpdateNodeWorldTransform(RE::NiAVObject* node);
-        static void UpdateTreeTransforms(RE::NiAVObject* node);
-        static void ApplyRootTransform(
+        static bool ApplyRootTranslation(
             RE::Actor* actor,
-            const RootTransform& transform);
+            const RootTranslation& translation,
+            RE::NiPoint3& before,
+            RE::NiPoint3& after);
 
         static std::optional<std::string> Field(
             std::string_view payload,
