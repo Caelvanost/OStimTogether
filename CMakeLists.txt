@@ -31,6 +31,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/PapyrusConsentBridge.h
         src/PreflightGuard.cpp
         src/PreflightGuard.h
+        src/ProxyOnlyThreadCleanup.cpp
+        src/ProxyOnlyThreadCleanup.h
         src/SafeMessageBox.cpp
         src/SafeMessageBox.h
         src/Config.cpp
@@ -58,8 +60,6 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/Input.h
         src/FreeSceneAlignmentFix.cpp
         src/FreeSceneAlignmentFix.h
-        src/FreeScenePhaseSyncCompile.cpp
-        src/FreeScenePhaseSync.h
         src/FreeSceneRootSync.cpp
         src/FreeSceneRootSync.h
         src/SharedSceneControl.cpp
