@@ -75,8 +75,14 @@ namespace OStimTogether
 
         _threads->registerThreadStartListener(&_startListener);
 
+        // Shared controls are multi-master. Every scene participant has the
+        // same native OStim controls and a local command is applied locally
+        // immediately. The original scene owner is only a transport relay /
+        // ordering point for the existing STRPM route; it has no command veto
+        // or approval step. CoopSessionManager keeps only the membership/session
+        // guard needed to reject traffic from clients outside the active scene.
         SKSE::log::info(
-            "OSTNET SHARED CONTROL READY threadsVersion={} ui=native-ostim routing=owner-authoritative controls=node,speed,stop",
+            "OSTNET SHARED CONTROL READY threadsVersion={} ui=native-ostim routing=multi-master ownerRole=relay-sequencer commandApproval=none membershipGuard=1 controls=node,speed,stop",
             _threads->getVersion());
         return true;
     }
@@ -163,7 +169,7 @@ namespace OStimTogether
             callback);
 
         SKSE::log::info(
-            "OSTNET SHARED CONTROL ENABLE thread={} nativeMenu=1 participantCommands=1",
+            "OSTNET SHARED CONTROL ENABLE thread={} nativeMenu=1 participantCommands=1 multiMaster=1 commandApproval=none",
             threadID);
     }
 }
