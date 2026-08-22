@@ -6,6 +6,7 @@
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
 #include "FreeSceneAlignmentFix.h"
+#include "FreeSceneRootSync.h"
 #include "Input.h"
 #include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
@@ -54,18 +55,24 @@ namespace
 
             OStimTogether::OStimBridge::GetSingleton().Initialize();
 
-            // Register after OStimBridge: free-standing scenes keep the
-            // bridge's short initial proxy settle, then this listener removes
-            // only the long-lived no-furniture/non-wall position pin.
+            // No-furniture/non-wall scenes must never be continuously warped
+            // at TESObjectREFR/3D level. This listener reduces their position
+            // ownership to native OStim startup TranslateTo + delayed release.
             OStimTogether::FreeSceneAlignmentFix::GetSingleton().Initialize();
+
+            // Separate from world-position ownership: synchronized free scenes
+            // need the animated NPC Root [Root] local transform on STR proxies.
+            // This keeps STR in sole control of the network reference while
+            // restoring the role displacement authored in paired animations.
+            OStimTogether::FreeSceneRootSync::GetSingleton().Initialize();
 
             OStimTogether::CoopSessionManager::GetSingleton().Initialize();
 
             // OStim mirror threads are created with NO_PLAYER_CONTROL for
             // safety. Re-enable OStim's own SceneMenu only after the core
             // routing listeners are registered so any local NODE/SPEED/STOP
-            // action is immediately converted into an owner-authoritative
-            // multiplayer control request.
+            // action is immediately converted into a multiplayer control
+            // request.
             OStimTogether::SharedSceneControl::GetSingleton().Initialize();
 
             OStimTogether::MirrorUndressRepair::GetSingleton().Initialize();
@@ -80,9 +87,17 @@ namespace
             OStimTogether::AddonBridge::GetSingleton().Register();
             OStimTogether::EquipmentLock::GetSingleton().Start();
 
-            if (!OStimTogether::STRPMTransport::GetSingleton().Start()) {
-                SKSE::log::error(
-                    "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
+            {
+                const bool strpmReady =
+                    OStimTogether::STRPMTransport::GetSingleton().Start();
+                if (!strpmReady) {
+                    SKSE::log::error(
+                        "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
+                } else if (!OStimTogether::FreeSceneRootSync::GetSingleton().
+                               StartTransport()) {
+                    SKSE::log::warn(
+                        "OSTNET ROOT SYNC transport unavailable: free-scene skeleton-root correction disabled");
+                }
             }
 
             OStimTogether::VisualKeepAlive::GetSingleton().Start();
@@ -94,6 +109,7 @@ namespace
             OStimTogether::DefaultOutfitGuard::GetSingleton().RestoreAll();
             OStimTogether::CoopSessionManager::GetSingleton().Reset();
             OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
+            OStimTogether::FreeSceneRootSync::GetSingleton().Reset();
             break;
 
         default:
