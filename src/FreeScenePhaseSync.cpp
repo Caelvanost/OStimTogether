@@ -16,6 +16,24 @@ namespace OStimTogether
         constexpr auto kReadyDelayNode = std::chrono::milliseconds(60);
         constexpr auto kReplayDelay = std::chrono::milliseconds(150);
         constexpr auto kProxyReleaseDelay = std::chrono::milliseconds(220);
+
+        void StopReferenceTranslation(RE::TESObjectREFR* object)
+        {
+            if (!object) {
+                return;
+            }
+
+            using func_t = void(
+                RE::BSScript::IVirtualMachine*,
+                RE::VMStackID,
+                RE::TESObjectREFR*);
+
+            static REL::Relocation<func_t> func{
+                RELOCATION_ID(55712, 56243)
+            };
+
+            func(nullptr, 0, object);
+        }
     }
 
     FreeScenePhaseSync& FreeScenePhaseSync::GetSingleton()
@@ -398,10 +416,6 @@ namespace OStimTogether
             _ownerPhase.reset();
         }
 
-        // Skyrim/OStim exposes one player thread at a time. A stopped local
-        // player thread invalidates any remote PREP waiting for that mirror;
-        // clearing them avoids a later reused thread ID consuming stale phase
-        // state.
         if (thread->isPlayerThread()) {
             _remotePreps.clear();
             _lastReadyToken.clear();
@@ -771,7 +785,7 @@ namespace OStimTogether
                         auto* threadActor = thread->getActor(i);
                         auto* actor = threadActor ? static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
                         if (IsDynamicSTRProxy(actor)) {
-                            actor->StopTranslation();
+                            StopReferenceTranslation(actor);
                             ++released;
                         }
                     }
