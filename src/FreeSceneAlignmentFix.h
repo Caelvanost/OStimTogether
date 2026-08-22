@@ -33,42 +33,31 @@ namespace OStimTogether
             void listen(OStim::Thread* thread) override;
         };
 
-        struct ConvergenceState
+        struct FreeState
         {
             std::uint64_t generation{ 0 };
-            std::uint32_t stableSamples{ 0 };
-            std::chrono::steady_clock::time_point started{};
-            std::chrono::steady_clock::time_point lastLog{};
-            bool released{ false };
+            bool free{ false };
         };
 
         void HandleStart(OStim::Thread* thread);
         void HandleNode(OStim::Thread* thread);
         void HandleStop(OStim::Thread* thread);
 
-        void ArmConvergence(
-            std::int32_t threadID,
-            std::chrono::milliseconds delay,
-            std::string reason,
-            bool rearmPoseGuard);
+        void EnterFreeScene(
+            OStim::Thread* thread,
+            std::chrono::milliseconds releaseDelay,
+            std::string reason);
 
-        void ScheduleConvergenceCheck(
+        void ScheduleTranslationRelease(
             std::int32_t threadID,
             std::uint64_t generation,
             std::chrono::milliseconds delay,
             std::string reason);
 
-        void CheckConvergence(
+        void ReleaseTranslations(
             std::int32_t threadID,
             std::uint64_t generation,
             std::string_view reason);
-
-        void ReleaseFreeSceneProxy(
-            std::int32_t threadID,
-            std::uint64_t generation,
-            std::string_view reason,
-            bool timeout,
-            float maxDistanceSq);
 
         OStim::ThreadInterface* _threads{ nullptr };
         StartListener _startListener;
@@ -77,6 +66,6 @@ namespace OStimTogether
         std::atomic_bool _initialized{ false };
 
         std::mutex _stateMutex;
-        std::unordered_map<std::int32_t, ConvergenceState> _states;
+        std::unordered_map<std::int32_t, FreeState> _states;
     };
 }
