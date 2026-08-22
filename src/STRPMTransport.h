@@ -14,10 +14,17 @@ namespace OStimTogether
         void Stop();
 
         // STRPM is the only transport on the strpm branch.
-        // Send() is the high-level broadcast entrypoint used by existing
-        // OStim Together call sites. Scene/session payloads may be intercepted
+        // Send() is the high-level reliable/ordered broadcast entrypoint used
+        // by existing scene state. Scene/session payloads may be intercepted
         // by CoopSessionManager and routed only to participants.
         bool Send(std::string_view payload);
+
+        // Realtime state such as animated root transforms is latest-state data:
+        // old samples are useless and must not build a reliable/ordered queue.
+        // These packets broadcast on the same OStimTogether channel with no
+        // reliability/order flags; receivers validate active scene membership
+        // before applying them.
+        bool SendRealtime(std::string_view payload);
 
         // Direct point-to-point send. This bypasses scene interception and is
         // used for consent and participant control requests.
@@ -56,7 +63,8 @@ namespace OStimTogether
 
         bool SendRaw(
             STRPMApi::Target target,
-            std::string_view payload);
+            std::string_view payload,
+            std::uint32_t flags);
 
         void HandleMessage(const STRPMApi::Message& message);
         void HandleProxyMapping(const STRPMApi::ProxyMappingEvent& event);
