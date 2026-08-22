@@ -38,6 +38,7 @@ namespace OStimTogether
             std::uint64_t generation{ 0 };
             std::uint32_t stableSamples{ 0 };
             std::chrono::steady_clock::time_point started{};
+            std::chrono::steady_clock::time_point lastLog{};
             bool released{ false };
         };
 
