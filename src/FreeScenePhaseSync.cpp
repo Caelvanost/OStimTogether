@@ -217,6 +217,7 @@ namespace OStimTogether
         _ownerPhase.reset();
         _remotePreps.clear();
         _lastReadyToken.clear();
+        _startedThreads.clear();
     }
 
     bool FreeScenePhaseSync::IsDynamicSTRProxy(RE::Actor* actor) const
@@ -344,11 +345,18 @@ namespace OStimTogether
 
     void FreeScenePhaseSync::HandleStart(OStim::Thread* thread)
     {
+        if (!thread || !thread->isPlayerThread()) {
+            return;
+        }
+
+        const auto threadID = thread->getThreadID();
+        _startedThreads.insert(threadID);
+
         if (!IsFreeStandingThread(thread)) {
             return;
         }
 
-        if (OStimBridge::GetSingleton().IsRemoteMirrorForAlignment(thread->getThreadID())) {
+        if (OStimBridge::GetSingleton().IsRemoteMirrorForAlignment(threadID)) {
             MaybeReadyRemotePhase(thread, kReadyDelayStart);
         } else {
             BeginOwnerPhase(thread, "START");
@@ -357,10 +365,22 @@ namespace OStimTogether
 
     void FreeScenePhaseSync::HandleNode(OStim::Thread* thread)
     {
+        if (!thread || !thread->isPlayerThread()) {
+            return;
+        }
+
+        const auto threadID = thread->getThreadID();
+        if (!_startedThreads.contains(threadID)) {
+            SKSE::log::trace(
+                "OSTNET PHASE NODE ignored thread={} reason=before-thread-start",
+                threadID);
+            return;
+        }
+
         if (!IsFreeStandingThread(thread)) {
             return;
         }
-        if (OStimBridge::GetSingleton().IsRemoteMirrorForAlignment(thread->getThreadID())) {
+        if (OStimBridge::GetSingleton().IsRemoteMirrorForAlignment(threadID)) {
             MaybeReadyRemotePhase(thread, kReadyDelayNode);
         } else {
             BeginOwnerPhase(thread, "NODE");
@@ -373,15 +393,19 @@ namespace OStimTogether
             return;
         }
         const auto tid = thread->getThreadID();
+        _startedThreads.erase(tid);
         if (_ownerPhase && _ownerPhase->threadID == tid) {
             _ownerPhase.reset();
         }
-        _remotePreps.erase(
-            std::remove_if(
-                _remotePreps.begin(),
-                _remotePreps.end(),
-                [tid](const RemotePrep& prep) { return prep.ownerThreadID == tid; }),
-            _remotePreps.end());
+
+        // Skyrim/OStim exposes one player thread at a time. A stopped local
+        // player thread invalidates any remote PREP waiting for that mirror;
+        // clearing them avoids a later reused thread ID consuming stale phase
+        // state.
+        if (thread->isPlayerThread()) {
+            _remotePreps.clear();
+            _lastReadyToken.clear();
+        }
     }
 
     void FreeScenePhaseSync::MaybeReadyRemotePhase(
@@ -432,6 +456,7 @@ namespace OStimTogether
                     }
                     auto* thread = _threads->getThread(localThreadID);
                     if (!thread || !IsFreeStandingThread(thread) ||
+                        !_startedThreads.contains(localThreadID) ||
                         !OStimBridge::GetSingleton().IsRemoteMirrorForAlignment(localThreadID)) {
                         return;
                     }
@@ -517,10 +542,10 @@ namespace OStimTogether
                 _remotePreps.end());
             _remotePreps.push_back(prep);
 
-            if (_threads) {
-                const auto playerThreadID = _threadControl ?
-                    static_cast<std::int32_t>(_threadControl->GetPlayerThreadID()) : -1;
-                if (playerThreadID >= 0) {
+            if (_threads && _threadControl) {
+                const auto playerThreadID =
+                    static_cast<std::int32_t>(_threadControl->GetPlayerThreadID());
+                if (playerThreadID >= 0 && _startedThreads.contains(playerThreadID)) {
                     auto* thread = _threads->getThread(playerThreadID);
                     if (thread && IsFreeStandingThread(thread) &&
                         OStimBridge::GetSingleton().IsRemoteMirrorForAlignment(playerThreadID)) {
@@ -547,7 +572,7 @@ namespace OStimTogether
             }
 
             const auto localThreadID = static_cast<std::int32_t>(_threadControl->GetPlayerThreadID());
-            if (localThreadID < 0) {
+            if (localThreadID < 0 || !_startedThreads.contains(localThreadID)) {
                 return;
             }
             auto* thread = _threads->getThread(localThreadID);
@@ -607,7 +632,8 @@ namespace OStimTogether
             return;
         }
         auto& phase = *_ownerPhase;
-        if (!_threadControl->IsThreadValid(static_cast<std::uint32_t>(phase.threadID))) {
+        if (!_startedThreads.contains(phase.threadID) ||
+            !_threadControl->IsThreadValid(static_cast<std::uint32_t>(phase.threadID))) {
             return;
         }
         auto* thread = _threads->getThread(phase.threadID);
@@ -677,6 +703,7 @@ namespace OStimTogether
         bool mirror)
     {
         if (!_threads || !_threadControl ||
+            !_startedThreads.contains(localThreadID) ||
             !_threadControl->IsThreadValid(static_cast<std::uint32_t>(localThreadID))) {
             return;
         }
@@ -731,6 +758,7 @@ namespace OStimTogether
             if (auto* tasks = SKSE::GetTaskInterface()) {
                 tasks->AddTask([this, localThreadID, token]() {
                     if (!_threads || !_threadControl ||
+                        !_startedThreads.contains(localThreadID) ||
                         !_threadControl->IsThreadValid(static_cast<std::uint32_t>(localThreadID))) {
                         return;
                     }
