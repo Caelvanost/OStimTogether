@@ -29,10 +29,6 @@ namespace OStimTogether
             return _threadInterfaceVersion >= 3;
         }
 
-        // Free-standing scenes need the STR proxy to follow the remote
-        // player's real reference/root motion after OStim has performed its
-        // initial alignment. Furniture and wall scenes deliberately keep the
-        // continuous guard and never call this hook.
         bool DisableSTRProxyPoseGuard(
             std::int32_t threadID,
             std::string_view reason)
@@ -51,9 +47,6 @@ namespace OStimTogether
             return removed;
         }
 
-        // A thread that was released while free-standing can later navigate
-        // to a wall/furniture node. Restore the established anchored-scene
-        // guard in that case rather than leaving the proxy under STR control.
         void EnableSTRProxyPoseGuard(
             std::int32_t threadID,
             std::chrono::milliseconds delay,
@@ -71,19 +64,11 @@ namespace OStimTogether
                 delay.count());
         }
 
-        // Preflight consent guard. The cooperative listener is intentionally
-        // registered before OStimBridge and uses this hook to classify the
-        // disposable pre-consent thread as a suppressed mirror before the
-        // normal START listener can arm authoritative wall/pose/network work.
-        // HandleStop() already forgets mirror-thread bookkeeping, so no extra
-        // teardown path is required for the short-lived preflight thread.
         void MarkSuppressedPreflightThread(std::int32_t threadID)
         {
             MarkRemoteMirrorThread(threadID);
         }
 
-        // Sender-side: reconstruct the authoritative world-space
-        // center used by OStim from the already aligned local player.
         bool TryComputeSceneCenter(
             OStim::Thread* thread,
             SceneCenter& outCenter,
@@ -117,6 +102,30 @@ namespace OStimTogether
             std::string_view sender,
             std::int32_t remoteThreadID,
             std::int32_t speed);
+
+        // SetSpeed() in OStim always replays the current animation and emits a
+        // speed event, even if the requested speed is already active. Network
+        // receivers must therefore avoid re-submitting an identical SPEED or
+        // they can build a participant -> owner -> participant feedback loop.
+        bool IsRemoteMirrorSpeedCurrent(
+            std::string_view sender,
+            std::int32_t remoteThreadID,
+            std::int32_t speed)
+        {
+            if (!_threadControl || speed < 0) {
+                return false;
+            }
+
+            const auto localThread = FindRemoteMirror(sender, remoteThreadID);
+            if (!localThread ||
+                !_threadControl->IsThreadValid(
+                    static_cast<std::uint32_t>(*localThread))) {
+                return false;
+            }
+
+            return _threadControl->GetCurrentSpeed(
+                static_cast<std::uint32_t>(*localThread)) == speed;
+        }
 
         bool StopRemoteMirror(
             std::string_view sender,
