@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.28.0</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI, with mandatory pre-UI consent, native multi-master OStim scene controls, dedicated free-scene animated root synchronization, root-motion-safe proxy handling, idempotent shared speed control, Skyrim-Souls-safe message boxes, and OCum state snapshots before acceptance.</Description>
+  <Version>0.28.1</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI, with mandatory pre-UI consent, native multi-master OStim scene controls, root-motion-safe free-scene handling, idempotent shared speed control, Skyrim-Souls-safe message boxes, and OCum state snapshots before acceptance. Remote skeleton-root writes are disabled after the unsafe 0.28.0 experiment.</Description>
 </fomod>
