@@ -845,11 +845,6 @@ namespace OStimTogether
         if (payload.starts_with("CONTROL_NODE|")) {
             const auto node = Field(payload, "node");
             if (node && _threadControl) {
-                // Participant controls are multi-master. Apply the exact node
-                // selected on the remote mirror; NavigateToScene() only
-                // accepts a navigation entry reachable from the owner's
-                // current node and can therefore return OK while doing
-                // nothing when transition chains are out of phase.
                 const auto result = _threadControl->NavigateToSearchResult(
                     static_cast<std::uint32_t>(*threadID),
                     node->c_str());
@@ -868,14 +863,45 @@ namespace OStimTogether
             if (speedValue && _threadControl) {
                 try {
                     const auto speed = static_cast<std::int32_t>(std::stol(*speedValue));
-                    const auto result = _threadControl->SetSpeed(
-                        static_cast<std::uint32_t>(*threadID),
-                        speed);
+                    const auto tid = static_cast<std::uint32_t>(*threadID);
+                    const bool valid = _threadControl->IsThreadValid(tid);
+                    const auto current = valid ?
+                        _threadControl->GetCurrentSpeed(tid) : -1;
+
+                    if (valid && current == speed) {
+                        // The participant already applied this command on its
+                        // local mirror. If the relay is already at the same
+                        // speed, do not call SetSpeed again: OStim would replay
+                        // the animation and emit another speed event even
+                        // though state did not change. Fan out the current
+                        // authoritative value explicitly so additional peers
+                        // still converge.
+                        const auto authoritativePayload = fmt::format(
+                            "SPEED|thread={}|speed={}",
+                            *threadID,
+                            speed);
+                        for (const auto connectionID : snapshot.participants) {
+                            STRPMTransport::GetSingleton().SendTo(
+                                connectionID,
+                                authoritativePayload);
+                        }
+
+                        SKSE::log::info(
+                            "OSTNET COOP CONTROL SPEED NOOP connection={} thread={} speed={} reason=already-current fanout={}",
+                            senderConnectionID,
+                            *threadID,
+                            speed,
+                            snapshot.participants.size());
+                        return true;
+                    }
+
+                    const auto result = _threadControl->SetSpeed(tid, speed);
                     SKSE::log::info(
-                        "OSTNET COOP CONTROL SPEED connection={} thread={} speed={} result={}",
+                        "OSTNET COOP CONTROL SPEED connection={} thread={} speed={} previous={} result={}",
                         senderConnectionID,
                         *threadID,
                         speed,
+                        current,
                         static_cast<int>(result));
                 } catch (...) {
                 }
