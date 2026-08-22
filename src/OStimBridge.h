@@ -29,6 +29,11 @@ namespace OStimTogether
             return _threadInterfaceVersion >= 3;
         }
 
+        bool IsRemoteMirrorForAlignment(std::int32_t threadID)
+        {
+            return IsRemoteMirrorThread(threadID);
+        }
+
         bool DisableSTRProxyPoseGuard(
             std::int32_t threadID,
             std::string_view reason)
@@ -103,10 +108,6 @@ namespace OStimTogether
             std::int32_t remoteThreadID,
             std::int32_t speed);
 
-        // SetSpeed() in OStim always replays the current animation and emits a
-        // speed event, even if the requested speed is already active. Network
-        // receivers must therefore avoid re-submitting an identical SPEED or
-        // they can build a participant -> owner -> participant feedback loop.
         bool IsRemoteMirrorSpeedCurrent(
             std::string_view sender,
             std::int32_t remoteThreadID,
