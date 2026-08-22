@@ -207,6 +207,17 @@ namespace OStimTogether::OStimInternalProbe
         EventInfo out{};
         out.speedIndex = speedIndex;
 
+#if defined(OSTIM_TOGETHER_FORCE_NATIVE_PHASE_REPLAY)
+        // FreeScenePhaseSync v0.30.3 proved that direct
+        // Actor::NotifyAnimationGraph(event) is rejected for every role
+        // (notify=0).  Returning an intentional probe failure makes the
+        // existing phase barrier take its safe fallback path:
+        // OStim ModAPI Thread::SetSpeed(currentSpeed).  OStim then performs
+        // the replay through its own GameActor::playAnimation task path.
+        out.reason = "native-ostim-phase-replay";
+        return out;
+#endif
+
         if (!node) {
             out.reason = "null-node";
             return out;
