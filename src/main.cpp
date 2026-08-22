@@ -6,12 +6,13 @@
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
 #include "FreeSceneAlignmentFix.h"
-#include "FreeScenePhaseSync.h"
+#include "FreeSceneRootSync.h"
 #include "Input.h"
 #include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
 #include "PapyrusConsentBridge.h"
 #include "PreflightGuard.h"
+#include "ProxyOnlyThreadCleanup.h"
 #include "RaceMenuOverlayBridge.h"
 #include "SharedSceneControl.h"
 #include "STRPMTransport.h"
@@ -55,22 +56,21 @@ namespace
 
             OStimTogether::OStimBridge::GetSingleton().Initialize();
 
-            // No-furniture/non-wall scenes must never be continuously warped
-            // at TESObjectREFR/3D level. This listener reduces their position
-            // ownership to native OStim startup TranslateTo + delayed release.
+            // Ordinary free-standing scenes never receive direct
+            // TESObjectREFR/3D warps from OStim Together after native startup.
             OStimTogether::FreeSceneAlignmentFix::GetSingleton().Initialize();
 
-            // Free-standing root-motion scenes also need all local OStim
-            // threads to begin the animation at nearly the same phase. This
-            // barrier waits for every remote mirror to exist, then uses only
-            // OStim's native alignment + speed replay APIs. No skeleton or
-            // direct world-position writes are performed.
-            OStimTogether::FreeScenePhaseSync::GetSingleton().Initialize();
+            // v0.30.0 restores only the animated NPC Root [Root] LOCAL
+            // translation on remote STR proxies. Rotation, scale, world
+            // transforms, descendants and actor/reference position are never
+            // copied from another client.
+            OStimTogether::FreeSceneRootSync::GetSingleton().Initialize();
 
-            // v0.28.0's experimental remote NPC Root [Root] writes remain
-            // permanently disabled after they were shown to deform proxies.
-            SKSE::log::info(
-                "OSTNET ROOT SYNC DISABLED reason=unsafe-remote-skeleton-write skeletonWrites=0");
+            // A pre-scene OStim UI path can create a one-actor thread that
+            // contains only the targeted STR proxy. Such a thread survived in
+            // the 0.29.0 test and made later mirror builders reject that actor.
+            // Stop any mapped-proxy thread that contains no real local player.
+            OStimTogether::ProxyOnlyThreadCleanup::GetSingleton().Initialize();
 
             OStimTogether::CoopSessionManager::GetSingleton().Initialize();
 
@@ -96,9 +96,9 @@ namespace
             if (!OStimTogether::STRPMTransport::GetSingleton().Start()) {
                 SKSE::log::error(
                     "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
-            } else if (!OStimTogether::FreeScenePhaseSync::GetSingleton().StartTransport()) {
+            } else if (!OStimTogether::FreeSceneRootSync::GetSingleton().StartTransport()) {
                 SKSE::log::warn(
-                    "OSTNET PHASE SYNC transport unavailable: free-scene phase barrier disabled");
+                    "OSTNET ROOT TRANSLATION transport unavailable: free-scene visual translation sync disabled");
             }
 
             OStimTogether::VisualKeepAlive::GetSingleton().Start();
@@ -110,7 +110,7 @@ namespace
             OStimTogether::DefaultOutfitGuard::GetSingleton().RestoreAll();
             OStimTogether::CoopSessionManager::GetSingleton().Reset();
             OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
-            OStimTogether::FreeScenePhaseSync::GetSingleton().Reset();
+            OStimTogether::FreeSceneRootSync::GetSingleton().Reset();
             break;
 
         default:
