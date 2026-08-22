@@ -9,14 +9,29 @@ namespace OStimTogether
 {
     namespace
     {
-        constexpr auto kInitialFreeSceneReleaseDelay =
-            std::chrono::milliseconds(250);
-        constexpr auto kNodeFreeSceneReleaseDelay =
+        constexpr auto kInitialConvergenceDelay =
+            std::chrono::milliseconds(100);
+        constexpr auto kNodeConvergenceDelay =
             std::chrono::milliseconds(75);
+        constexpr auto kConvergenceInterval =
+            std::chrono::milliseconds(50);
+        constexpr auto kConvergenceTimeout =
+            std::chrono::milliseconds(2500);
+        constexpr auto kConvergenceLogInterval =
+            std::chrono::milliseconds(250);
         constexpr auto kFurnitureGuardDelay =
             std::chrono::milliseconds(200);
         constexpr auto kWallGuardDelay =
             std::chrono::milliseconds(1100);
+        constexpr auto kFreeNodeGuardDelay =
+            std::chrono::milliseconds(50);
+
+        constexpr float kConvergedDistance = 4.0F;
+        constexpr float kConvergedDistanceSq =
+            kConvergedDistance * kConvergedDistance;
+        constexpr std::uint32_t kRequiredStableSamples = 3;
+        constexpr float kRadiansToDegrees =
+            57.2957795130823208768F;
 
         bool IsLikelySTRRemotePlayerProxy(RE::Actor* actor)
         {
@@ -83,6 +98,67 @@ namespace OStimTogether
 
             func(nullptr, 0, object);
         }
+
+        void TranslateReferenceTo(
+            RE::TESObjectREFR* object,
+            const RE::NiPoint3& target,
+            float radians)
+        {
+            if (!object) {
+                return;
+            }
+
+            using func_t = void(
+                RE::BSScript::IVirtualMachine*,
+                RE::VMStackID,
+                RE::TESObjectREFR*,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float);
+
+            static REL::Relocation<func_t> func{
+                RELOCATION_ID(55706, 56237)
+            };
+
+            func(
+                nullptr,
+                0,
+                object,
+                target.x,
+                target.y,
+                target.z,
+                0.0F,
+                0.0F,
+                radians * kRadiansToDegrees + 1.0F,
+                1000000.0F,
+                0.0001F);
+        }
+
+        void HardSnapReference(
+            RE::Actor* actor,
+            const ActorPose& pose)
+        {
+            if (!actor || !pose.IsFinite()) {
+                return;
+            }
+
+            auto* reference = static_cast<RE::TESObjectREFR*>(actor);
+            const RE::NiPoint3 target{ pose.x, pose.y, pose.z };
+
+            StopReferenceTranslation(reference);
+            reference->SetPosition(target);
+            actor->SetPosition(target, true);
+            reference->SetPosition(target);
+            reference->data.location = target;
+            actor->SetRotationZ(pose.r);
+            reference->data.angle.z = pose.r;
+            reference->Update3DPosition(true);
+        }
     }
 
     FreeSceneAlignmentFix& FreeSceneAlignmentFix::GetSingleton()
@@ -148,8 +224,11 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN READY threadsVersion={} mode=noFurniture-native-ownership continuousCorrections=0",
-            _threads->getVersion());
+            "OSTNET FREE SCENE ALIGN READY threadsVersion={} mode=convergence-barrier continuousCorrectionsAfterReady=0 threshold={} stableSamples={} timeoutMs={}",
+            _threads->getVersion(),
+            kConvergedDistance,
+            kRequiredStableSamples,
+            kConvergenceTimeout.count());
         return true;
     }
 
@@ -169,22 +248,18 @@ namespace OStimTogether
         }
 
         const auto threadID = thread->getThreadID();
-        {
-            std::scoped_lock lock(_stateMutex);
-            _pendingRelease.insert(threadID);
-            _releasedThreads.erase(threadID);
-        }
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN armed thread={} node={} delayMs={} furniture=none action=release-all-continuous-position-ownership",
+            "OSTNET FREE SCENE ALIGN ARM thread={} node={} reason=START delayMs={} action=wait-for-proxy-convergence",
             threadID,
             CurrentNodeID(thread),
-            kInitialFreeSceneReleaseDelay.count());
+            kInitialConvergenceDelay.count());
 
-        ScheduleFreeSceneRelease(
+        ArmConvergence(
             threadID,
-            kInitialFreeSceneReleaseDelay,
-            "start-free-scene");
+            kInitialConvergenceDelay,
+            "START",
+            false);
     }
 
     void FreeSceneAlignmentFix::HandleNode(OStim::Thread* thread)
@@ -203,14 +278,13 @@ namespace OStimTogether
         const bool wall = IsWallNode(thread);
 
         if (hasFurniture || wall) {
-            bool wasReleased = false;
+            bool hadFreeState = false;
             {
                 std::scoped_lock lock(_stateMutex);
-                _pendingRelease.erase(threadID);
-                wasReleased = _releasedThreads.erase(threadID) > 0;
+                hadFreeState = _states.erase(threadID) > 0;
             }
 
-            if (wasReleased) {
+            if (hadFreeState) {
                 bridge.EnableSTRProxyPoseGuard(
                     threadID,
                     wall ? kWallGuardDelay : kFurnitureGuardDelay,
@@ -220,39 +294,30 @@ namespace OStimTogether
         }
 
         if (!HasSTRProxy(thread)) {
+            std::scoped_lock lock(_stateMutex);
+            _states.erase(threadID);
             return;
         }
 
-        bool alreadyReleased = false;
-        bool schedule = false;
+        bool wasReleased = false;
         {
             std::scoped_lock lock(_stateMutex);
-            alreadyReleased = _releasedThreads.contains(threadID);
-            if (!_pendingRelease.contains(threadID)) {
-                _pendingRelease.insert(threadID);
-                schedule = true;
-            }
+            const auto it = _states.find(threadID);
+            wasReleased = it != _states.end() && it->second.released;
         }
 
-        if (schedule) {
-            const auto delay = alreadyReleased ?
-                kNodeFreeSceneReleaseDelay :
-                kInitialFreeSceneReleaseDelay;
+        SKSE::log::info(
+            "OSTNET FREE SCENE ALIGN ARM thread={} node={} reason=NODE delayMs={} previousReleased={} action=wait-for-proxy-convergence",
+            threadID,
+            CurrentNodeID(thread),
+            kNodeConvergenceDelay.count(),
+            wasReleased ? 1 : 0);
 
-            SKSE::log::info(
-                "OSTNET FREE SCENE ALIGN node thread={} node={} delayMs={} alreadyReleased={} action=release-after-native-node-align",
-                threadID,
-                CurrentNodeID(thread),
-                delay.count(),
-                alreadyReleased ? 1 : 0);
-
-            ScheduleFreeSceneRelease(
-                threadID,
-                delay,
-                alreadyReleased ?
-                    "node-free-scene" :
-                    "enter-free-scene");
-        }
+        ArmConvergence(
+            threadID,
+            kNodeConvergenceDelay,
+            "NODE",
+            wasReleased);
     }
 
     void FreeSceneAlignmentFix::HandleStop(OStim::Thread* thread)
@@ -261,71 +326,273 @@ namespace OStimTogether
             return;
         }
 
-        const auto threadID = thread->getThreadID();
         std::scoped_lock lock(_stateMutex);
-        _pendingRelease.erase(threadID);
-        _releasedThreads.erase(threadID);
+        _states.erase(thread->getThreadID());
     }
 
-    void FreeSceneAlignmentFix::ScheduleFreeSceneRelease(
+    void FreeSceneAlignmentFix::ArmConvergence(
         std::int32_t threadID,
+        std::chrono::milliseconds delay,
+        std::string reason,
+        bool rearmPoseGuard)
+    {
+        std::uint64_t generation = 0;
+        {
+            std::scoped_lock lock(_stateMutex);
+            auto& state = _states[threadID];
+            ++state.generation;
+            state.stableSamples = 0;
+            state.started = std::chrono::steady_clock::now();
+            state.lastLog = {};
+            state.released = false;
+            generation = state.generation;
+        }
+
+        if (rearmPoseGuard) {
+            OStimBridge::GetSingleton().EnableSTRProxyPoseGuard(
+                threadID,
+                kFreeNodeGuardDelay,
+                "free-node-convergence");
+        }
+
+        ScheduleConvergenceCheck(
+            threadID,
+            generation,
+            delay,
+            std::move(reason));
+    }
+
+    void FreeSceneAlignmentFix::ScheduleConvergenceCheck(
+        std::int32_t threadID,
+        std::uint64_t generation,
         std::chrono::milliseconds delay,
         std::string reason)
     {
-        std::thread([this, threadID, delay, reason = std::move(reason)]() {
+        std::thread([
+            this,
+            threadID,
+            generation,
+            delay,
+            reason = std::move(reason)]() {
             std::this_thread::sleep_for(delay);
 
             auto* tasks = SKSE::GetTaskInterface();
             if (!tasks) {
-                std::scoped_lock lock(_stateMutex);
-                _pendingRelease.erase(threadID);
                 return;
             }
 
-            tasks->AddTask([this, threadID, reason]() {
-                ReleaseFreeSceneProxy(threadID, reason);
+            tasks->AddTask([
+                this,
+                threadID,
+                generation,
+                reason]() {
+                CheckConvergence(threadID, generation, reason);
             });
         }).detach();
     }
 
-    void FreeSceneAlignmentFix::ReleaseFreeSceneProxy(
+    void FreeSceneAlignmentFix::CheckConvergence(
         std::int32_t threadID,
+        std::uint64_t generation,
         std::string_view reason)
     {
-        const auto clearPending = [this, threadID]() {
+        std::chrono::steady_clock::time_point started{};
+        std::uint32_t previousStableSamples = 0;
+        {
             std::scoped_lock lock(_stateMutex);
-            _pendingRelease.erase(threadID);
-        };
+            const auto it = _states.find(threadID);
+            if (it == _states.end() ||
+                it->second.generation != generation ||
+                it->second.released) {
+                return;
+            }
+            started = it->second.started;
+            previousStableSamples = it->second.stableSamples;
+        }
 
         if (!_threads) {
-            clearPending();
             return;
         }
 
         auto* thread = _threads->getThread(threadID);
-        if (!thread || !thread->isPlayerThread()) {
+        if (!thread ||
+            !thread->isPlayerThread() ||
+            thread->getFurnitureObject() ||
+            IsWallNode(thread) ||
+            !HasSTRProxy(thread)) {
             std::scoped_lock lock(_stateMutex);
-            _pendingRelease.erase(threadID);
-            _releasedThreads.erase(threadID);
+            _states.erase(threadID);
             return;
         }
 
         auto& bridge = OStimBridge::GetSingleton();
-        if (!bridge.SupportsThreadFurniture() ||
-            thread->getFurnitureObject() ||
-            IsWallNode(thread)) {
-            clearPending();
+        SceneCenter center{};
+        const bool haveCenter =
+            bridge.TryComputeSceneCenter(thread, center, false);
+
+        std::uint32_t proxyCount = 0;
+        std::uint32_t translated = 0;
+        float maxDistanceSq = 0.0F;
+        std::vector<std::pair<RE::Actor*, ActorPose>> targets;
+
+        if (haveCenter) {
+            for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+                auto* threadActor = thread->getActor(i);
+                auto* actor = threadActor ?
+                    static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
+
+                if (!IsLikelySTRRemotePlayerProxy(actor)) {
+                    continue;
+                }
+
+                ActorPose pose{};
+                if (!bridge.TryComputeActorPose(
+                        thread,
+                        i,
+                        center,
+                        pose,
+                        false) ||
+                    !pose.IsFinite()) {
+                    continue;
+                }
+
+                ++proxyCount;
+                targets.emplace_back(actor, pose);
+
+                const RE::NiPoint3 target{ pose.x, pose.y, pose.z };
+                const auto current = actor->GetPosition();
+                const auto distanceSq = current.GetSquaredDistance(target);
+                maxDistanceSq = std::max(maxDistanceSq, distanceSq);
+
+                // 0.27.1 could cancel OStim's lockAtPosition only a few
+                // milliseconds after START/NODE. During this short startup
+                // barrier we deliberately restore the same native TranslateTo
+                // toward OStim's current pose until the proxy has actually
+                // converged. After release there are no continuous writes.
+                if (distanceSq > kConvergedDistanceSq) {
+                    StopReferenceTranslation(actor);
+                    TranslateReferenceTo(actor, target, pose.r);
+                    ++translated;
+                }
+            }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - started);
+        const bool timedOut = elapsed >= kConvergenceTimeout;
+        const bool sampleConverged =
+            haveCenter && proxyCount > 0 &&
+            maxDistanceSq <= kConvergedDistanceSq;
+
+        std::uint32_t stableSamples = sampleConverged ?
+            previousStableSamples + 1 : 0;
+        bool writeLog = false;
+        {
+            std::scoped_lock lock(_stateMutex);
+            const auto it = _states.find(threadID);
+            if (it == _states.end() ||
+                it->second.generation != generation ||
+                it->second.released) {
+                return;
+            }
+
+            it->second.stableSamples = stableSamples;
+            if (it->second.lastLog.time_since_epoch().count() == 0 ||
+                now - it->second.lastLog >= kConvergenceLogInterval ||
+                stableSamples > 0 || timedOut) {
+                it->second.lastLog = now;
+                writeLog = true;
+            }
+        }
+
+        if (writeLog) {
+            SKSE::log::info(
+                "OSTNET FREE SCENE CONVERGENCE thread={} node={} reason={} elapsedMs={} centerValid={} proxies={} translated={} maxDist={:.3f} stable={}/{} timeout={}",
+                threadID,
+                CurrentNodeID(thread),
+                reason,
+                elapsed.count(),
+                haveCenter ? 1 : 0,
+                proxyCount,
+                translated,
+                std::sqrt(maxDistanceSq),
+                stableSamples,
+                kRequiredStableSamples,
+                timedOut ? 1 : 0);
+        }
+
+        if (stableSamples >= kRequiredStableSamples) {
+            ReleaseFreeSceneProxy(
+                threadID,
+                generation,
+                reason,
+                false,
+                maxDistanceSq);
             return;
         }
 
-        // In a free-standing scene the START/NODE world pose is only an
-        // initial common origin. OStim animation/root motion is allowed to
-        // move every participant after that. Disable OStim Together's full
-        // proxy guard and stop only OStim's completed TranslateTo on the STR
-        // proxy. There is deliberately no replacement reference/root guard.
-        bridge.DisableSTRProxyPoseGuard(
+        if (timedOut) {
+            // Last-resort one-shot snap. This is deliberately restricted to
+            // startup timeout and is followed immediately by complete release;
+            // it is not a persistent correction loop.
+            for (const auto& [actor, pose] : targets) {
+                HardSnapReference(actor, pose);
+            }
+
+            ReleaseFreeSceneProxy(
+                threadID,
+                generation,
+                reason,
+                true,
+                maxDistanceSq);
+            return;
+        }
+
+        ScheduleConvergenceCheck(
             threadID,
-            "free-scene-native-ownership");
+            generation,
+            kConvergenceInterval,
+            std::string(reason));
+    }
+
+    void FreeSceneAlignmentFix::ReleaseFreeSceneProxy(
+        std::int32_t threadID,
+        std::uint64_t generation,
+        std::string_view reason,
+        bool timeout,
+        float maxDistanceSq)
+    {
+        if (!_threads) {
+            return;
+        }
+
+        auto* thread = _threads->getThread(threadID);
+        if (!thread ||
+            !thread->isPlayerThread() ||
+            thread->getFurnitureObject() ||
+            IsWallNode(thread)) {
+            std::scoped_lock lock(_stateMutex);
+            _states.erase(threadID);
+            return;
+        }
+
+        {
+            std::scoped_lock lock(_stateMutex);
+            const auto it = _states.find(threadID);
+            if (it == _states.end() ||
+                it->second.generation != generation ||
+                it->second.released) {
+                return;
+            }
+            it->second.released = true;
+        }
+
+        OStimBridge::GetSingleton().DisableSTRProxyPoseGuard(
+            threadID,
+            timeout ?
+                "free-scene-convergence-timeout" :
+                "free-scene-converged");
 
         std::uint32_t released = 0;
         for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
@@ -341,23 +608,13 @@ namespace OStimTogether
             ++released;
         }
 
-        {
-            std::scoped_lock lock(_stateMutex);
-            _pendingRelease.erase(threadID);
-            if (released > 0) {
-                _releasedThreads.insert(threadID);
-            } else {
-                _releasedThreads.erase(threadID);
-            }
-        }
-
-        if (released > 0) {
-            SKSE::log::info(
-                "OSTNET FREE SCENE NATIVE OWNERSHIP thread={} node={} proxies={} reason={} continuousCorrections=0 proxyOwner=STR actorsOwner=OStim-animation",
-                threadID,
-                CurrentNodeID(thread),
-                released,
-                reason);
-        }
+        SKSE::log::info(
+            "OSTNET FREE SCENE ALIGN READY thread={} node={} reason={} proxies={} timeout={} finalMaxDist={:.3f} action=release-to-str-animation continuousCorrections=0",
+            threadID,
+            CurrentNodeID(thread),
+            reason,
+            released,
+            timeout ? 1 : 0,
+            std::sqrt(maxDistanceSq));
     }
 }
