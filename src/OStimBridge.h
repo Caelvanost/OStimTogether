@@ -29,6 +29,28 @@ namespace OStimTogether
             return _threadInterfaceVersion >= 3;
         }
 
+        // Free-standing scenes need the STR proxy to follow the remote
+        // player's real reference/root motion after OStim has performed its
+        // initial alignment. Furniture and wall scenes deliberately keep the
+        // continuous guard and never call this hook.
+        bool DisableSTRProxyPoseGuard(
+            std::int32_t threadID,
+            std::string_view reason)
+        {
+            std::scoped_lock lock(_remoteMirrorMutex);
+            const bool removed = _strProxyPoseGuardAfter.erase(threadID) > 0;
+            _lastSTRProxyPoseGuardLog.erase(threadID);
+
+            if (removed) {
+                SKSE::log::info(
+                    "OSTNET STR PROXY POSE GUARD disabled thread={} reason={} owner=STR rootMotion=enabled",
+                    threadID,
+                    reason);
+            }
+
+            return removed;
+        }
+
         // Preflight consent guard. The cooperative listener is intentionally
         // registered before OStimBridge and uses this hook to classify the
         // disposable pre-consent thread as a suppressed mirror before the
