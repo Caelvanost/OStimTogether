@@ -58,6 +58,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/Input.h
         src/FreeSceneAlignmentFix.cpp
         src/FreeSceneAlignmentFix.h
+        src/SharedSceneControl.cpp
+        src/SharedSceneControl.h
         src/OStimBridge.cpp
         src/OStimBridge.h
         src/RaceMenuOverlayBridge.cpp
