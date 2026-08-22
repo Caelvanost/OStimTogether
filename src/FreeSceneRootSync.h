@@ -12,30 +12,28 @@ namespace OStimTogether
     // skeleton root. Skyrim Together correctly owns the remote player's
     // TESObjectREFR position, but its proxy can lose/overwrite that visual root
     // displacement. This component synchronizes only the animated
-    // "NPC Root [Root]" local transform. It never writes actor/reference world
-    // position and therefore does not fight STR movement replication.
+    // "NPC Root [Root]" local transform on a dedicated latest-state STRPM
+    // channel. It never writes actor/reference world position.
     class FreeSceneRootSync
     {
     public:
         static FreeSceneRootSync& GetSingleton();
 
         bool Initialize();
+        bool StartTransport();
+        void StopTransport();
         void Reset();
 
         // Called from VisualKeepAlive on Skyrim's game thread once per
         // coalesced rendered-frame task.
         void Tick();
 
-        // ROOTBONE packets are consumed before the generic scene packet
-        // handlers. The packet is stored and applied by Tick() only when the
-        // sender's STR proxy is an actor in the active local OStim player
-        // thread.
-        bool HandleIncoming(
-            STRPMApi::ConnectionID senderConnectionID,
-            std::string_view payload);
-
     private:
         FreeSceneRootSync() = default;
+        ~FreeSceneRootSync();
+
+        FreeSceneRootSync(const FreeSceneRootSync&) = delete;
+        FreeSceneRootSync& operator=(const FreeSceneRootSync&) = delete;
 
         class StartListener final : public OStim::ThreadEventListener
         {
@@ -65,6 +63,15 @@ namespace OStimTogether
             std::chrono::steady_clock::time_point lastLog{};
         };
 
+        static void __cdecl OnRootMessage(
+            const STRPMApi::Message* message,
+            void* userData);
+
+        void HandleRootMessage(const STRPMApi::Message& message);
+        void StoreIncoming(
+            STRPMApi::ConnectionID senderConnectionID,
+            std::string_view payload);
+
         void HandleStart(OStim::Thread* thread);
         void HandleStop(OStim::Thread* thread);
 
@@ -90,9 +97,14 @@ namespace OStimTogether
         StopListener _stopListener;
         std::atomic_bool _initialized{ false };
 
+        const STRPMApi::Interface* _api{ nullptr };
+        STRPMApi::ListenerHandle _rootListener{};
+        std::atomic_bool _transportRunning{ false };
+
         std::int32_t _activePlayerThreadID{ -1 };
         std::chrono::steady_clock::time_point _lastSend{};
         std::chrono::steady_clock::time_point _lastSendLog{};
+        std::chrono::steady_clock::time_point _lastTransportWarn{};
 
         std::unordered_map<STRPMApi::ConnectionID, RemoteState> _remoteStates;
     };
