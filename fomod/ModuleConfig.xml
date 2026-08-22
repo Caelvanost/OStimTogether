@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.30.1 STRPM</moduleName>
+  <moduleName>OStim Together 0.30.2 STRPM</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
