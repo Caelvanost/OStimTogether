@@ -150,7 +150,7 @@ namespace OStimTogether
         }
 
         auto* skyrimVM = RE::SkyrimVM::GetSingleton();
-        auto* vm = skyrimVM ? skyrimVM->impl : nullptr;
+        auto vm = skyrimVM ? skyrimVM->impl : nullptr;
         if (!vm) {
             SKSE::log::warn(
                 "OSTNET SHARED CONTROL ENABLE failed thread={} reason=no-vm",
