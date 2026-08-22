@@ -1,10 +1,70 @@
 # OStim Together
 
-Current development version: **0.27.1**.
+Current development version: **0.27.2**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
+
+## 0.27.2
+
+### Free-standing startup convergence barrier
+
+0.27.1 removed the long-lived free-scene position corrections, but runtime logs showed one remaining startup race. During consent and OStim setup the selected remote player can continue moving. At the real OStim START the remote STR proxy may therefore still be tens or hundreds of Skyrim units from the final scene center. OStim correctly starts `lockAtPosition()/TranslateTo()` to bring that proxy into the paired-animation origin, but OStim Together's legacy START/NODE/SPEED release path could call `StopTranslation()` only a few milliseconds later.
+
+That made the selected player's movement during the unpaused UI visible as a persistent alignment error. The movement itself is valid; canceling OStim's initial convergence was the bug.
+
+0.27.2 adds a short convergence barrier for OStim 7.5b no-furniture, non-wall scenes:
+
+```text
+START / free NODE
+→ OStim starts native lockAtPosition / TranslateTo
+→ OStim Together samples the current OStim target every 50 ms
+→ while proxy distance > 4 units:
+     restore native TranslateTo toward the current OStim pose
+→ require 3 consecutive samples within 4 units
+→ disable temporary STR-proxy pose guard
+→ StopTranslation once
+→ READY: no further continuous position corrections
+```
+
+The barrier is capped at 2.5 seconds. If convergence never stabilizes, 0.27.2 performs one final hard snap to the current OStim pose and immediately releases the proxy rather than leaving an indefinite STR/OStim position fight.
+
+Expected logs:
+
+```text
+OSTNET FREE SCENE ALIGN READY ... mode=convergence-barrier ...
+OSTNET FREE SCENE ALIGN ARM ... action=wait-for-proxy-convergence
+OSTNET FREE SCENE CONVERGENCE ... maxDist=... stable=.../3
+OSTNET FREE SCENE ALIGN READY ... timeout=0 ... action=release-to-str-animation
+```
+
+If the last-resort path is used:
+
+```text
+OSTNET FREE SCENE ALIGN READY ... timeout=1 ...
+```
+
+Furniture and wall scenes are unchanged and retain their established anchored guards.
+
+### Idempotent shared SPEED
+
+OStim's `SetSpeed()` replays the current animation and emits a speed event even when the requested speed is already active. In a multi-master scene, replaying an identical incoming `SPEED` could therefore create participant → relay → participant feedback and repeated animation restarts.
+
+0.27.2 makes shared speed application idempotent on both sides:
+
+- a mirror ignores an authoritative `SPEED` that already matches its current speed;
+- the relay/owner does not call `SetSpeed()` when a participant requests the already-current speed;
+- in that no-op relay case the current speed is still fanned out explicitly so additional participants converge without replaying the animation.
+
+Expected logs:
+
+```text
+OSTNET MIRROR SPEED NOOP ... reason=already-current
+OSTNET COOP CONTROL SPEED NOOP ... reason=already-current fanout=...
+```
+
+There is still no owner approval or veto for speed changes; this is only duplicate-state suppression.
 
 ## 0.27.1
 
@@ -234,7 +294,7 @@ OSTNET ADDON OBJ RX ... type=ocumanmesh ...
 - OStim 7.4c furniture fallback;
 - Wall-scene startup handling;
 - shared native OStim node/speed/stop control for every accepted player participant;
-- native motion ownership for ordinary OStim 7.5b no-furniture scenes;
+- convergence-gated free-scene startup for OStim 7.5b;
 - equipment/outfit protection and residual apparel restoration;
 - RaceMenu/SKEE overlay rebuild support;
 - generic addon state reapplication;
@@ -267,7 +327,7 @@ compat\OStimUIConsent\package\Data\Scripts\OStimTogetherNative.pex
 
 Both `build-vortex.ps1` and `build-fomod.ps1` treat those files as mandatory Core inputs.
 
-For 0.27.1 no Papyrus source changed, so existing compiled PEX files can be reused.
+For 0.27.2 no Papyrus source changed, so existing compiled PEX files can be reused.
 
 Then build the FOMOD:
 
@@ -279,7 +339,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.27.1-FOMOD.zip
+dist\OStimTogether-v0.27.2-FOMOD.zip
 ```
 
 FOMOD layout:
