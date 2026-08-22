@@ -5,6 +5,7 @@
 #include "CoopSessionManager.h"
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
+#include "FreeSceneAlignmentFix.h"
 #include "Input.h"
 #include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
@@ -51,6 +52,12 @@ namespace
             OStimTogether::PreflightGuard::GetSingleton().Initialize();
 
             OStimTogether::OStimBridge::GetSingleton().Initialize();
+
+            // Register after OStimBridge: free-standing scenes keep the
+            // bridge's short initial proxy settle, then this listener removes
+            // only the long-lived no-furniture/non-wall position pin.
+            OStimTogether::FreeSceneAlignmentFix::GetSingleton().Initialize();
+
             OStimTogether::CoopSessionManager::GetSingleton().Initialize();
             OStimTogether::MirrorUndressRepair::GetSingleton().Initialize();
             OStimTogether::AddonStateRepair::GetSingleton().Initialize();
