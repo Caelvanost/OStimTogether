@@ -14,8 +14,17 @@ namespace OStimTogether
         constexpr char kChannel[] = "ostimtogether.phase";
         constexpr auto kReadyDelayStart = std::chrono::milliseconds(40);
         constexpr auto kReadyDelayNode = std::chrono::milliseconds(60);
-        constexpr auto kReplayDelay = std::chrono::milliseconds(150);
+        constexpr auto kMinimumCommitLead = std::chrono::milliseconds(450);
+        constexpr auto kCommitJitterMargin = std::chrono::milliseconds(200);
+        constexpr auto kMaximumCommitLead = std::chrono::milliseconds(1500);
         constexpr auto kProxyReleaseDelay = std::chrono::milliseconds(220);
+
+        std::int64_t NowSteadyUs()
+        {
+            return std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        }
 
         void StopReferenceTranslation(RE::TESObjectREFR* object)
         {
@@ -100,6 +109,21 @@ namespace OStimTogether
         }
     }
 
+    std::optional<std::int64_t> FreeScenePhaseSync::ParseInt64(
+        std::string_view payload,
+        std::string_view key)
+    {
+        const auto value = Field(payload, key);
+        if (!value) {
+            return std::nullopt;
+        }
+        try {
+            return static_cast<std::int64_t>(std::stoll(*value));
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
     std::optional<std::uint64_t> FreeScenePhaseSync::ParseUInt64(
         std::string_view payload,
         std::string_view key)
@@ -147,7 +171,7 @@ namespace OStimTogether
         }
 
         auto* declaration = SKSE::PluginDeclaration::GetSingleton();
-        const auto version = declaration ? declaration->GetVersion() : REL::Version{ 0, 29, 0, 0 };
+        const auto version = declaration ? declaration->GetVersion() : REL::Version{ 0, 30, 2, 0 };
         const auto pluginName = declaration ? std::string(declaration->GetName()) : std::string("OStimTogether");
         _threadControl = requestThread(
             OStimModAPI::Thread::InterfaceVersion::V1,
@@ -171,9 +195,10 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET PHASE SYNC READY threadsVersion={} mode=free-scene-barrier nativeAlign=1 skeletonWrites=0 replayDelayMs={}",
+            "OSTNET PHASE SYNC READY threadsVersion={} mode=clock-calibrated-deadline nativeAlign=1 skeletonWrites=0 minLeadMs={} jitterMarginMs={}",
             _threadInterfaceVersion,
-            kReplayDelay.count());
+            kMinimumCommitLead.count(),
+            kCommitJitterMargin.count());
         return true;
     }
 
@@ -212,7 +237,7 @@ namespace OStimTogether
         _listener = listener;
         _transportRunning.store(true);
         SKSE::log::info(
-            "OSTNET PHASE SYNC TRANSPORT READY channel={} reliable=1 ordered=1",
+            "OSTNET PHASE SYNC TRANSPORT READY channel={} reliable=1 ordered=1 timing=NTP-like",
             kChannel);
         return true;
     }
@@ -340,25 +365,28 @@ namespace OStimTogether
         phase.nodeID = nodeID;
         phase.reason = std::string(reason);
         phase.expected = std::move(participants);
+        phase.prepOwnerUs = NowSteadyUs();
         _ownerPhase = phase;
 
         const auto payload = fmt::format(
-            "PHASE_PREP|thread={}|token={}|node={}|reason={}",
+            "PHASE_PREP|thread={}|token={}|node={}|reason={}|t1={}",
             phase.threadID,
             phase.token,
             phase.nodeID,
-            phase.reason);
+            phase.reason,
+            phase.prepOwnerUs);
         for (const auto connectionID : phase.expected) {
             SendTo(connectionID, payload);
         }
 
         SKSE::log::info(
-            "OSTNET PHASE PREP TX thread={} token={} node={} reason={} participants={}",
+            "OSTNET PHASE PREP TX thread={} token={} node={} reason={} participants={} t1={}",
             phase.threadID,
             phase.token,
             phase.nodeID,
             phase.reason,
-            phase.expected.size());
+            phase.expected.size(),
+            phase.prepOwnerUs);
     }
 
     void FreeScenePhaseSync::HandleStart(OStim::Thread* thread)
@@ -486,20 +514,28 @@ namespace OStimTogether
                         return;
                     }
                     const auto speed = _threadControl->GetCurrentSpeed(static_cast<std::uint32_t>(localThreadID));
+                    const auto t3 = NowSteadyUs();
                     const auto payload = fmt::format(
-                        "PHASE_READY|thread={}|token={}|node={}|speed={}",
+                        "PHASE_READY|thread={}|token={}|node={}|speed={}|t1={}|t2={}|t3={}",
                         prep.ownerThreadID,
                         prep.token,
                         prep.nodeID,
-                        speed);
+                        speed,
+                        prep.prepOwnerUs,
+                        prep.prepRemoteReceiveUs,
+                        t3);
                     SendTo(prep.ownerConnectionID, payload);
                     SKSE::log::info(
-                        "OSTNET PHASE READY TX localThread={} ownerThread={} token={} node={} speed={}",
+                        "OSTNET PHASE READY TX localThread={} ownerThread={} token={} node={} speed={} t1={} t2={} t3={} remoteWaitMs={:.3f}",
                         localThreadID,
                         prep.ownerThreadID,
                         prep.token,
                         prep.nodeID,
-                        speed);
+                        speed,
+                        prep.prepOwnerUs,
+                        prep.prepRemoteReceiveUs,
+                        t3,
+                        static_cast<double>(t3 - prep.prepRemoteReceiveUs) / 1000.0);
                 });
             }
         }).detach();
@@ -518,24 +554,27 @@ namespace OStimTogether
             return;
         }
         const auto sender = message.sender.connectionID;
+        const auto receiveLocalUs = NowSteadyUs();
         std::string payload(static_cast<const char*>(message.data), message.size);
         if (auto* tasks = SKSE::GetTaskInterface()) {
-            tasks->AddTask([this, sender, payload = std::move(payload)]() mutable {
-                HandleMessageGameThread(sender, std::move(payload));
+            tasks->AddTask([this, sender, payload = std::move(payload), receiveLocalUs]() mutable {
+                HandleMessageGameThread(sender, std::move(payload), receiveLocalUs);
             });
         }
     }
 
     void FreeScenePhaseSync::HandleMessageGameThread(
         STRPMApi::ConnectionID senderConnectionID,
-        std::string payload)
+        std::string payload,
+        std::int64_t receiveLocalUs)
     {
         if (payload.starts_with("PHASE_PREP|")) {
             const auto ownerThread = ParseInt(payload, "thread");
             const auto token = ParseUInt64(payload, "token");
             const auto node = Field(payload, "node");
             const auto reason = Field(payload, "reason");
-            if (!ownerThread || !token || !node) {
+            const auto t1 = ParseInt64(payload, "t1");
+            if (!ownerThread || !token || !node || !t1) {
                 return;
             }
             RemotePrep prep{
@@ -543,7 +582,9 @@ namespace OStimTogether
                 *ownerThread,
                 *token,
                 *node,
-                reason.value_or("UNKNOWN") };
+                reason.value_or("UNKNOWN"),
+                *t1,
+                receiveLocalUs };
 
             _remotePreps.erase(
                 std::remove_if(
@@ -555,6 +596,14 @@ namespace OStimTogether
                     }),
                 _remotePreps.end());
             _remotePreps.push_back(prep);
+
+            SKSE::log::trace(
+                "OSTNET PHASE PREP RX ownerThread={} token={} node={} t1={} t2={}",
+                *ownerThread,
+                *token,
+                *node,
+                *t1,
+                receiveLocalUs);
 
             if (_threads && _threadControl) {
                 const auto playerThreadID =
@@ -571,7 +620,7 @@ namespace OStimTogether
         }
 
         if (payload.starts_with("PHASE_READY|")) {
-            HandleReady(senderConnectionID, payload);
+            HandleReady(senderConnectionID, payload, receiveLocalUs);
             return;
         }
 
@@ -580,8 +629,11 @@ namespace OStimTogether
             const auto token = ParseUInt64(payload, "token");
             const auto node = Field(payload, "node");
             const auto speed = ParseInt(payload, "speed");
-            const auto delayMs = ParseInt(payload, "delayMs");
-            if (!ownerThread || !token || !node || !speed || !delayMs || !_threads || !_threadControl) {
+            const auto executeOwnerUs = ParseInt64(payload, "executeOwnerUs");
+            const auto offsetUs = ParseInt64(payload, "offsetUs");
+            const auto rttUs = ParseInt64(payload, "rttUs");
+            if (!ownerThread || !token || !node || !speed || !executeOwnerUs || !offsetUs || !rttUs ||
+                !_threads || !_threadControl) {
                 return;
             }
 
@@ -598,12 +650,24 @@ namespace OStimTogether
                 return;
             }
 
+            const auto executeLocalUs = *executeOwnerUs + *offsetUs;
+            const auto nowUs = NowSteadyUs();
+            SKSE::log::info(
+                "OSTNET PHASE COMMIT RX localThread={} ownerThread={} token={} node={} offsetMs={:.3f} rttMs={:.3f} executeInMs={:.3f} deadlineMode=clock-calibrated",
+                localThreadID,
+                *ownerThread,
+                *token,
+                *node,
+                static_cast<double>(*offsetUs) / 1000.0,
+                static_cast<double>(*rttUs) / 1000.0,
+                static_cast<double>(executeLocalUs - nowUs) / 1000.0);
+
             QueueReplay(
                 localThreadID,
                 *token,
                 *node,
                 *speed,
-                std::chrono::milliseconds(std::max(0, *delayMs)),
+                executeLocalUs,
                 true);
             return;
         }
@@ -611,29 +675,50 @@ namespace OStimTogether
 
     void FreeScenePhaseSync::HandleReady(
         STRPMApi::ConnectionID senderConnectionID,
-        std::string_view payload)
+        std::string_view payload,
+        std::int64_t receiveOwnerUs)
     {
         const auto threadID = ParseInt(payload, "thread");
         const auto token = ParseUInt64(payload, "token");
         const auto node = Field(payload, "node");
-        if (!_ownerPhase || !threadID || !token || !node ||
+        const auto t1 = ParseInt64(payload, "t1");
+        const auto t2 = ParseInt64(payload, "t2");
+        const auto t3 = ParseInt64(payload, "t3");
+        if (!_ownerPhase || !threadID || !token || !node || !t1 || !t2 || !t3 ||
             _ownerPhase->threadID != *threadID ||
             _ownerPhase->token != *token ||
             _ownerPhase->nodeID != *node ||
+            _ownerPhase->prepOwnerUs != *t1 ||
             !_ownerPhase->expected.contains(senderConnectionID) ||
             _ownerPhase->committed) {
             return;
         }
 
+        const auto rawRoundTripUs =
+            (receiveOwnerUs - *t1) - (*t3 - *t2);
+        const auto roundTripUs = std::max<std::int64_t>(0, rawRoundTripUs);
+        const auto remoteMinusOwnerUs =
+            ((*t2 - *t1) + (*t3 - receiveOwnerUs)) / 2;
+
+        _ownerPhase->timing[senderConnectionID] = TimingSample{
+            remoteMinusOwnerUs,
+            roundTripUs };
         _ownerPhase->ready.insert(senderConnectionID);
+
         SKSE::log::info(
-            "OSTNET PHASE READY RX thread={} token={} node={} connection={} ready={}/{}",
+            "OSTNET PHASE READY RX thread={} token={} node={} connection={} ready={}/{} rttMs={:.3f} remoteMinusOwnerMs={:.3f} t1={} t2={} t3={} t4={}",
             _ownerPhase->threadID,
             _ownerPhase->token,
             _ownerPhase->nodeID,
             senderConnectionID,
             _ownerPhase->ready.size(),
-            _ownerPhase->expected.size());
+            _ownerPhase->expected.size(),
+            static_cast<double>(roundTripUs) / 1000.0,
+            static_cast<double>(remoteMinusOwnerUs) / 1000.0,
+            *t1,
+            *t2,
+            *t3,
+            receiveOwnerUs);
 
         if (_ownerPhase->ready.size() == _ownerPhase->expected.size()) {
             CommitOwnerPhase();
@@ -656,20 +741,47 @@ namespace OStimTogether
         }
         auto* node = thread->getCurrentNode();
         const auto* nodeID = node ? node->getNodeID() : nullptr;
-        if (!nodeID || phase.nodeID != nodeID) {
+        if (!nodeID || phase.nodeID != nodeID ||
+            phase.timing.size() != phase.expected.size()) {
             return;
         }
 
         phase.committed = true;
         const auto speed = _threadControl->GetCurrentSpeed(static_cast<std::uint32_t>(phase.threadID));
-        const auto payload = fmt::format(
-            "PHASE_COMMIT|thread={}|token={}|node={}|speed={}|delayMs={}",
-            phase.threadID,
-            phase.token,
-            phase.nodeID,
-            speed,
-            kReplayDelay.count());
+
+        std::int64_t maxOneWayUs = 0;
+        for (const auto& [connectionID, timing] : phase.timing) {
+            (void)connectionID;
+            maxOneWayUs = std::max(maxOneWayUs, timing.roundTripUs / 2);
+        }
+
+        const auto minLeadUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            kMinimumCommitLead).count();
+        const auto jitterUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            kCommitJitterMargin).count();
+        const auto maxLeadUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            kMaximumCommitLead).count();
+        const auto leadUs = std::clamp<std::int64_t>(
+            std::max<std::int64_t>(minLeadUs, maxOneWayUs + jitterUs),
+            minLeadUs,
+            maxLeadUs);
+        const auto executeOwnerUs = NowSteadyUs() + leadUs;
+
         for (const auto connectionID : phase.expected) {
+            const auto timingIt = phase.timing.find(connectionID);
+            if (timingIt == phase.timing.end()) {
+                continue;
+            }
+            const auto& timing = timingIt->second;
+            const auto payload = fmt::format(
+                "PHASE_COMMIT|thread={}|token={}|node={}|speed={}|executeOwnerUs={}|offsetUs={}|rttUs={}",
+                phase.threadID,
+                phase.token,
+                phase.nodeID,
+                speed,
+                executeOwnerUs,
+                timing.remoteMinusOwnerUs,
+                timing.roundTripUs);
             SendTo(connectionID, payload);
         }
 
@@ -678,17 +790,19 @@ namespace OStimTogether
             phase.token,
             phase.nodeID,
             speed,
-            kReplayDelay,
+            executeOwnerUs,
             false);
 
         SKSE::log::info(
-            "OSTNET PHASE COMMIT TX thread={} token={} node={} speed={} participants={} delayMs={} action=native-realign-replay",
+            "OSTNET PHASE COMMIT TX thread={} token={} node={} speed={} participants={} leadMs={:.3f} maxOneWayMs={:.3f} executeOwnerUs={} action=clock-calibrated-native-realign-replay",
             phase.threadID,
             phase.token,
             phase.nodeID,
             speed,
             phase.expected.size(),
-            kReplayDelay.count());
+            static_cast<double>(leadUs) / 1000.0,
+            static_cast<double>(maxOneWayUs) / 1000.0,
+            executeOwnerUs);
     }
 
     void FreeScenePhaseSync::QueueReplay(
@@ -696,14 +810,18 @@ namespace OStimTogether
         std::uint64_t token,
         std::string nodeID,
         std::int32_t speed,
-        std::chrono::milliseconds delay,
+        std::int64_t executeLocalUs,
         bool mirror)
     {
-        std::thread([this, localThreadID, token, nodeID = std::move(nodeID), speed, delay, mirror]() mutable {
-            std::this_thread::sleep_for(delay);
+        std::thread([this, localThreadID, token, nodeID = std::move(nodeID), speed, executeLocalUs, mirror]() mutable {
+            const auto nowUs = NowSteadyUs();
+            if (executeLocalUs > nowUs) {
+                std::this_thread::sleep_for(
+                    std::chrono::microseconds(executeLocalUs - nowUs));
+            }
             if (auto* tasks = SKSE::GetTaskInterface()) {
-                tasks->AddTask([this, localThreadID, token, nodeID = std::move(nodeID), speed, mirror]() {
-                    ReplayNow(localThreadID, token, nodeID, speed, mirror);
+                tasks->AddTask([this, localThreadID, token, nodeID = std::move(nodeID), speed, executeLocalUs, mirror]() {
+                    ReplayNow(localThreadID, token, nodeID, speed, executeLocalUs, mirror);
                 });
             }
         }).detach();
@@ -714,8 +832,10 @@ namespace OStimTogether
         std::uint64_t token,
         std::string_view nodeID,
         std::int32_t speed,
+        std::int64_t executeLocalUs,
         bool mirror)
     {
+        const auto actualUs = NowSteadyUs();
         if (!_threads || !_threadControl ||
             !_startedThreads.contains(localThreadID) ||
             !_threadControl->IsThreadValid(static_cast<std::uint32_t>(localThreadID))) {
@@ -752,7 +872,7 @@ namespace OStimTogether
         QueueProxyTranslationRelease(localThreadID, token);
 
         SKSE::log::info(
-            "OSTNET PHASE REPLAY localThread={} token={} node={} mirror={} aligned={}/{} speed={} speedResult={} directPositionWrites=0 skeletonWrites=0",
+            "OSTNET PHASE REPLAY localThread={} token={} node={} mirror={} aligned={}/{} speed={} speedResult={} scheduledUs={} actualUs={} latenessMs={:.3f} directPositionWrites=0 skeletonWrites=0",
             localThreadID,
             token,
             currentNode,
@@ -760,7 +880,10 @@ namespace OStimTogether
             aligned,
             actorCount,
             speed,
-            static_cast<int>(speedResult));
+            static_cast<int>(speedResult),
+            executeLocalUs,
+            actualUs,
+            static_cast<double>(actualUs - executeLocalUs) / 1000.0);
     }
 
     void FreeScenePhaseSync::QueueProxyTranslationRelease(
