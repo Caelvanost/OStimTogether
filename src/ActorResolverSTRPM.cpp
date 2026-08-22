@@ -644,11 +644,6 @@ namespace OStimTogether
                 localSelfIndex = static_cast<std::int32_t>(i);
             }
 
-            // OStim already aligns every actor when the mirror thread starts
-            // and on ChangeNode. Re-applying SetActorAlignment every refresh
-            // is only retained for anchored furniture/wall scenes. In an
-            // ordinary free-standing scene it fights animation/root motion
-            // and visibly separates NPCs from participating players.
             const bool alignLocally =
                 anchoredScene && participant.role != "player";
             localAlignmentMask.push_back(alignLocally);
@@ -749,10 +744,26 @@ namespace OStimTogether
             }
 
             try {
-                OStimBridge::GetSingleton().SetRemoteMirrorSpeed(
+                const auto speed =
+                    static_cast<std::int32_t>(std::stol(*speedValue));
+                auto& bridge = OStimBridge::GetSingleton();
+
+                if (bridge.IsRemoteMirrorSpeedCurrent(
+                        sender,
+                        *threadID,
+                        speed)) {
+                    SKSE::log::info(
+                        "OSTNET MIRROR SPEED NOOP sender={} remoteThread={} speed={} reason=already-current",
+                        sender,
+                        *threadID,
+                        speed);
+                    return;
+                }
+
+                bridge.SetRemoteMirrorSpeed(
                     sender,
                     *threadID,
-                    static_cast<std::int32_t>(std::stol(*speedValue)));
+                    speed);
             } catch (...) {
                 SKSE::log::warn(
                     "OSTNET MIRROR SPEED invalid value sender={} value={}",
