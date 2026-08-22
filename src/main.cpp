@@ -6,6 +6,7 @@
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
 #include "FreeSceneAlignmentFix.h"
+#include "FreeScenePhaseSync.h"
 #include "Input.h"
 #include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
@@ -59,14 +60,17 @@ namespace
             // ownership to native OStim startup TranslateTo + delayed release.
             OStimTogether::FreeSceneAlignmentFix::GetSingleton().Initialize();
 
-            // v0.28.0 experimented with copying NPC Root [Root] transforms
-            // between real players and STR proxies. Runtime testing showed
-            // that writing the animated skeleton hierarchy from a remote
-            // client can catastrophically deform the proxy mesh. Root-bone
-            // synchronization is therefore deliberately disabled in 0.28.1;
-            // no remote skeleton transforms are registered or written.
+            // Free-standing root-motion scenes also need all local OStim
+            // threads to begin the animation at nearly the same phase. This
+            // barrier waits for every remote mirror to exist, then uses only
+            // OStim's native alignment + speed replay APIs. No skeleton or
+            // direct world-position writes are performed.
+            OStimTogether::FreeScenePhaseSync::GetSingleton().Initialize();
+
+            // v0.28.0's experimental remote NPC Root [Root] writes remain
+            // permanently disabled after they were shown to deform proxies.
             SKSE::log::info(
-                "OSTNET ROOT SYNC DISABLED mode=probe-only reason=unsafe-remote-skeleton-write skeletonWrites=0");
+                "OSTNET ROOT SYNC DISABLED reason=unsafe-remote-skeleton-write skeletonWrites=0");
 
             OStimTogether::CoopSessionManager::GetSingleton().Initialize();
 
@@ -92,6 +96,9 @@ namespace
             if (!OStimTogether::STRPMTransport::GetSingleton().Start()) {
                 SKSE::log::error(
                     "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
+            } else if (!OStimTogether::FreeScenePhaseSync::GetSingleton().StartTransport()) {
+                SKSE::log::warn(
+                    "OSTNET PHASE SYNC transport unavailable: free-scene phase barrier disabled");
             }
 
             OStimTogether::VisualKeepAlive::GetSingleton().Start();
@@ -103,6 +110,7 @@ namespace
             OStimTogether::DefaultOutfitGuard::GetSingleton().RestoreAll();
             OStimTogether::CoopSessionManager::GetSingleton().Reset();
             OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
+            OStimTogether::FreeScenePhaseSync::GetSingleton().Reset();
             break;
 
         default:
