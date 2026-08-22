@@ -51,6 +51,26 @@ namespace OStimTogether
             return removed;
         }
 
+        // A thread that was released while free-standing can later navigate
+        // to a wall/furniture node. Restore the established anchored-scene
+        // guard in that case rather than leaving the proxy under STR control.
+        void EnableSTRProxyPoseGuard(
+            std::int32_t threadID,
+            std::chrono::milliseconds delay,
+            std::string_view reason)
+        {
+            std::scoped_lock lock(_remoteMirrorMutex);
+            _strProxyPoseGuardAfter[threadID] =
+                std::chrono::steady_clock::now() + delay;
+            _lastSTRProxyPoseGuardLog.erase(threadID);
+
+            SKSE::log::info(
+                "OSTNET STR PROXY POSE GUARD rearmed thread={} reason={} delayMs={} owner=OStimTogetherUntilStop",
+                threadID,
+                reason,
+                delay.count());
+        }
+
         // Preflight consent guard. The cooperative listener is intentionally
         // registered before OStimBridge and uses this hook to classify the
         // disposable pre-consent thread as a suppressed mirror before the
