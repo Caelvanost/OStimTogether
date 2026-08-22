@@ -9,6 +9,8 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Build = Join-Path $Root "build"
 $Package = Join-Path $Root "package"
 $Plugins = Join-Path $Package "Data\SKSE\Plugins"
+$Scripts = Join-Path $Package "Data\Scripts"
+$UIConsentPackage = Join-Path $Root "compat\OStimUIConsent\package"
 $Dist = Join-Path $Root "dist"
 $VersionFile = Join-Path $Root "VERSION"
 
@@ -23,6 +25,12 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 
 if (-not $VcpkgRoot) {
     throw "VCPKG_ROOT n'est pas defini."
+}
+
+$UIConsentOSKSE = Join-Path $UIConsentPackage "Data\Scripts\OSKSE.pex"
+$UIConsentNative = Join-Path $UIConsentPackage "Data\Scripts\OStimTogetherNative.pex"
+if (-not (Test-Path $UIConsentOSKSE) -or -not (Test-Path $UIConsentNative)) {
+    throw "Patch Papyrus Add Actor obligatoire non compile.`nExecute compat\OStimUIConsent\compile-ui-consent.ps1 puis relance le build."
 }
 
 $Toolchain =
@@ -87,6 +95,12 @@ Copy-Item `
     (Join-Path $Plugins "OStimTogether.dll") `
     -Force
 
+# Add Actor consent is core functionality as of 0.26.1. Always place both
+# compiled Papyrus files in the normal package before creating any Core archive.
+New-Item -ItemType Directory -Force -Path $Scripts | Out-Null
+Copy-Item $UIConsentOSKSE (Join-Path $Scripts "OSKSE.pex") -Force
+Copy-Item $UIConsentNative (Join-Path $Scripts "OStimTogetherNative.pex") -Force
+
 New-Item `
     -ItemType Directory `
     -Force `
@@ -110,3 +124,4 @@ Write-Host `
     -ForegroundColor Green
 
 Write-Host $zip
+Write-Host "Add Actor consent gate inclus obligatoirement dans le Core." -ForegroundColor Green
