@@ -9,8 +9,14 @@ namespace OStimTogether
 {
     namespace
     {
-        constexpr auto kFreeSceneReleaseDelay =
+        constexpr auto kInitialFreeSceneReleaseDelay =
             std::chrono::milliseconds(250);
+        constexpr auto kNodeFreeSceneReleaseDelay =
+            std::chrono::milliseconds(75);
+        constexpr auto kFurnitureGuardDelay =
+            std::chrono::milliseconds(200);
+        constexpr auto kWallGuardDelay =
+            std::chrono::milliseconds(1100);
 
         bool IsLikelySTRRemotePlayerProxy(RE::Actor* actor)
         {
@@ -29,12 +35,35 @@ namespace OStimTogether
                 (base->GetFormID() & kDynamicMask) == kDynamicMask;
         }
 
-        bool IsWallNode(OStim::Thread* thread)
+        const char* CurrentNodeID(OStim::Thread* thread)
         {
             auto* node = thread ? thread->getCurrentNode() : nullptr;
             const auto* nodeID = node ? node->getNodeID() : nullptr;
-            return nodeID && std::string_view(nodeID).find("wall") !=
+            return nodeID ? nodeID : "";
+        }
+
+        bool IsWallNode(OStim::Thread* thread)
+        {
+            return std::string_view(CurrentNodeID(thread)).find("wall") !=
                 std::string_view::npos;
+        }
+
+        bool HasSTRProxy(OStim::Thread* thread)
+        {
+            if (!thread) {
+                return false;
+            }
+
+            for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+                auto* threadActor = thread->getActor(i);
+                auto* actor = threadActor ?
+                    static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
+                if (IsLikelySTRRemotePlayerProxy(actor)) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         void StopReferenceTranslation(RE::TESObjectREFR* object)
@@ -67,6 +96,16 @@ namespace OStimTogether
     void FreeSceneAlignmentFix::StartListener::listen(OStim::Thread* thread)
     {
         FreeSceneAlignmentFix::GetSingleton().HandleStart(thread);
+    }
+
+    void FreeSceneAlignmentFix::NodeListener::listen(OStim::Thread* thread)
+    {
+        FreeSceneAlignmentFix::GetSingleton().HandleNode(thread);
+    }
+
+    void FreeSceneAlignmentFix::StopListener::listen(OStim::Thread* thread)
+    {
+        FreeSceneAlignmentFix::GetSingleton().HandleStop(thread);
     }
 
     bool FreeSceneAlignmentFix::Initialize()
@@ -107,6 +146,8 @@ namespace OStimTogether
         }
 
         _threads->registerThreadStartListener(&_startListener);
+        _threads->registerNodeChangedListener(&_nodeListener);
+        _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
             "OSTNET FREE SCENE ALIGN READY threadsVersion={} mode=noFurniture-nonWall-release-proxy-root-motion",
@@ -125,62 +166,156 @@ namespace OStimTogether
         // Exact furniture detection is available only through Threads ABI v3.
         // On OStim 7.4c retain the established pose-guard behavior rather than
         // guessing whether a thread is really furniture-free.
-        if (!bridge.SupportsThreadFurniture()) {
-            return;
-        }
-
-        if (thread->getFurnitureObject() || IsWallNode(thread)) {
-            return;
-        }
-
-        bool hasSTRProxy = false;
-        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
-            auto* threadActor = thread->getActor(i);
-            auto* actor = threadActor ?
-                static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
-            if (IsLikelySTRRemotePlayerProxy(actor)) {
-                hasSTRProxy = true;
-                break;
-            }
-        }
-
-        if (!hasSTRProxy) {
+        if (!bridge.SupportsThreadFurniture() ||
+            thread->getFurnitureObject() ||
+            IsWallNode(thread) ||
+            !HasSTRProxy(thread)) {
             return;
         }
 
         const auto threadID = thread->getThreadID();
-        const auto* nodeID = thread->getCurrentNode() &&
-                thread->getCurrentNode()->getNodeID() ?
-            thread->getCurrentNode()->getNodeID() : "";
+        {
+            std::scoped_lock lock(_stateMutex);
+            _pendingRelease.insert(threadID);
+            _releasedThreads.erase(threadID);
+        }
 
         SKSE::log::info(
             "OSTNET FREE SCENE ALIGN armed thread={} node={} delayMs={} furniture=none action=release-proxy-after-initial-align",
             threadID,
-            nodeID,
-            kFreeSceneReleaseDelay.count());
+            CurrentNodeID(thread),
+            kInitialFreeSceneReleaseDelay.count());
 
-        std::thread([this, threadID]() {
-            std::this_thread::sleep_for(kFreeSceneReleaseDelay);
+        ScheduleFreeSceneRelease(
+            threadID,
+            kInitialFreeSceneReleaseDelay,
+            "start-free-scene");
+    }
+
+    void FreeSceneAlignmentFix::HandleNode(OStim::Thread* thread)
+    {
+        if (!thread || !thread->isPlayerThread()) {
+            return;
+        }
+
+        auto& bridge = OStimBridge::GetSingleton();
+        if (!bridge.SupportsThreadFurniture()) {
+            return;
+        }
+
+        const auto threadID = thread->getThreadID();
+        const bool hasFurniture = thread->getFurnitureObject() != nullptr;
+        const bool wall = IsWallNode(thread);
+
+        if (hasFurniture || wall) {
+            bool wasReleased = false;
+            {
+                std::scoped_lock lock(_stateMutex);
+                _pendingRelease.erase(threadID);
+                wasReleased = _releasedThreads.erase(threadID) > 0;
+            }
+
+            if (wasReleased) {
+                bridge.EnableSTRProxyPoseGuard(
+                    threadID,
+                    wall ? kWallGuardDelay : kFurnitureGuardDelay,
+                    wall ? "free-to-wall" : "free-to-furniture");
+            }
+            return;
+        }
+
+        if (!HasSTRProxy(thread)) {
+            return;
+        }
+
+        bool alreadyReleased = false;
+        bool schedule = false;
+        {
+            std::scoped_lock lock(_stateMutex);
+            alreadyReleased = _releasedThreads.contains(threadID);
+            if (!_pendingRelease.contains(threadID)) {
+                _pendingRelease.insert(threadID);
+                schedule = true;
+            }
+        }
+
+        // The initial ChangeNode commonly follows START immediately. In that
+        // case the START release is already pending and we keep its full
+        // settling delay. Later free-scene node changes need only a short
+        // release after OStim queues the new lockAtPosition/TranslateTo.
+        if (schedule) {
+            const auto delay = alreadyReleased ?
+                kNodeFreeSceneReleaseDelay :
+                kInitialFreeSceneReleaseDelay;
+
+            SKSE::log::info(
+                "OSTNET FREE SCENE ALIGN node thread={} node={} delayMs={} alreadyReleased={} action=release-proxy-after-node-align",
+                threadID,
+                CurrentNodeID(thread),
+                delay.count(),
+                alreadyReleased ? 1 : 0);
+
+            ScheduleFreeSceneRelease(
+                threadID,
+                delay,
+                alreadyReleased ?
+                    "node-free-scene" :
+                    "enter-free-scene");
+        }
+    }
+
+    void FreeSceneAlignmentFix::HandleStop(OStim::Thread* thread)
+    {
+        if (!thread) {
+            return;
+        }
+
+        const auto threadID = thread->getThreadID();
+        std::scoped_lock lock(_stateMutex);
+        _pendingRelease.erase(threadID);
+        _releasedThreads.erase(threadID);
+    }
+
+    void FreeSceneAlignmentFix::ScheduleFreeSceneRelease(
+        std::int32_t threadID,
+        std::chrono::milliseconds delay,
+        std::string reason)
+    {
+        std::thread([this, threadID, delay, reason = std::move(reason)]() {
+            std::this_thread::sleep_for(delay);
 
             auto* tasks = SKSE::GetTaskInterface();
             if (!tasks) {
+                std::scoped_lock lock(_stateMutex);
+                _pendingRelease.erase(threadID);
                 return;
             }
 
-            tasks->AddTask([this, threadID]() {
-                ReleaseFreeSceneProxy(threadID);
+            tasks->AddTask([this, threadID, reason]() {
+                ReleaseFreeSceneProxy(threadID, reason);
             });
         }).detach();
     }
 
-    void FreeSceneAlignmentFix::ReleaseFreeSceneProxy(std::int32_t threadID)
+    void FreeSceneAlignmentFix::ReleaseFreeSceneProxy(
+        std::int32_t threadID,
+        std::string_view reason)
     {
+        const auto clearPending = [this, threadID]() {
+            std::scoped_lock lock(_stateMutex);
+            _pendingRelease.erase(threadID);
+        };
+
         if (!_threads) {
+            clearPending();
             return;
         }
 
         auto* thread = _threads->getThread(threadID);
         if (!thread || !thread->isPlayerThread()) {
+            std::scoped_lock lock(_stateMutex);
+            _pendingRelease.erase(threadID);
+            _releasedThreads.erase(threadID);
             return;
         }
 
@@ -188,13 +323,13 @@ namespace OStimTogether
         if (!bridge.SupportsThreadFurniture() ||
             thread->getFurnitureObject() ||
             IsWallNode(thread)) {
+            clearPending();
             return;
         }
 
-        // The OStimBridge START listener has already armed its normal 200 ms
-        // proxy guard. Removing it now preserves that short initial settling
-        // window, but stops the long-lived center pin that fights root motion
-        // in standing/free animation packs.
+        // OStimBridge has already provided its short initial settle. Removing
+        // the guard now prevents the proxy from being hard-pinned to the scene
+        // center while the real player/NPCs follow animation root motion.
         bridge.DisableSTRProxyPoseGuard(
             threadID,
             "free-scene-no-furniture");
@@ -213,16 +348,23 @@ namespace OStimTogether
             ++released;
         }
 
-        if (released > 0) {
-            const auto* nodeID = thread->getCurrentNode() &&
-                    thread->getCurrentNode()->getNodeID() ?
-                thread->getCurrentNode()->getNodeID() : "";
+        {
+            std::scoped_lock lock(_stateMutex);
+            _pendingRelease.erase(threadID);
+            if (released > 0) {
+                _releasedThreads.insert(threadID);
+            } else {
+                _releasedThreads.erase(threadID);
+            }
+        }
 
+        if (released > 0) {
             SKSE::log::info(
-                "OSTNET FREE SCENE PROXY RELEASE thread={} node={} proxies={} action=stop-translation owner=STR rootMotion=enabled",
+                "OSTNET FREE SCENE PROXY RELEASE thread={} node={} proxies={} reason={} action=stop-translation owner=STR rootMotion=enabled",
                 threadID,
-                nodeID,
-                released);
+                CurrentNodeID(thread),
+                released,
+                reason);
         }
     }
 }
