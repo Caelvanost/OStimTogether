@@ -6,7 +6,6 @@
 #include "EquipmentLock.h"
 #include "DefaultOutfitGuard.h"
 #include "FreeSceneAlignmentFix.h"
-#include "FreeSceneRootSync.h"
 #include "Input.h"
 #include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
@@ -60,11 +59,14 @@ namespace
             // ownership to native OStim startup TranslateTo + delayed release.
             OStimTogether::FreeSceneAlignmentFix::GetSingleton().Initialize();
 
-            // Separate from world-position ownership: synchronized free scenes
-            // need the animated NPC Root [Root] local transform on STR proxies.
-            // This keeps STR in sole control of the network reference while
-            // restoring the role displacement authored in paired animations.
-            OStimTogether::FreeSceneRootSync::GetSingleton().Initialize();
+            // v0.28.0 experimented with copying NPC Root [Root] transforms
+            // between real players and STR proxies. Runtime testing showed
+            // that writing the animated skeleton hierarchy from a remote
+            // client can catastrophically deform the proxy mesh. Root-bone
+            // synchronization is therefore deliberately disabled in 0.28.1;
+            // no remote skeleton transforms are registered or written.
+            SKSE::log::info(
+                "OSTNET ROOT SYNC DISABLED mode=probe-only reason=unsafe-remote-skeleton-write skeletonWrites=0");
 
             OStimTogether::CoopSessionManager::GetSingleton().Initialize();
 
@@ -87,17 +89,9 @@ namespace
             OStimTogether::AddonBridge::GetSingleton().Register();
             OStimTogether::EquipmentLock::GetSingleton().Start();
 
-            {
-                const bool strpmReady =
-                    OStimTogether::STRPMTransport::GetSingleton().Start();
-                if (!strpmReady) {
-                    SKSE::log::error(
-                        "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
-                } else if (!OStimTogether::FreeSceneRootSync::GetSingleton().
-                               StartTransport()) {
-                    SKSE::log::warn(
-                        "OSTNET ROOT SYNC transport unavailable: free-scene skeleton-root correction disabled");
-                }
+            if (!OStimTogether::STRPMTransport::GetSingleton().Start()) {
+                SKSE::log::error(
+                    "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
             }
 
             OStimTogether::VisualKeepAlive::GetSingleton().Start();
@@ -109,7 +103,6 @@ namespace
             OStimTogether::DefaultOutfitGuard::GetSingleton().RestoreAll();
             OStimTogether::CoopSessionManager::GetSingleton().Reset();
             OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
-            OStimTogether::FreeSceneRootSync::GetSingleton().Reset();
             break;
 
         default:
