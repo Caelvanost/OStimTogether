@@ -44,10 +44,6 @@ namespace OStimTogether
             std::int32_t threadID,
             std::string_view reason);
 
-        void StartReferenceGuard(std::int32_t threadID);
-        void StopReferenceGuard(std::int32_t threadID);
-        void ApplyReferenceGuard(std::int32_t threadID);
-
         OStim::ThreadInterface* _threads{ nullptr };
         StartListener _startListener;
         NodeListener _nodeListener;
@@ -57,9 +53,5 @@ namespace OStimTogether
         std::mutex _stateMutex;
         std::unordered_set<std::int32_t> _pendingRelease;
         std::unordered_set<std::int32_t> _releasedThreads;
-        std::unordered_set<std::int32_t> _referenceGuardThreads;
-        std::unordered_set<std::int32_t> _referenceGuardWorkers;
-        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point>
-            _lastReferenceGuardLog;
     };
 }
