@@ -19,26 +19,29 @@ Multiplayer threads are detected by the presence of both the real local player a
 Expected startup log:
 
 ```text
-OSTNET SHARED CONTROL READY ... controls=node,speed,stop
+OSTNET SHARED CONTROL READY ... routing=multi-master ownerRole=relay-sequencer commandApproval=none ...
 ```
 
 Expected per-scene logs:
 
 ```text
 OSTNET SHARED CONTROL ARM thread=... action=enable-native-player-control
-OSTNET SHARED CONTROL ENABLE thread=... nativeMenu=1 participantCommands=1
+OSTNET SHARED CONTROL ENABLE thread=... nativeMenu=1 participantCommands=1 multiMaster=1 commandApproval=none
 ```
 
-The existing cooperative control protocol remains owner-authoritative:
+Shared scene control is **multi-master**. No scene participant has to obtain command approval from the player who originally started the scene.
 
 ```text
 participant selects an OStim node
-→ local mirror emits NODE
-→ CONTROL_NODE sent to owner
-→ owner validates that sender belongs to the accepted participant set
-→ owner applies NavigateToScene
-→ authoritative NODE is fanned to every participant
+→ that participant's local OStim thread changes immediately
+→ CONTROL_NODE is emitted automatically
+→ the existing owner route acts only as a transport relay / ordering point
+→ membership guard checks only that the sender belongs to the active scene
+→ NavigateToScene is applied automatically
+→ resulting scene state is fanned to every participant
 ```
+
+There is no owner veto, confirmation dialog, permission decision, or gameplay-level validation step. The only guard retained is the active-session membership check needed to reject control traffic from clients whose characters are not participants in that scene.
 
 The same model is used for speed and stop:
 
@@ -47,7 +50,9 @@ CONTROL_SPEED
 CONTROL_STOP
 ```
 
-This means Player1, Player2, and additional accepted participants can all control the same scene. If two participants issue commands close together, the authoritative owner processes them in transport arrival order and the resulting authoritative state is then sent to everyone.
+This means Player1, Player2, and additional accepted participants can all control the same scene with equal control rights. The original starter is not privileged after consent and scene creation.
+
+For concurrent commands, the owner route is used only as a deterministic **relay/sequencer** so every client converges on one ordering. Commands are not accepted or rejected according to which participant issued them; among active participants, the transport arrival order determines the resulting shared state.
 
 Current 0.27.0 shared-control scope:
 
