@@ -56,6 +56,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/MirrorUndressRepair.h
         src/Input.cpp
         src/Input.h
+        src/FreeSceneAlignmentFix.cpp
+        src/FreeSceneAlignmentFix.h
         src/OStimBridge.cpp
         src/OStimBridge.h
         src/RaceMenuOverlayBridge.cpp
