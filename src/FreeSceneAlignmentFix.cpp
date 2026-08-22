@@ -9,10 +9,12 @@ namespace OStimTogether
 {
     namespace
     {
-        constexpr auto kInitialConvergenceDelay =
+        constexpr auto kOwnerInitialConvergenceDelay =
             std::chrono::milliseconds(100);
-        constexpr auto kNodeConvergenceDelay =
+        constexpr auto kOwnerNodeConvergenceDelay =
             std::chrono::milliseconds(75);
+        constexpr auto kMirrorAuthoritativeSettleDelay =
+            std::chrono::milliseconds(350);
         constexpr auto kConvergenceInterval =
             std::chrono::milliseconds(50);
         constexpr auto kConvergenceTimeout =
@@ -224,7 +226,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN READY threadsVersion={} mode=convergence-barrier continuousCorrectionsAfterReady=0 threshold={} stableSamples={} timeoutMs={}",
+            "OSTNET FREE SCENE ALIGN READY threadsVersion={} ownerMode=convergence mirrorMode=authoritative-start-settle mirrorNodeRealign=0 threshold={} stableSamples={} timeoutMs={}",
             _threads->getVersion(),
             kConvergedDistance,
             kRequiredStableSamples,
@@ -248,17 +250,23 @@ namespace OStimTogether
         }
 
         const auto threadID = thread->getThreadID();
+        const bool mirror = bridge.IsRemoteMirrorForAlignment(threadID);
+        const auto delay = mirror ?
+            kMirrorAuthoritativeSettleDelay :
+            kOwnerInitialConvergenceDelay;
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN ARM thread={} node={} reason=START delayMs={} action=wait-for-proxy-convergence",
+            "OSTNET FREE SCENE ALIGN ARM thread={} node={} reason=START mirror={} delayMs={} action={}",
             threadID,
             CurrentNodeID(thread),
-            kInitialConvergenceDelay.count());
+            mirror ? 1 : 0,
+            delay.count(),
+            mirror ? "settle-authoritative-pose-then-release" : "wait-for-owner-proxy-convergence");
 
         ArmConvergence(
             threadID,
-            kInitialConvergenceDelay,
-            "START",
+            delay,
+            mirror ? "START-MIRROR" : "START-OWNER",
             false);
     }
 
@@ -299,24 +307,66 @@ namespace OStimTogether
             return;
         }
 
+        const bool mirror = bridge.IsRemoteMirrorForAlignment(threadID);
         bool wasReleased = false;
+        bool hasState = false;
         {
             std::scoped_lock lock(_stateMutex);
             const auto it = _states.find(threadID);
-            wasReleased = it != _states.end() && it->second.released;
+            hasState = it != _states.end();
+            wasReleased = hasState && it->second.released;
+        }
+
+        if (mirror && wasReleased) {
+            // The mirror already shares the owner's original thread center.
+            // OStim ChangeNode() applies the same role animation locally.
+            // Recomputing a new center from the mirror's animated local SELF
+            // created a second target 20-40 units away from the authoritative
+            // pose in 0.27.2. Never rearm position ownership for ordinary
+            // free-standing mirror node changes.
+            bridge.DisableSTRProxyPoseGuard(
+                threadID,
+                "free-mirror-node-native");
+
+            SKSE::log::info(
+                "OSTNET FREE SCENE MIRROR NODE thread={} node={} action=no-position-realign ownerCenter=preserved",
+                threadID,
+                CurrentNodeID(thread));
+            return;
+        }
+
+        if (mirror) {
+            // Initial mirror NODE is emitted immediately before START. Arm a
+            // settle task here as a fallback; START will supersede it with a
+            // newer generation. The same path also handles wall/furniture ->
+            // free transitions, where the anchored pose guard needs a short
+            // settle before being released again.
+            SKSE::log::info(
+                "OSTNET FREE SCENE ALIGN ARM thread={} node={} reason=NODE-MIRROR delayMs={} previousReleased={} action=settle-authoritative-pose-then-release",
+                threadID,
+                CurrentNodeID(thread),
+                kMirrorAuthoritativeSettleDelay.count(),
+                wasReleased ? 1 : 0);
+
+            ArmConvergence(
+                threadID,
+                kMirrorAuthoritativeSettleDelay,
+                "NODE-MIRROR",
+                false);
+            return;
         }
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN ARM thread={} node={} reason=NODE delayMs={} previousReleased={} action=wait-for-proxy-convergence",
+            "OSTNET FREE SCENE ALIGN ARM thread={} node={} reason=NODE-OWNER delayMs={} previousReleased={} action=wait-for-owner-proxy-convergence",
             threadID,
             CurrentNodeID(thread),
-            kNodeConvergenceDelay.count(),
+            kOwnerNodeConvergenceDelay.count(),
             wasReleased ? 1 : 0);
 
         ArmConvergence(
             threadID,
-            kNodeConvergenceDelay,
-            "NODE",
+            kOwnerNodeConvergenceDelay,
+            "NODE-OWNER",
             wasReleased);
     }
 
@@ -352,7 +402,7 @@ namespace OStimTogether
             OStimBridge::GetSingleton().EnableSTRProxyPoseGuard(
                 threadID,
                 kFreeNodeGuardDelay,
-                "free-node-convergence");
+                "free-owner-node-convergence");
         }
 
         ScheduleConvergenceCheck(
@@ -426,6 +476,30 @@ namespace OStimTogether
         }
 
         auto& bridge = OStimBridge::GetSingleton();
+        const bool mirror = bridge.IsRemoteMirrorForAlignment(threadID);
+
+        if (mirror) {
+            // The authoritative pose guard in OStimBridge uses the START poses
+            // received from the owner and has been active since ~200 ms after
+            // thread creation. Do NOT derive another center from the mirror's
+            // animated local PlayerCharacter here. 0.27.2 proved that those
+            // two coordinate frames differ by the animation/root displacement
+            // and fight each other continuously.
+            SKSE::log::info(
+                "OSTNET FREE SCENE MIRROR SETTLED thread={} node={} reason={} action=release-authoritative-start-guard localCenterRecompute=0",
+                threadID,
+                CurrentNodeID(thread),
+                reason);
+
+            ReleaseFreeSceneProxy(
+                threadID,
+                generation,
+                reason,
+                false,
+                0.0F);
+            return;
+        }
+
         SceneCenter center{};
         const bool haveCenter =
             bridge.TryComputeSceneCenter(thread, center, false);
@@ -433,7 +507,6 @@ namespace OStimTogether
         std::uint32_t proxyCount = 0;
         std::uint32_t translated = 0;
         float maxDistanceSq = 0.0F;
-        std::vector<std::pair<RE::Actor*, ActorPose>> targets;
 
         if (haveCenter) {
             for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
@@ -457,18 +530,12 @@ namespace OStimTogether
                 }
 
                 ++proxyCount;
-                targets.emplace_back(actor, pose);
 
                 const RE::NiPoint3 target{ pose.x, pose.y, pose.z };
                 const auto current = actor->GetPosition();
                 const auto distanceSq = current.GetSquaredDistance(target);
                 maxDistanceSq = std::max(maxDistanceSq, distanceSq);
 
-                // 0.27.1 could cancel OStim's lockAtPosition only a few
-                // milliseconds after START/NODE. During this short startup
-                // barrier we deliberately restore the same native TranslateTo
-                // toward OStim's current pose until the proxy has actually
-                // converged. After release there are no continuous writes.
                 if (distanceSq > kConvergedDistanceSq) {
                     StopReferenceTranslation(actor);
                     TranslateReferenceTo(actor, target, pose.r);
@@ -485,8 +552,9 @@ namespace OStimTogether
             haveCenter && proxyCount > 0 &&
             maxDistanceSq <= kConvergedDistanceSq;
 
-        std::uint32_t stableSamples = sampleConverged ?
+        const std::uint32_t stableSamples = sampleConverged ?
             previousStableSamples + 1 : 0;
+
         bool writeLog = false;
         {
             std::scoped_lock lock(_stateMutex);
@@ -500,7 +568,8 @@ namespace OStimTogether
             it->second.stableSamples = stableSamples;
             if (it->second.lastLog.time_since_epoch().count() == 0 ||
                 now - it->second.lastLog >= kConvergenceLogInterval ||
-                stableSamples > 0 || timedOut) {
+                stableSamples > 0 ||
+                timedOut) {
                 it->second.lastLog = now;
                 writeLog = true;
             }
@@ -508,7 +577,7 @@ namespace OStimTogether
 
         if (writeLog) {
             SKSE::log::info(
-                "OSTNET FREE SCENE CONVERGENCE thread={} node={} reason={} elapsedMs={} centerValid={} proxies={} translated={} maxDist={:.3f} stable={}/{} timeout={}",
+                "OSTNET FREE SCENE OWNER CONVERGENCE thread={} node={} reason={} elapsedMs={} centerValid={} proxies={} translated={} maxDist={:.3f} stable={}/{} timeout={}",
                 threadID,
                 CurrentNodeID(thread),
                 reason,
@@ -522,29 +591,12 @@ namespace OStimTogether
                 timedOut ? 1 : 0);
         }
 
-        if (stableSamples >= kRequiredStableSamples) {
+        if (stableSamples >= kRequiredStableSamples || timedOut) {
             ReleaseFreeSceneProxy(
                 threadID,
                 generation,
                 reason,
-                false,
-                maxDistanceSq);
-            return;
-        }
-
-        if (timedOut) {
-            // Last-resort one-shot snap. This is deliberately restricted to
-            // startup timeout and is followed immediately by complete release;
-            // it is not a persistent correction loop.
-            for (const auto& [actor, pose] : targets) {
-                HardSnapReference(actor, pose);
-            }
-
-            ReleaseFreeSceneProxy(
-                threadID,
-                generation,
-                reason,
-                true,
+                timedOut,
                 maxDistanceSq);
             return;
         }
@@ -577,22 +629,41 @@ namespace OStimTogether
             return;
         }
 
-        {
-            std::scoped_lock lock(_stateMutex);
-            const auto it = _states.find(threadID);
-            if (it == _states.end() ||
-                it->second.generation != generation ||
-                it->second.released) {
-                return;
+        auto& bridge = OStimBridge::GetSingleton();
+        const bool mirror = bridge.IsRemoteMirrorForAlignment(threadID);
+
+        if (timeout && !mirror) {
+            SceneCenter center{};
+            if (bridge.TryComputeSceneCenter(thread, center, false)) {
+                for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+                    auto* threadActor = thread->getActor(i);
+                    auto* actor = threadActor ?
+                        static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
+                    if (!IsLikelySTRRemotePlayerProxy(actor)) {
+                        continue;
+                    }
+
+                    ActorPose pose{};
+                    if (bridge.TryComputeActorPose(
+                            thread,
+                            i,
+                            center,
+                            pose,
+                            false) &&
+                        pose.IsFinite()) {
+                        HardSnapReference(actor, pose);
+                    }
+                }
             }
-            it->second.released = true;
         }
 
-        OStimBridge::GetSingleton().DisableSTRProxyPoseGuard(
+        bridge.DisableSTRProxyPoseGuard(
             threadID,
-            timeout ?
-                "free-scene-convergence-timeout" :
-                "free-scene-converged");
+            mirror ?
+                "free-mirror-authoritative-settled" :
+                (timeout ?
+                    "free-owner-convergence-timeout" :
+                    "free-owner-converged"));
 
         std::uint32_t released = 0;
         for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
@@ -608,13 +679,25 @@ namespace OStimTogether
             ++released;
         }
 
+        {
+            std::scoped_lock lock(_stateMutex);
+            const auto it = _states.find(threadID);
+            if (it == _states.end() || it->second.generation != generation) {
+                return;
+            }
+            it->second.released = released > 0;
+            it->second.stableSamples = kRequiredStableSamples;
+        }
+
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN READY thread={} node={} reason={} proxies={} timeout={} finalMaxDist={:.3f} action=release-to-str-animation continuousCorrections=0",
+            "OSTNET FREE SCENE ALIGN RELEASE thread={} node={} reason={} mirror={} proxies={} timeout={} finalMaxDist={:.3f} localCenterRecompute={} action=release-to-str-animation continuousCorrections=0",
             threadID,
             CurrentNodeID(thread),
             reason,
+            mirror ? 1 : 0,
             released,
             timeout ? 1 : 0,
-            std::sqrt(maxDistanceSq));
+            std::sqrt(maxDistanceSq),
+            mirror ? 0 : 1);
     }
 }
