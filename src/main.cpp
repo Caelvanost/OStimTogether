@@ -61,16 +61,20 @@ namespace
             // TESObjectREFR/3D warps from OStim Together after native startup.
             OStimTogether::FreeSceneAlignmentFix::GetSingleton().Initialize();
 
-            // Synchronize the native OStim alignment/replay phase for ordinary
-            // free-standing multiplayer scenes. 0.30.0 compiled this component
-            // but never registered its listeners or started its STRPM channel.
+            // Synchronize animation replay phase for ordinary free-standing
+            // multiplayer scenes. v0.30.4 forces this barrier through OStim's
+            // own ModAPI SetSpeed(currentSpeed) replay path instead of direct
+            // NotifyAnimationGraph calls, which were rejected in 0.30.3.
             OStimTogether::FreeScenePhaseSync::GetSingleton().Initialize();
 
-            // v0.30.x restores only the animated NPC Root [Root] LOCAL
-            // translation on remote STR proxies. Rotation, scale, world
-            // transforms, descendants and actor/reference position are never
-            // copied from another client.
-            OStimTogether::FreeSceneRootSync::GetSingleton().Initialize();
+            // v0.30.4 deliberately leaves FreeSceneRootSync uninitialized.
+            // 0.30.3 logs proved NPC Root [Root].local.translate was always
+            // (0,0,0) for the tested scenes, so writing that value to remote
+            // proxies adds no alignment information and can only interfere
+            // with locally evaluated animation state. Keep the source only for
+            // future read-only diagnostics.
+            SKSE::log::info(
+                "OSTNET ROOT TRANSLATION DISABLED mode=probe-only reason=no-useful-root-delta skeletonWrites=0");
 
             // A pre-scene OStim UI path can create a one-actor thread that
             // contains only the targeted STR proxy. Stop any mapped-proxy
@@ -105,16 +109,9 @@ namespace
                 if (!strpmReady) {
                     SKSE::log::error(
                         "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
-                } else {
-                    if (!OStimTogether::FreeScenePhaseSync::GetSingleton().StartTransport()) {
-                        SKSE::log::warn(
-                            "OSTNET PHASE SYNC transport unavailable: free-scene phase barrier disabled");
-                    }
-
-                    if (!OStimTogether::FreeSceneRootSync::GetSingleton().StartTransport()) {
-                        SKSE::log::warn(
-                            "OSTNET ROOT TRANSLATION transport unavailable: free-scene visual translation sync disabled");
-                    }
+                } else if (!OStimTogether::FreeScenePhaseSync::GetSingleton().StartTransport()) {
+                    SKSE::log::warn(
+                        "OSTNET PHASE SYNC transport unavailable: free-scene phase barrier disabled");
                 }
             }
 
@@ -128,7 +125,6 @@ namespace
             OStimTogether::CoopSessionManager::GetSingleton().Reset();
             OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
             OStimTogether::FreeScenePhaseSync::GetSingleton().Reset();
-            OStimTogether::FreeSceneRootSync::GetSingleton().Reset();
             break;
 
         default:
