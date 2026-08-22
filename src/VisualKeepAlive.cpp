@@ -1,6 +1,5 @@
 #include "PCH.h"
 #include "VisualKeepAlive.h"
-#include "FreeSceneRootSync.h"
 #include "OStimBridge.h"
 
 namespace OStimTogether
@@ -84,12 +83,12 @@ namespace OStimTogether
                             OStimBridge::GetSingleton()
                                 .RefreshRemoteMirrors();
 
-                            // This is render-only root-bone state for ordinary
-                            // free-standing scenes. It runs after the existing
-                            // mirror refresh and never changes TESObjectREFR
-                            // position owned by Skyrim Together.
-                            FreeSceneRootSync::GetSingleton()
-                                .Tick();
+                            // v0.28.1 intentionally performs no remote
+                            // skeleton-root writes here. The v0.28.0
+                            // FreeSceneRootSync experiment could deform the
+                            // complete actor hierarchy when local transforms
+                            // from one animated skeleton were copied into an
+                            // independently evaluated proxy skeleton.
 
                             VisualKeepAlive::GetSingleton().
                                 _refreshQueued.store(false);
