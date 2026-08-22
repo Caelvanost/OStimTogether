@@ -1,10 +1,60 @@
 # OStim Together
 
-Current development version: **0.27.2**.
+Current development version: **0.27.3**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
+
+## 0.27.3
+
+### Mirror free-scene alignment: preserve the authoritative owner center
+
+0.27.2 proved that the remaining no-furniture instability was not caused by the remote player moving during consent. Player1/owner convergence reached the OStim pose normally, while Player2/mirror timed out on every free START/NODE with a nearly constant 20–40 unit error even when Elir stood still.
+
+The decisive log pair was:
+
+```text
+OSTNET STR PROXY POSE GUARD ... mirror=1 ... maxRefAfterDist2=0
+OSTNET FREE SCENE CONVERGENCE ... mirror thread ... maxDist=23..38 ... timeout=1
+```
+
+The authoritative pose guard had already placed the remote proxy exactly on the owner's START pose, but the 0.27.2 convergence barrier independently called `TryComputeSceneCenter()` on the mirror. That function reconstructs a center from the local PlayerCharacter's **current animated position**. Once the animation/root motion had started, this reconstructed mirror center no longer represented the immutable owner thread origin. The convergence barrier therefore generated a second target while the authoritative pose guard continued enforcing the owner's target. The two systems fought the same proxy.
+
+0.27.3 separates the owner and mirror paths:
+
+```text
+OWNER free scene
+→ owner owns the real OStim thread center
+→ short convergence barrier is allowed
+→ proxy converges to owner's current OStim pose
+→ release to STR / animation
+
+MIRROR free scene
+→ SELF is pre-anchored to the owner START center before mirror construction
+→ owner's authoritative START pose guard settles briefly
+→ mirror never recomputes a replacement center from animated SELF
+→ release authoritative START guard
+→ later free NODE changes perform no network position realignment
+```
+
+The mirror settle window is deliberately short. It exists only so the already-existing authoritative START pose guard can establish the shared initial origin. There is no 2.5-second mirror convergence loop and no post-start continuous position owner.
+
+Expected mirror logs:
+
+```text
+OSTNET FREE SCENE ALIGN ARM ... mirror=1 ... action=settle-authoritative-pose-then-release
+OSTNET FREE SCENE MIRROR SETTLED ... localCenterRecompute=0
+OSTNET FREE SCENE ALIGN RELEASE ... mirror=1 ... localCenterRecompute=0
+```
+
+On later free-standing mirror node changes:
+
+```text
+OSTNET FREE SCENE MIRROR NODE ... action=no-position-realign ownerCenter=preserved
+```
+
+Furniture and wall scenes remain unchanged.
 
 ## 0.27.2
 
@@ -171,7 +221,7 @@ CONTROL_STOP
 
 This means Player1, Player2, and additional accepted participants can all control the same scene with equal control rights. The original starter is not privileged after consent and scene creation.
 
-For concurrent commands, the owner route is used only as a deterministic relay/sequencer so every client converges on one ordering. Commands are not accepted or rejected according to which participant issued them; among active participants, transport arrival order determines the resulting shared state.
+For concurrent commands, the owner route is used only as a deterministic relay/sequencer so every client converges on one ordering. Commands are not accepted or rejected according to which participant issued them; among active participants, the transport arrival order determines the resulting shared state.
 
 Current shared-control scope:
 
@@ -294,7 +344,7 @@ OSTNET ADDON OBJ RX ... type=ocumanmesh ...
 - OStim 7.4c furniture fallback;
 - Wall-scene startup handling;
 - shared native OStim node/speed/stop control for every accepted player participant;
-- convergence-gated free-scene startup for OStim 7.5b;
+- owner-converged / mirror-authoritative free-scene startup for OStim 7.5b;
 - equipment/outfit protection and residual apparel restoration;
 - RaceMenu/SKEE overlay rebuild support;
 - generic addon state reapplication;
@@ -327,7 +377,7 @@ compat\OStimUIConsent\package\Data\Scripts\OStimTogetherNative.pex
 
 Both `build-vortex.ps1` and `build-fomod.ps1` treat those files as mandatory Core inputs.
 
-For 0.27.2 no Papyrus source changed, so existing compiled PEX files can be reused.
+For 0.27.3 no Papyrus source changed, so existing compiled PEX files can be reused.
 
 Then build the FOMOD:
 
@@ -339,7 +389,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.27.2-FOMOD.zip
+dist\OStimTogether-v0.27.3-FOMOD.zip
 ```
 
 FOMOD layout:
