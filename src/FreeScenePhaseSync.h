@@ -6,6 +6,14 @@
 #include "OStimAPI/ThreadInterface.h"
 #include "OStimAPI/ModThreadControl.h"
 
+// v0.30.4: the direct NotifyAnimationGraph replay path is not accepted by
+// either actor in the validated OStim 7.5b runtime (notify=0 for every role).
+// Keep the event probe available to the rest of the project, but force this
+// translation unit onto FreeScenePhaseSync's existing ModAPI SetSpeed fallback.
+// OStim Thread::SetSpeed() is the native replay primitive and does not perform
+// actor alignment or direct world/skeleton writes.
+#define OSTIM_TOGETHER_FORCE_NATIVE_PHASE_REPLAY 1
+
 namespace OStimTogether
 {
     class FreeScenePhaseSync
