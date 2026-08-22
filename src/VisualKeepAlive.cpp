@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "VisualKeepAlive.h"
+#include "FreeSceneRootSync.h"
 #include "OStimBridge.h"
 
 namespace OStimTogether
@@ -7,8 +8,8 @@ namespace OStimTogether
     namespace
     {
         // Wake faster than a rendered frame, but queue at most one refresh
-        // task. The game-thread task naturally coalesces this to one pose
-        // correction per frame without building a backlog.
+        // task. The game-thread task naturally coalesces this to one visual
+        // refresh per frame without building a backlog.
         constexpr auto kRefreshPollInterval =
             std::chrono::milliseconds(4);
     }
@@ -72,9 +73,9 @@ namespace OStimTogether
                 break;
             }
 
-            // OStim data and RE objects are only touched on Skyrim's game
-            // thread. Keep no more than one outstanding task so a slow frame
-            // cannot accumulate delayed corrections.
+            // OStim data and RE scene-graph objects are only touched on
+            // Skyrim's game thread. Keep no more than one outstanding task so
+            // a slow frame cannot accumulate delayed corrections.
             if (!_refreshQueued.exchange(true)) {
                 if (auto* tasks =
                         SKSE::GetTaskInterface()) {
@@ -82,6 +83,13 @@ namespace OStimTogether
                         []() {
                             OStimBridge::GetSingleton()
                                 .RefreshRemoteMirrors();
+
+                            // This is render-only root-bone state for ordinary
+                            // free-standing scenes. It runs after the existing
+                            // mirror refresh and never changes TESObjectREFR
+                            // position owned by Skyrim Together.
+                            FreeSceneRootSync::GetSingleton()
+                                .Tick();
 
                             VisualKeepAlive::GetSingleton().
                                 _refreshQueued.store(false);
