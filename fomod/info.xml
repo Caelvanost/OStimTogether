@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.30.0</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI, with mandatory pre-UI consent, native multi-master scene controls, translation-only free-scene animated-root synchronization, proxy-only ghost-thread cleanup, idempotent shared speed control, Skyrim-Souls-safe message boxes, and OCum state snapshots.</Description>
+  <Version>0.30.1</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI, with mandatory pre-UI consent, native multi-master scene controls, an active free-scene phase barrier, translation-only root probing/sync, proxy-only ghost-thread cleanup, idempotent shared speed control, Skyrim-Souls-safe message boxes, and OCum state snapshots.</Description>
 </fomod>
