@@ -394,7 +394,7 @@ namespace OStimTogether
         }
 
         if (auto* form = RE::TESForm::LookupByID(formID)) {
-            if (auto* actor = form->As<RE::Actor>()) {
+            if (auto* actor = form ? form->As<RE::Actor>() : nullptr) {
                 const auto* actorName = actor->GetName();
                 if (actorName && *actorName) {
                     names.push_back(NormalizeName(actorName));
@@ -422,9 +422,6 @@ namespace OStimTogether
 
         auto* localPlayer = RE::PlayerCharacter::GetSingleton();
 
-        // The sender's role=player is the one identity STRPM can resolve
-        // without heuristics. Never scan ProcessLists for this actor when an
-        // authenticated STRPM ConnectionID is available.
         if (participant.role == "player" && senderConnectionID != 0) {
             const auto formID =
                 STRPMTransport::GetSingleton().ResolveProxy(senderConnectionID);
@@ -454,7 +451,6 @@ namespace OStimTogether
             return result;
         }
 
-        // A non-player participant whose name is our local character is SELF.
         if (participant.role != "player" && localPlayer) {
             const auto* localName = localPlayer->GetName();
             if (localName && EqualsInsensitive(localName, participant.name)) {
@@ -465,8 +461,6 @@ namespace OStimTogether
             }
         }
 
-        // Legacy UDP compatibility and NPC resolution. STRPM player proxies do
-        // not reach this path.
         auto* processLists = RE::ProcessLists::GetSingleton();
         if (!processLists) {
             return result;
@@ -591,15 +585,20 @@ namespace OStimTogether
         const auto authoritativeCenter = ParseSceneCenter(payload);
         const auto furnitureDescriptor = ParseFurniture(payload);
         const auto authoritativePoses = ParseActorPoses(payload);
+        const bool wallScene =
+            nodeValue->find("wall") != std::string::npos;
+        const bool anchoredScene =
+            furnitureDescriptor.IsFinite() || wallScene;
 
         SKSE::log::info(
-            "OSTNET RESOLVE START sender={} connection={} thread={} participants={} node={} transport={}",
+            "OSTNET RESOLVE START sender={} connection={} thread={} participants={} node={} transport={} continuousMirrorAlign={}",
             sender,
             senderConnectionID,
             *threadID,
             participants.size(),
             *nodeValue,
-            senderConnectionID ? "STRPM" : "UDP");
+            senderConnectionID ? "STRPM" : "UDP",
+            anchoredScene ? 1 : 0);
 
         std::vector<RE::Actor*> resolvedActors;
         std::vector<bool> localAlignmentMask;
@@ -645,12 +644,18 @@ namespace OStimTogether
                 localSelfIndex = static_cast<std::int32_t>(i);
             }
 
-            const bool alignLocally = participant.role != "player";
+            // OStim already aligns every actor when the mirror thread starts
+            // and on ChangeNode. Re-applying SetActorAlignment every refresh
+            // is only retained for anchored furniture/wall scenes. In an
+            // ordinary free-standing scene it fights animation/root motion
+            // and visibly separates NPCs from participating players.
+            const bool alignLocally =
+                anchoredScene && participant.role != "player";
             localAlignmentMask.push_back(alignLocally);
             resolvedActors.push_back(actor);
 
             SKSE::log::info(
-                "OSTNET RESOLVE {} sender={} connection={} thread={} idx={} role={} name=\"{}\" -> localForm={:08X}",
+                "OSTNET RESOLVE {} sender={} connection={} thread={} idx={} role={} name=\"{}\" -> localForm={:08X} continuousAlign={}",
                 resolved.fromSTRPM ? "STRPM" :
                     (resolved.localSelf ? "SELF" : "LEGACY"),
                 sender,
@@ -659,7 +664,8 @@ namespace OStimTogether
                 i,
                 participant.role,
                 participant.name,
-                resolved.chosen);
+                resolved.chosen,
+                alignLocally ? 1 : 0);
 
             const auto key = fmt::format(
                 "{}|{}|{}",
