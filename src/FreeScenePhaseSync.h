@@ -43,6 +43,12 @@ namespace OStimTogether
             void listen(OStim::Thread* thread) override;
         };
 
+        struct TimingSample
+        {
+            std::int64_t remoteMinusOwnerUs{ 0 };
+            std::int64_t roundTripUs{ 0 };
+        };
+
         struct OwnerPhase
         {
             std::int32_t threadID{ -1 };
@@ -51,6 +57,8 @@ namespace OStimTogether
             std::string reason;
             std::unordered_set<STRPMApi::ConnectionID> expected;
             std::unordered_set<STRPMApi::ConnectionID> ready;
+            std::unordered_map<STRPMApi::ConnectionID, TimingSample> timing;
+            std::int64_t prepOwnerUs{ 0 };
             bool committed{ false };
         };
 
@@ -61,6 +69,8 @@ namespace OStimTogether
             std::uint64_t token{ 0 };
             std::string nodeID;
             std::string reason;
+            std::int64_t prepOwnerUs{ 0 };
+            std::int64_t prepRemoteReceiveUs{ 0 };
         };
 
         bool LoadOStimAPIs();
@@ -75,30 +85,38 @@ namespace OStimTogether
         void BeginOwnerPhase(OStim::Thread* thread, std::string_view reason);
         void MaybeReadyRemotePhase(OStim::Thread* thread, std::chrono::milliseconds delay);
         void QueueReady(std::int32_t localThreadID, RemotePrep prep, std::chrono::milliseconds delay);
-        void HandleReady(STRPMApi::ConnectionID senderConnectionID, std::string_view payload);
+        void HandleReady(
+            STRPMApi::ConnectionID senderConnectionID,
+            std::string_view payload,
+            std::int64_t receiveOwnerUs);
         void CommitOwnerPhase();
         void QueueReplay(
             std::int32_t localThreadID,
             std::uint64_t token,
             std::string nodeID,
             std::int32_t speed,
-            std::chrono::milliseconds delay,
+            std::int64_t executeLocalUs,
             bool mirror);
         void ReplayNow(
             std::int32_t localThreadID,
             std::uint64_t token,
             std::string_view nodeID,
             std::int32_t speed,
+            std::int64_t executeLocalUs,
             bool mirror);
         void QueueProxyTranslationRelease(std::int32_t localThreadID, std::uint64_t token);
 
         static std::optional<std::string> Field(std::string_view payload, std::string_view key);
         static std::optional<std::int32_t> ParseInt(std::string_view payload, std::string_view key);
+        static std::optional<std::int64_t> ParseInt64(std::string_view payload, std::string_view key);
         static std::optional<std::uint64_t> ParseUInt64(std::string_view payload, std::string_view key);
 
         static void __cdecl OnMessage(const STRPMApi::Message* message, void* userData);
         void HandleMessage(const STRPMApi::Message& message);
-        void HandleMessageGameThread(STRPMApi::ConnectionID senderConnectionID, std::string payload);
+        void HandleMessageGameThread(
+            STRPMApi::ConnectionID senderConnectionID,
+            std::string payload,
+            std::int64_t receiveLocalUs);
         bool SendTo(STRPMApi::ConnectionID connectionID, std::string_view payload);
 
         OStim::ThreadInterface* _threads{ nullptr };
