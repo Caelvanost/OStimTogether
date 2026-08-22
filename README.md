@@ -1,10 +1,44 @@
 # OStim Together
 
-Current development version: **0.26.1**.
+Current development version: **0.26.2**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
+
+## 0.26.2
+
+### Free-standing scene alignment
+
+Logs from 0.26.1 showed that ordinary scenes with no furniture could gradually separate remote-player proxies from local actors even though furniture scenes stayed aligned.
+
+The cause was the long-lived STR proxy pose guard. OStim Together deliberately stopped continuously pinning the real local PlayerCharacter because that fought animation root motion, but the dynamic STR proxy was still forced back to its computed scene pose every rendered frame. In standing/free animation packs, the local player and NPCs could therefore follow animation root motion while the remote proxy remained pinned near the original scene center.
+
+0.26.2 keeps the existing initial stabilization, then releases only that continuous proxy position ownership for ordinary free-standing scenes:
+
+```text
+OStim START
+→ normal initial OStim alignment
+→ existing short STR-proxy settle window (~200 ms)
+→ 250 ms: disable continuous proxy pose guard
+→ StopTranslation on the STR proxy
+→ STR + animation root motion own the proxy for the rest of the scene
+```
+
+This correction is deliberately narrow:
+
+- OStim 7.5b / Threads ABI v3 only, where `getFurnitureObject()` can prove the scene has no furniture;
+- scenes with an actual furniture reference are unchanged;
+- wall scenes are unchanged and keep their dedicated stabilization path;
+- OStim 7.4c keeps the previous behavior rather than relying on a furniture heuristic.
+
+Expected log for an affected free-standing scene:
+
+```text
+OSTNET FREE SCENE ALIGN armed thread=... furniture=none action=release-proxy-after-initial-align
+OSTNET STR PROXY POSE GUARD disabled thread=... reason=free-scene-no-furniture owner=STR rootMotion=enabled
+OSTNET FREE SCENE PROXY RELEASE thread=... proxies=1 action=stop-translation owner=STR rootMotion=enabled
+```
 
 ## 0.26.1
 
@@ -110,7 +144,7 @@ Speed reads are deferred outside OStim's SPEED callback to avoid the reentrant d
 - exact OStim 7.5 furniture synchronization through Threads ABI v3;
 - OStim 7.4c furniture fallback;
 - Wall-scene startup handling;
-- STR proxy pose stabilization;
+- STR proxy pose stabilization, with root-motion release for ordinary 7.5b free scenes;
 - equipment/outfit protection and residual apparel restoration;
 - RaceMenu/SKEE overlay rebuild support;
 - generic addon state reapplication;
@@ -153,7 +187,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.26.1-FOMOD.zip
+dist\OStimTogether-v0.26.2-FOMOD.zip
 ```
 
 FOMOD layout:
