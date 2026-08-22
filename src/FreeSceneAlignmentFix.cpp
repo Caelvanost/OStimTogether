@@ -17,6 +17,10 @@ namespace OStimTogether
             std::chrono::milliseconds(200);
         constexpr auto kWallGuardDelay =
             std::chrono::milliseconds(1100);
+        constexpr auto kReferenceGuardInterval =
+            std::chrono::milliseconds(25);
+        constexpr auto kReferenceGuardLogInterval =
+            std::chrono::milliseconds(500);
 
         bool IsLikelySTRRemotePlayerProxy(RE::Actor* actor)
         {
@@ -150,7 +154,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN READY threadsVersion={} mode=noFurniture-nonWall-release-proxy-root-motion",
+            "OSTNET FREE SCENE ALIGN READY threadsVersion={} mode=noFurniture-reference-lock-root-free",
             _threads->getVersion());
         return true;
     }
@@ -179,9 +183,10 @@ namespace OStimTogether
             _pendingRelease.insert(threadID);
             _releasedThreads.erase(threadID);
         }
+        StopReferenceGuard(threadID);
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN armed thread={} node={} delayMs={} furniture=none action=release-proxy-after-initial-align",
+            "OSTNET FREE SCENE ALIGN armed thread={} node={} delayMs={} furniture=none action=switch-to-reference-only-after-initial-align",
             threadID,
             CurrentNodeID(thread),
             kInitialFreeSceneReleaseDelay.count());
@@ -215,6 +220,8 @@ namespace OStimTogether
                 wasReleased = _releasedThreads.erase(threadID) > 0;
             }
 
+            StopReferenceGuard(threadID);
+
             if (wasReleased) {
                 bridge.EnableSTRProxyPoseGuard(
                     threadID,
@@ -225,6 +232,7 @@ namespace OStimTogether
         }
 
         if (!HasSTRProxy(thread)) {
+            StopReferenceGuard(threadID);
             return;
         }
 
@@ -239,17 +247,17 @@ namespace OStimTogether
             }
         }
 
-        // The initial ChangeNode commonly follows START immediately. In that
-        // case the START release is already pending and we keep its full
-        // settling delay. Later free-scene node changes need only a short
-        // release after OStim queues the new lockAtPosition/TranslateTo.
+        // OStim queues a fresh lockAtPosition/TranslateTo on every node
+        // change. Once the scene is already in reference-only mode, stop that
+        // translation shortly after the node settles and keep only the logical
+        // TESObjectREFR origin locked. Initial START keeps the longer settle.
         if (schedule) {
             const auto delay = alreadyReleased ?
                 kNodeFreeSceneReleaseDelay :
                 kInitialFreeSceneReleaseDelay;
 
             SKSE::log::info(
-                "OSTNET FREE SCENE ALIGN node thread={} node={} delayMs={} alreadyReleased={} action=release-proxy-after-node-align",
+                "OSTNET FREE SCENE ALIGN node thread={} node={} delayMs={} alreadyReleased={} action=switch-to-reference-only-after-node-align",
                 threadID,
                 CurrentNodeID(thread),
                 delay.count(),
@@ -271,9 +279,12 @@ namespace OStimTogether
         }
 
         const auto threadID = thread->getThreadID();
+        StopReferenceGuard(threadID);
+
         std::scoped_lock lock(_stateMutex);
         _pendingRelease.erase(threadID);
         _releasedThreads.erase(threadID);
+        _lastReferenceGuardLog.erase(threadID);
     }
 
     void FreeSceneAlignmentFix::ScheduleFreeSceneRelease(
@@ -313,6 +324,7 @@ namespace OStimTogether
 
         auto* thread = _threads->getThread(threadID);
         if (!thread || !thread->isPlayerThread()) {
+            StopReferenceGuard(threadID);
             std::scoped_lock lock(_stateMutex);
             _pendingRelease.erase(threadID);
             _releasedThreads.erase(threadID);
@@ -327,12 +339,14 @@ namespace OStimTogether
             return;
         }
 
-        // OStimBridge has already provided its short initial settle. Removing
-        // the guard now prevents the proxy from being hard-pinned to the scene
-        // center while the real player/NPCs follow animation root motion.
+        // The full OStimTogether guard rewrites the loaded 3D root as well as
+        // the reference. That is useful for furniture/wall scenes, but it
+        // destroys actor-relative animation root motion in free scenes.
+        // Disable only that full guard, stop OStim's completed TranslateTo,
+        // then keep the logical reference origin aligned without touching 3D.
         bridge.DisableSTRProxyPoseGuard(
             threadID,
-            "free-scene-no-furniture");
+            "free-scene-reference-only");
 
         std::uint32_t released = 0;
         for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
@@ -359,12 +373,204 @@ namespace OStimTogether
         }
 
         if (released > 0) {
+            StartReferenceGuard(threadID);
             SKSE::log::info(
-                "OSTNET FREE SCENE PROXY RELEASE thread={} node={} proxies={} reason={} action=stop-translation owner=STR rootMotion=enabled",
+                "OSTNET FREE SCENE PROXY RELEASE thread={} node={} proxies={} reason={} action=stop-translation referenceOwner=OStimTogether rootOwner=animation",
                 threadID,
                 CurrentNodeID(thread),
                 released,
                 reason);
+        } else {
+            StopReferenceGuard(threadID);
+        }
+    }
+
+    void FreeSceneAlignmentFix::StartReferenceGuard(std::int32_t threadID)
+    {
+        bool startWorker = false;
+        {
+            std::scoped_lock lock(_stateMutex);
+            _referenceGuardThreads.insert(threadID);
+            if (!_referenceGuardWorkers.contains(threadID)) {
+                _referenceGuardWorkers.insert(threadID);
+                startWorker = true;
+            }
+        }
+
+        if (!startWorker) {
+            return;
+        }
+
+        std::thread([this, threadID]() {
+            for (;;) {
+                std::this_thread::sleep_for(kReferenceGuardInterval);
+
+                {
+                    std::scoped_lock lock(_stateMutex);
+                    if (!_referenceGuardThreads.contains(threadID)) {
+                        _referenceGuardWorkers.erase(threadID);
+                        return;
+                    }
+                }
+
+                auto* tasks = SKSE::GetTaskInterface();
+                if (!tasks) {
+                    continue;
+                }
+
+                tasks->AddTask([this, threadID]() {
+                    ApplyReferenceGuard(threadID);
+                });
+            }
+        }).detach();
+    }
+
+    void FreeSceneAlignmentFix::StopReferenceGuard(std::int32_t threadID)
+    {
+        std::scoped_lock lock(_stateMutex);
+        _referenceGuardThreads.erase(threadID);
+        _lastReferenceGuardLog.erase(threadID);
+    }
+
+    void FreeSceneAlignmentFix::ApplyReferenceGuard(std::int32_t threadID)
+    {
+        {
+            std::scoped_lock lock(_stateMutex);
+            if (!_referenceGuardThreads.contains(threadID)) {
+                return;
+            }
+        }
+
+        if (!_threads) {
+            StopReferenceGuard(threadID);
+            return;
+        }
+
+        auto* thread = _threads->getThread(threadID);
+        if (!thread ||
+            !thread->isPlayerThread() ||
+            thread->getFurnitureObject() ||
+            IsWallNode(thread) ||
+            !HasSTRProxy(thread)) {
+            StopReferenceGuard(threadID);
+            return;
+        }
+
+        auto& bridge = OStimBridge::GetSingleton();
+        SceneCenter center{};
+        if (!bridge.TryComputeSceneCenter(thread, center, false)) {
+            return;
+        }
+
+        std::uint32_t guarded = 0;
+        RE::FormID sampleActorID = 0;
+        RE::NiPoint3 sampleRefBefore{};
+        RE::NiPoint3 sampleRefAfter{};
+        RE::NiPoint3 sampleTarget{};
+        RE::NiPoint3 sampleRoot{};
+        bool sampleHasRoot = false;
+        float maxRefBeforeDistSq = 0.0F;
+        float maxRefAfterDistSq = 0.0F;
+        float maxRootTargetDistSq = 0.0F;
+
+        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+            auto* threadActor = thread->getActor(i);
+            auto* actor = threadActor ?
+                static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
+
+            if (!IsLikelySTRRemotePlayerProxy(actor)) {
+                continue;
+            }
+
+            ActorPose pose{};
+            if (!bridge.TryComputeActorPose(
+                    thread,
+                    i,
+                    center,
+                    pose,
+                    false) ||
+                !pose.IsFinite()) {
+                continue;
+            }
+
+            auto* reference = static_cast<RE::TESObjectREFR*>(actor);
+            const RE::NiPoint3 target{ pose.x, pose.y, pose.z };
+            const auto refBefore = reference->GetPosition();
+
+            RE::NiPoint3 root{};
+            bool hasRoot = false;
+            if (auto* root3D = actor->Get3D()) {
+                root = root3D->world.translate;
+                hasRoot = true;
+            }
+
+            // Critical distinction from OStimBridge::ForceSTRProxyPose():
+            // write only the logical TESObjectREFR transform. Do NOT call
+            // SetPosition(), Update3DPosition(), TranslateTo(), or touch the
+            // NiAVObject root. The animation is therefore free to keep its
+            // actor-relative root offset while STR cannot move the scene's
+            // logical origin away from OStim's expected pose.
+            reference->data.location = target;
+            reference->data.angle.z = pose.r;
+
+            const auto refAfter = reference->GetPosition();
+            const auto beforeDistSq = refBefore.GetSquaredDistance(target);
+            const auto afterDistSq = refAfter.GetSquaredDistance(target);
+            const auto rootDistSq = hasRoot ?
+                root.GetSquaredDistance(target) : 0.0F;
+
+            maxRefBeforeDistSq = std::max(maxRefBeforeDistSq, beforeDistSq);
+            maxRefAfterDistSq = std::max(maxRefAfterDistSq, afterDistSq);
+            maxRootTargetDistSq = std::max(maxRootTargetDistSq, rootDistSq);
+
+            sampleActorID = actor->GetFormID();
+            sampleRefBefore = refBefore;
+            sampleRefAfter = refAfter;
+            sampleTarget = target;
+            sampleRoot = root;
+            sampleHasRoot = hasRoot;
+            ++guarded;
+        }
+
+        if (guarded == 0) {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        bool writeLog = false;
+        {
+            std::scoped_lock lock(_stateMutex);
+            auto& last = _lastReferenceGuardLog[threadID];
+            if (last.time_since_epoch().count() == 0 ||
+                now - last >= kReferenceGuardLogInterval) {
+                last = now;
+                writeLog = true;
+            }
+        }
+
+        if (writeLog) {
+            SKSE::log::info(
+                "OSTNET FREE SCENE REFERENCE GUARD thread={} node={} guarded={} actor={:08X} refBefore=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) refAfter=({:.3f},{:.3f},{:.3f}) root={}({:.3f},{:.3f},{:.3f}) maxRefBeforeDist2={:.4f} maxRefAfterDist2={:.6f} maxRootTargetDist2={:.4f} referenceLocked=1 rootTouched=0",
+                threadID,
+                CurrentNodeID(thread),
+                guarded,
+                sampleActorID,
+                sampleRefBefore.x,
+                sampleRefBefore.y,
+                sampleRefBefore.z,
+                sampleTarget.x,
+                sampleTarget.y,
+                sampleTarget.z,
+                sampleRefAfter.x,
+                sampleRefAfter.y,
+                sampleRefAfter.z,
+                sampleHasRoot ? 1 : 0,
+                sampleRoot.x,
+                sampleRoot.y,
+                sampleRoot.z,
+                maxRefBeforeDistSq,
+                maxRefAfterDistSq,
+                maxRootTargetDistSq);
         }
     }
 }
