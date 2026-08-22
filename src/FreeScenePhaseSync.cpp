@@ -2,6 +2,7 @@
 #include "FreeScenePhaseSync.h"
 
 #include "OStimBridge.h"
+#include "OStimInternalGraphProbe.h"
 #include "STRPMTransport.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
 #include "OStimAPI/Thread.h"
@@ -18,6 +19,13 @@ namespace OStimTogether
         constexpr auto kCommitJitterMargin = std::chrono::milliseconds(200);
         constexpr auto kMaximumCommitLead = std::chrono::milliseconds(1500);
         constexpr auto kProxyReleaseDelay = std::chrono::milliseconds(220);
+
+        struct DirectReplayItem
+        {
+            std::uint32_t actorIndex{ 0 };
+            RE::Actor* actor{ nullptr };
+            OStimInternalProbe::EventInfo event{};
+        };
 
         std::int64_t NowSteadyUs()
         {
@@ -171,7 +179,7 @@ namespace OStimTogether
         }
 
         auto* declaration = SKSE::PluginDeclaration::GetSingleton();
-        const auto version = declaration ? declaration->GetVersion() : REL::Version{ 0, 30, 2, 0 };
+        const auto version = declaration ? declaration->GetVersion() : REL::Version{ 0, 30, 3, 0 };
         const auto pluginName = declaration ? std::string(declaration->GetName()) : std::string("OStimTogether");
         _threadControl = requestThread(
             OStimModAPI::Thread::InterfaceVersion::V1,
@@ -195,7 +203,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET PHASE SYNC READY threadsVersion={} mode=clock-calibrated-deadline nativeAlign=1 skeletonWrites=0 minLeadMs={} jitterMarginMs={}",
+            "OSTNET PHASE SYNC READY threadsVersion={} mode=clock-calibrated-direct-event nativeAlign=0 directNotify=1 skeletonWrites=0 minLeadMs={} jitterMarginMs={}",
             _threadInterfaceVersion,
             kMinimumCommitLead.count(),
             kCommitJitterMargin.count());
@@ -237,7 +245,7 @@ namespace OStimTogether
         _listener = listener;
         _transportRunning.store(true);
         SKSE::log::info(
-            "OSTNET PHASE SYNC TRANSPORT READY channel={} reliable=1 ordered=1 timing=NTP-like",
+            "OSTNET PHASE SYNC TRANSPORT READY channel={} reliable=1 ordered=1 timing=NTP-like replay=direct-animation-event",
             kChannel);
         return true;
     }
@@ -653,7 +661,7 @@ namespace OStimTogether
             const auto executeLocalUs = *executeOwnerUs + *offsetUs;
             const auto nowUs = NowSteadyUs();
             SKSE::log::info(
-                "OSTNET PHASE COMMIT RX localThread={} ownerThread={} token={} node={} offsetMs={:.3f} rttMs={:.3f} executeInMs={:.3f} deadlineMode=clock-calibrated",
+                "OSTNET PHASE COMMIT RX localThread={} ownerThread={} token={} node={} offsetMs={:.3f} rttMs={:.3f} executeInMs={:.3f} deadlineMode=clock-calibrated replay=direct-animation-event",
                 localThreadID,
                 *ownerThread,
                 *token,
@@ -794,7 +802,7 @@ namespace OStimTogether
             false);
 
         SKSE::log::info(
-            "OSTNET PHASE COMMIT TX thread={} token={} node={} speed={} participants={} leadMs={:.3f} maxOneWayMs={:.3f} executeOwnerUs={} action=clock-calibrated-native-realign-replay",
+            "OSTNET PHASE COMMIT TX thread={} token={} node={} speed={} participants={} leadMs={:.3f} maxOneWayMs={:.3f} executeOwnerUs={} action=clock-calibrated-direct-animation-event",
             phase.threadID,
             phase.token,
             phase.nodeID,
@@ -858,29 +866,116 @@ namespace OStimTogether
         }
 
         const auto tid = static_cast<std::uint32_t>(localThreadID);
-        const auto actorCount = _threadControl->GetActorCount(tid);
-        std::uint32_t aligned = 0;
-        for (std::uint32_t i = 0; i < actorCount; ++i) {
-            OStimModAPI::Thread::ActorAlignmentData alignment{};
-            if (_threadControl->GetActorAlignment(tid, i, &alignment) &&
-                _threadControl->SetActorAlignment(tid, i, &alignment) == OStimModAPI::Thread::APIResult::OK) {
-                ++aligned;
+        const auto actorCount = thread->getActorCount();
+        const auto currentSpeed = _threadControl->GetCurrentSpeed(tid);
+
+        std::vector<DirectReplayItem> plan;
+        plan.reserve(actorCount);
+        std::string fallbackReason;
+
+        if (currentSpeed != speed) {
+            fallbackReason = fmt::format(
+                "speed-mismatch-current-{}-requested-{}",
+                currentSpeed,
+                speed);
+        } else {
+            for (std::uint32_t i = 0; i < actorCount; ++i) {
+                auto* threadActor = thread->getActor(i);
+                auto* actor = threadActor ?
+                    static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
+                if (!actor) {
+                    fallbackReason = fmt::format("actor-{}-missing", i);
+                    break;
+                }
+
+                // OStim 7.5b may mark a GraphActor as singleSpeed. In that
+                // case OStim::Thread::SetSpeed() always plays speeds[0] for
+                // this actor even when the thread speed index is higher.
+                // Mirror that exact behavior when building the direct event.
+                std::int32_t effectiveSpeed = speed;
+                if (auto* graphActor = node->getActor(i)) {
+                    const auto* actor75 = reinterpret_cast<
+                        const OStimInternalProbe::NodeActorPrefix75b*>(graphActor);
+                    if (actor75->singleSpeed) {
+                        effectiveSpeed = 0;
+                    }
+                }
+
+                auto event = OStimInternalProbe::BuildEvent(
+                    node,
+                    i,
+                    effectiveSpeed,
+                    OStimInternalProbe::GraphLayout::OStim75b);
+                if (!event.valid) {
+                    fallbackReason = fmt::format(
+                        "actor-{}-event-probe-{}",
+                        i,
+                        event.reason);
+                    break;
+                }
+
+                plan.push_back(DirectReplayItem{
+                    i,
+                    actor,
+                    std::move(event) });
             }
         }
 
-        const auto speedResult = _threadControl->SetSpeed(tid, speed);
+        std::uint32_t directNotified = 0;
+        std::uint32_t notifyFailures = 0;
+        bool fallbackSetSpeed = false;
+        int fallbackResult = -1;
+
+        if (fallbackReason.empty() && plan.size() == actorCount) {
+            const RE::BSFixedString speedVariable("OStimSpeed");
+            for (const auto& item : plan) {
+                item.actor->SetGraphVariableFloat(
+                    speedVariable,
+                    item.event.playbackSpeed);
+
+                const bool notified = item.actor->NotifyAnimationGraph(
+                    RE::BSFixedString(item.event.eventName));
+                if (notified) {
+                    ++directNotified;
+                } else {
+                    ++notifyFailures;
+                }
+
+                SKSE::log::info(
+                    "OSTNET PHASE DIRECT REPLAY localThread={} token={} actorIdx={} actor={:08X} event={} playback={:.5f} animationIndex={} effectiveSpeed={} notify={} positionWrites=0 skeletonWrites=0",
+                    localThreadID,
+                    token,
+                    item.actorIndex,
+                    item.actor->GetFormID(),
+                    item.event.eventName,
+                    item.event.playbackSpeed,
+                    item.event.animationIndex,
+                    item.event.speedIndex,
+                    notified ? 1 : 0);
+            }
+        } else {
+            fallbackSetSpeed = true;
+            fallbackResult = static_cast<int>(
+                _threadControl->SetSpeed(tid, speed));
+        }
+
         QueueProxyTranslationRelease(localThreadID, token);
 
         SKSE::log::info(
-            "OSTNET PHASE REPLAY localThread={} token={} node={} mirror={} aligned={}/{} speed={} speedResult={} scheduledUs={} actualUs={} latenessMs={:.3f} directPositionWrites=0 skeletonWrites=0",
+            "OSTNET PHASE REPLAY localThread={} token={} node={} mirror={} mode={} nativeAlign=0 directNotify={}/{} notifyFailures={} currentSpeed={} requestedSpeed={} fallbackSetSpeed={} fallbackResult={} fallbackReason={} scheduledUs={} actualUs={} latenessMs={:.3f} directPositionWrites=0 skeletonWrites=0",
             localThreadID,
             token,
             currentNode,
             mirror ? 1 : 0,
-            aligned,
+            fallbackSetSpeed ? "fallback-set-speed" : "direct-animation-event",
+            directNotified,
             actorCount,
+            notifyFailures,
+            currentSpeed,
             speed,
-            static_cast<int>(speedResult),
+            fallbackSetSpeed ? 1 : 0,
+            fallbackResult,
+            fallbackReason.empty() ? "none" : fallbackReason,
             executeLocalUs,
             actualUs,
             static_cast<double>(actualUs - executeLocalUs) / 1000.0);
