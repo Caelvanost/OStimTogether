@@ -1,10 +1,62 @@
 # OStim Together
 
-Current development version: **0.26.2**.
+Current development version: **0.27.0**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
+
+## 0.27.0
+
+### Shared native OStim scene control
+
+Every client whose real local PlayerCharacter participates in a synchronized multiplayer scene now gets OStim's native SceneMenu instead of a read-only mirror.
+
+OStim already computes the valid navigations from the current node, displays the current speed, supports speed up/down, and routes search results back into normal node navigation. OStim Together therefore does not maintain a second scene database or duplicate the OStim UI.
+
+Multiplayer threads are detected by the presence of both the real local player and at least one dynamic STR remote-player proxy. On those threads OStim Together calls the public OStim `OPlayerThread.SetPlayerControl(true)` bridge after the scene thread is fully registered. This removes `NO_PLAYER_CONTROL` and refreshes the native SceneMenu.
+
+Expected startup log:
+
+```text
+OSTNET SHARED CONTROL READY ... controls=node,speed,stop
+```
+
+Expected per-scene logs:
+
+```text
+OSTNET SHARED CONTROL ARM thread=... action=enable-native-player-control
+OSTNET SHARED CONTROL ENABLE thread=... nativeMenu=1 participantCommands=1
+```
+
+The existing cooperative control protocol remains owner-authoritative:
+
+```text
+participant selects an OStim node
+→ local mirror emits NODE
+→ CONTROL_NODE sent to owner
+→ owner validates that sender belongs to the accepted participant set
+→ owner applies NavigateToScene
+→ authoritative NODE is fanned to every participant
+```
+
+The same model is used for speed and stop:
+
+```text
+CONTROL_SPEED
+CONTROL_STOP
+```
+
+This means Player1, Player2, and additional accepted participants can all control the same scene. If two participants issue commands close together, the authoritative owner processes them in transport arrival order and the resulting authoritative state is then sent to everyone.
+
+Current 0.27.0 shared-control scope:
+
+- native OStim scene navigation from the current node;
+- OStim search/navigation results, because they resolve to normal node changes;
+- speed up/down;
+- stop/end scene through the existing synchronized stop path.
+
+Actor alignment-editor offsets and arbitrary OStim Scene Options that invoke local Papyrus functions are **not yet declared synchronized state**. They remain outside the 0.27.0 shared-control contract until OStim Together has explicit protocol messages for those values.
 
 ## 0.26.2
 
@@ -132,18 +184,13 @@ OSTNET ADDON OBJ RX ... type=ocumvagmesh ...
 OSTNET ADDON OBJ RX ... type=ocumanmesh ...
 ```
 
-## Shared controls
-
-The initiator remains authoritative. Accepted participants can navigate, change speed and stop the scene. Remote requests use `CONTROL_NODE`, `CONTROL_SPEED` and `CONTROL_STOP`; the resulting authoritative state is fanned back to every participant with echo suppression.
-
-Speed reads are deferred outside OStim's SPEED callback to avoid the reentrant deadlock fixed in 0.23.2.
-
 ## Other synchronization features
 
 - targeted STRPM consent and scene traffic;
 - exact OStim 7.5 furniture synchronization through Threads ABI v3;
 - OStim 7.4c furniture fallback;
 - Wall-scene startup handling;
+- shared native OStim node/speed/stop control for every accepted player participant;
 - STR proxy pose stabilization, with root-motion release for ordinary 7.5b free scenes;
 - equipment/outfit protection and residual apparel restoration;
 - RaceMenu/SKEE overlay rebuild support;
@@ -187,7 +234,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.26.2-FOMOD.zip
+dist\OStimTogether-v0.27.0-FOMOD.zip
 ```
 
 FOMOD layout:
