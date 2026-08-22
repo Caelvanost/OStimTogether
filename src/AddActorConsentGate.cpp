@@ -8,6 +8,19 @@
 
 namespace OStimTogether
 {
+    namespace
+    {
+        // Add Actor consent reuses the generic INVITE/INVITE_RESPONSE transport,
+        // but it is not itself an OStim scene request. HandleInviteResponse()
+        // starts a scene only when accepted.size() == participants.size().
+        // Keep one local-only completion token in accepted until Papyrus polls
+        // the gate so the generic handler records the real acceptance without
+        // ever entering StartApprovedOwnerSession(). The token is normalized
+        // away before the gate is attached to the real OStim thread/session.
+        constexpr STRPMApi::ConnectionID kAddActorCompletionGuard =
+            std::numeric_limits<STRPMApi::ConnectionID>::max();
+    }
+
     std::int32_t CoopSessionManager::BeginAddActorConsent(
         std::string_view selectedLabel)
     {
@@ -50,15 +63,8 @@ namespace OStimTogether
         OwnerSession gate{};
         gate.sessionID = _nextSessionID.fetch_add(1);
         gate.participants.insert(*connection);
+        gate.accepted.insert(kAddActorCompletionGuard);
         gate.nodeID = "add-actor";
-
-        // This is a consent-only pseudo-session, not an OStim scene request.
-        // HandleInviteResponse uses the normal accepted-session path and may
-        // call StartApprovedOwnerSession(). A deliberately invalid actor FormID
-        // makes that function exit through actor-missing before it can ever
-        // invoke OStim StartScene(). PollAddActorConsent then re-arms the gate
-        // for the REAL thread OStim creates after UIExtMessageBox returns.
-        gate.actorFormIDs.push_back(0);
 
         const auto gateID = gate.sessionID;
         if (gateID > static_cast<std::uint64_t>(
@@ -118,9 +124,21 @@ namespace OStimTogether
         auto& gate = gateIt->second;
         const bool accepted =
             !gate.participants.empty() &&
-            gate.accepted.size() == gate.participants.size();
+            std::all_of(
+                gate.participants.begin(),
+                gate.participants.end(),
+                [&gate](STRPMApi::ConnectionID connectionID) {
+                    return gate.accepted.contains(connectionID);
+                });
 
         if (accepted) {
+            // Remove the local-only completion guard before this state becomes
+            // the authoritative owner session for the real OStim thread.
+            gate.accepted.clear();
+            gate.accepted.insert(
+                gate.participants.begin(),
+                gate.participants.end());
+
             std::optional<std::uint64_t> parent;
             if (const auto parentIt = _addActorGateParents.find(id);
                 parentIt != _addActorGateParents.end()) {
@@ -137,7 +155,7 @@ namespace OStimTogether
                 ownerIt->second.participants.insert(
                     gate.participants.begin(), gate.participants.end());
                 ownerIt->second.accepted.insert(
-                    gate.accepted.begin(), gate.accepted.end());
+                    gate.participants.begin(), gate.participants.end());
                 ownerIt->second.restarting = true;
                 _approvedReplayArmed = *parent;
 
