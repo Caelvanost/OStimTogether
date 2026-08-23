@@ -6,6 +6,8 @@ namespace OStimTogether
 {
     namespace
     {
+        std::atomic_bool gApplyQueued{ false };
+
         bool IsLikelySTRRemotePlayerProxy(RE::Actor* actor)
         {
             if (!actor || actor->IsPlayerRef()) {
@@ -32,6 +34,70 @@ namespace OStimTogether
             auto* ocum = data ? data->LookupModByName("OCum.esp") : nullptr;
             return ocum && armor->GetFile(0) == ocum;
         }
+
+        void OStimNativeUnequipItem(
+            RE::Actor* actor,
+            RE::TESForm* item)
+        {
+            if (!actor || !item) {
+                return;
+            }
+
+            // Exact Actor.UnequipItem native relocation and flags used by
+            // OStim 7.5b GameActor::unequip(): abPreventEquip=false,
+            // abSilent=true. Using the same primitive avoids the persistent
+            // default-outfit re-equip loop observed on mirror NPCs when the
+            // old ActorEquipManager::UnequipObject path was used.
+            using func_t = void(
+                RE::BSScript::IVirtualMachine*,
+                RE::VMStackID,
+                RE::Actor*,
+                RE::TESForm*,
+                bool,
+                bool);
+
+            static REL::Relocation<func_t> func{
+                RELOCATION_ID(53950, 54774)
+            };
+
+            func(
+                nullptr,
+                0,
+                actor,
+                item,
+                false,
+                true);
+        }
+
+        void QueueActor3DUpdate(RE::Actor* actor)
+        {
+            if (!actor) {
+                return;
+            }
+
+            // Match OStim GameActor::update3D() exactly: after native
+            // undressing, queue Actor.QueueNiNodeUpdate so the visible armor
+            // geometry follows the inventory state immediately.
+            const auto skyrimVM = RE::SkyrimVM::GetSingleton();
+            auto vm = skyrimVM ? skyrimVM->impl : nullptr;
+            if (!vm) {
+                return;
+            }
+
+            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+            auto args = RE::MakeFunctionArguments();
+            const auto handle =
+                skyrimVM->handlePolicy.GetHandleForObject(
+                    static_cast<RE::VMTypeID>(actor->FORMTYPE),
+                    actor);
+
+            vm->DispatchMethodCall2(
+                handle,
+                "Actor",
+                "QueueNiNodeUpdate",
+                args,
+                callback);
+        }
     }
 
     EquipmentLock& EquipmentLock::GetSingleton()
@@ -54,7 +120,7 @@ namespace OStimTogether
         _config = Config::Load();
 
         SKSE::log::info(
-            "Equipment lock started: interval={}ms slotMask=0x{:08X} ocumArmorExempt=1",
+            "Equipment lock started: interval={}ms slotMask=0x{:08X} ocumArmorExempt=1 nativeOStimUnequip=1",
             _config.intervalMs,
             _config.slotMask);
 
@@ -74,6 +140,8 @@ namespace OStimTogether
             _ostimRefCounts.clear();
             _primaryThreadByActor.clear();
         }
+
+        gApplyQueued.store(false);
 
         if (_worker.joinable()) {
             _worker.join();
@@ -381,12 +449,16 @@ namespace OStimTogether
     void EquipmentLock::WorkerLoop()
     {
         while (_running.load()) {
-            if (HasAnyTarget()) {
+            if (HasAnyTarget() &&
+                !gApplyQueued.exchange(true)) {
                 if (auto* tasks = SKSE::GetTaskInterface()) {
                     tasks->AddTask([]() {
                         EquipmentLock::GetSingleton()
                             .ApplyAllLocksMainThread();
+                        gApplyQueued.store(false);
                     });
+                } else {
+                    gApplyQueued.store(false);
                 }
             }
 
@@ -425,14 +497,9 @@ namespace OStimTogether
             return;
         }
 
-        auto* equipManager =
-            RE::ActorEquipManager::GetSingleton();
-
-        if (!equipManager) {
-            return;
-        }
-
         auto inventory = actor->GetInventory();
+        bool changed = false;
+        std::uint32_t stripped = 0;
 
         for (auto& [object, data] : inventory) {
             if (!object ||
@@ -448,11 +515,7 @@ namespace OStimTogether
 
             // OCum uses real armor records as transient overlay-bootstrap
             // helpers and as persistent OStim equip-object meshes. The NPC
-            // anti-reequip lock runs every few milliseconds, so stripping
-            // those records races OCum's own 50 ms overlay setup and keeps
-            // creampie meshes unequipped until the OStim lock is released.
-            // Exempt every armor whose defining file is OCum.esp; ordinary
-            // clothing/armor remains protected by the existing slot mask.
+            // anti-reequip lock must not strip those records.
             if (IsOCumRuntimeArmor(armor)) {
                 continue;
             }
@@ -466,21 +529,26 @@ namespace OStimTogether
             }
 
             SKSE::log::trace(
-                "Unequip {:08X} from actor {:08X}, slots=0x{:08X}",
+                "OStim native unequip {:08X} from actor {:08X}, slots=0x{:08X}",
                 object->GetFormID(),
                 actorID,
                 armorMask);
 
-            equipManager->UnequipObject(
+            OStimNativeUnequipItem(
                 actor,
-                object,
-                nullptr,
-                1,
-                nullptr,
-                false,
-                true,
-                false,
-                true);
+                object);
+
+            changed = true;
+            ++stripped;
+        }
+
+        if (changed) {
+            QueueActor3DUpdate(actor);
+
+            SKSE::log::info(
+                "OSTNET NPC NATIVE UNDRESS actor={:08X} stripped={} refresh3D=1 method=ostim-unequip-item",
+                actorID,
+                stripped);
         }
     }
 }
