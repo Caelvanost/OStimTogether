@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
+#include "FreeSceneSelfOriginLock.h"
 #include "OStimBridge.h"
 
 namespace OStimTogether
@@ -84,11 +85,17 @@ namespace OStimTogether
                             OStimBridge::GetSingleton()
                                 .RefreshRemoteMirrors();
 
-                            // v0.30.0: apply only NPC Root [Root].local.translate
-                            // for free-standing player proxies. No rotation,
-                            // scale, world-transform, child-tree or actor
-                            // reference writes occur here.
+                            // Historical root-translation probe. It remains
+                            // uninitialized/disabled in current runtime builds
+                            // and therefore performs no skeleton writes.
                             FreeSceneRootSync::GetSingleton()
+                                .Tick();
+
+                            // v0.31.1: keep only the REAL local player's
+                            // logical network origin on the captured OStim
+                            // free-scene center. No remote proxy, rendered 3D
+                            // or skeleton transform is written here.
+                            FreeSceneSelfOriginLock::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
