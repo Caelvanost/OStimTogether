@@ -5,10 +5,264 @@
 #include "STRPMTransport.h"
 
 #include <cctype>
+#include <chrono>
 #include <limits>
+#include <thread>
 
 namespace OStimTogether
 {
+    namespace
+    {
+        // Vanilla XMarkerHeading. It is invisible and has no OStim furniture
+        // classification of its own, so OStim resolves its furniture type to
+        // "none" while still taking the stable reference-position path used
+        // by real furniture scenes.
+        constexpr RE::FormID kVirtualAnchorBaseFormID = 0x00000034;
+        constexpr float kRadiansToDegrees =
+            180.0F / 3.14159265358979323846F;
+        constexpr auto kVirtualAnchorReleaseDelay =
+            std::chrono::milliseconds(1500);
+
+        std::mutex g_virtualAnchorMutex;
+        std::unordered_map<
+            std::string,
+            RE::NiPointer<RE::TESObjectREFR>> g_virtualAnchors;
+
+        std::string VirtualAnchorKey(
+            std::string_view sender,
+            std::int32_t remoteThreadID)
+        {
+            return fmt::format(
+                "{}|{}",
+                sender,
+                remoteThreadID);
+        }
+
+        void SetVirtualAnchorAngleZ(
+            RE::TESObjectREFR* object,
+            float radians)
+        {
+            if (!object) {
+                return;
+            }
+
+            // Same native ObjectReference.SetAngle relocation used by OStim's
+            // GameObject/GameActor positioning path and OStimTogether's other
+            // anchor helpers. The engine-facing function takes degrees.
+            using func_t = void(
+                RE::BSScript::IVirtualMachine*,
+                RE::VMStackID,
+                RE::TESObjectREFR*,
+                float,
+                float,
+                float);
+
+            static REL::Relocation<func_t> func{
+                RELOCATION_ID(55693, 56224)
+            };
+
+            func(
+                nullptr,
+                0,
+                object,
+                0.0F,
+                0.0F,
+                radians * kRadiansToDegrees);
+
+            // Keep the logical reference state explicit as well. OStim reads
+            // the reference rotation while constructing Thread::center.
+            object->data.angle.z = radians;
+        }
+
+        RE::NiPointer<RE::TESObjectREFR>
+            CreateVirtualSceneAnchor(
+                const SceneCenter& center)
+        {
+            if (!center.IsFinite()) {
+                return {};
+            }
+
+            auto* player =
+                RE::PlayerCharacter::GetSingleton();
+            auto* baseForm =
+                RE::TESForm::LookupByID(
+                    kVirtualAnchorBaseFormID);
+            auto* baseObject =
+                baseForm ?
+                    baseForm->As<RE::TESBoundObject>() :
+                    nullptr;
+
+            if (!player || !baseObject) {
+                SKSE::log::error(
+                    "OSTNET SCENE ANCHOR virtual create failed player={} xmarkerBase={:08X}",
+                    player ? 1 : 0,
+                    baseObject ? baseObject->GetFormID() : 0);
+                return {};
+            }
+
+            auto anchor =
+                player->PlaceObjectAtMe(
+                    baseObject,
+                    false);
+
+            if (!anchor) {
+                SKSE::log::error(
+                    "OSTNET SCENE ANCHOR virtual create failed base={:08X} reason=PlaceObjectAtMe",
+                    kVirtualAnchorBaseFormID);
+                return {};
+            }
+
+            const RE::NiPoint3 target{
+                center.x,
+                center.y,
+                center.z
+            };
+
+            anchor->SetPosition(target);
+            anchor->data.location = target;
+            SetVirtualAnchorAngleZ(
+                anchor.get(),
+                center.r);
+
+            // XMarkerHeading is already invisible; explicitly make the
+            // temporary anchor non-interactive/non-colliding as a safety net.
+            anchor->SetActivationBlocked(true);
+            anchor->SetCollision(false);
+
+            const auto position =
+                anchor->GetPosition();
+
+            SKSE::log::info(
+                "OSTNET SCENE ANCHOR VIRTUAL CREATE ref={:08X} base={:08X} center=({:.3f},{:.3f},{:.3f},{:.5f}) actual=({:.3f},{:.3f},{:.3f},{:.5f}) persistent=0",
+                anchor->GetFormID(),
+                baseObject->GetFormID(),
+                center.x,
+                center.y,
+                center.z,
+                center.r,
+                position.x,
+                position.y,
+                position.z,
+                anchor->GetAngleZ());
+
+            return anchor;
+        }
+
+        RE::NiPointer<RE::TESObjectREFR>
+            GetVirtualSceneAnchor(
+                std::string_view sender,
+                std::int32_t remoteThreadID)
+        {
+            std::scoped_lock lock(
+                g_virtualAnchorMutex);
+
+            const auto it =
+                g_virtualAnchors.find(
+                    VirtualAnchorKey(
+                        sender,
+                        remoteThreadID));
+
+            return
+                it != g_virtualAnchors.end() ?
+                    it->second :
+                    RE::NiPointer<RE::TESObjectREFR>{};
+        }
+
+        void BindVirtualSceneAnchor(
+            std::string_view sender,
+            std::int32_t remoteThreadID,
+            RE::NiPointer<RE::TESObjectREFR> anchor)
+        {
+            if (!anchor) {
+                return;
+            }
+
+            const auto key =
+                VirtualAnchorKey(
+                    sender,
+                    remoteThreadID);
+
+            RE::NiPointer<RE::TESObjectREFR> replaced;
+
+            {
+                std::scoped_lock lock(
+                    g_virtualAnchorMutex);
+
+                const auto existing =
+                    g_virtualAnchors.find(key);
+
+                if (existing !=
+                        g_virtualAnchors.end() &&
+                    existing->second.get() !=
+                        anchor.get()) {
+                    replaced = existing->second;
+                }
+
+                g_virtualAnchors[key] =
+                    std::move(anchor);
+            }
+
+            if (replaced) {
+                replaced->Disable();
+            }
+        }
+
+        void ScheduleVirtualSceneAnchorRelease(
+            std::string sender,
+            std::int32_t remoteThreadID)
+        {
+            const auto key =
+                VirtualAnchorKey(
+                    sender,
+                    remoteThreadID);
+
+            std::thread(
+                [key]() {
+                    std::this_thread::sleep_for(
+                        kVirtualAnchorReleaseDelay);
+
+                    auto* tasks =
+                        SKSE::GetTaskInterface();
+                    if (!tasks) {
+                        return;
+                    }
+
+                    tasks->AddTask(
+                        [key]() {
+                            RE::NiPointer<
+                                RE::TESObjectREFR> anchor;
+
+                            {
+                                std::scoped_lock lock(
+                                    g_virtualAnchorMutex);
+
+                                const auto it =
+                                    g_virtualAnchors.find(key);
+                                if (it ==
+                                    g_virtualAnchors.end()) {
+                                    return;
+                                }
+
+                                anchor = it->second;
+                                g_virtualAnchors.erase(it);
+                            }
+
+                            if (anchor) {
+                                const auto formID =
+                                    anchor->GetFormID();
+                                anchor->Disable();
+
+                                SKSE::log::info(
+                                    "OSTNET SCENE ANCHOR VIRTUAL RELEASE ref={:08X} key={} action=disable",
+                                    formID,
+                                    key);
+                            }
+                        });
+                })
+                .detach();
+        }
+    }
+
     ActorResolver& ActorResolver::GetSingleton()
     {
         static ActorResolver instance;
@@ -588,10 +842,12 @@ namespace OStimTogether
         const bool wallScene =
             nodeValue->find("wall") != std::string::npos;
         const bool anchoredScene =
-            furnitureDescriptor.IsFinite() || wallScene;
+            furnitureDescriptor.IsFinite() ||
+            wallScene ||
+            authoritativeCenter.IsFinite();
 
         SKSE::log::info(
-            "OSTNET RESOLVE START sender={} connection={} thread={} participants={} node={} transport={} continuousMirrorAlign={}",
+            "OSTNET RESOLVE START sender={} connection={} thread={} participants={} node={} transport={} continuousMirrorAlign={} unifiedAnchor=1",
             sender,
             senderConnectionID,
             *threadID,
@@ -687,19 +943,108 @@ namespace OStimTogether
             return;
         }
 
-        auto* localFurniture =
-            ResolveFurniture(furnitureDescriptor, resolvedActors);
+        auto* physicalFurniture =
+            ResolveFurniture(
+                furnitureDescriptor,
+                resolvedActors);
 
-        OStimBridge::GetSingleton().StartRemoteMirror(
+        RE::NiPointer<RE::TESObjectREFR>
+            virtualAnchor;
+
+        RE::TESObjectREFR* sceneAnchor =
+            physicalFurniture;
+
+        const char* anchorKind =
+            physicalFurniture ?
+                "physical-furniture" :
+                "none";
+
+        if (!sceneAnchor &&
+            authoritativeCenter.IsFinite()) {
+            virtualAnchor =
+                GetVirtualSceneAnchor(
+                    sender,
+                    *threadID);
+
+            if (!virtualAnchor) {
+                virtualAnchor =
+                    CreateVirtualSceneAnchor(
+                        authoritativeCenter);
+            }
+
+            sceneAnchor =
+                virtualAnchor.get();
+
+            if (sceneAnchor) {
+                anchorKind =
+                    "virtual-xmarkerheading";
+            }
+        }
+
+        const auto anchorPosition =
+            sceneAnchor ?
+                sceneAnchor->GetPosition() :
+                RE::NiPoint3{};
+
+        SKSE::log::info(
+            "OSTNET SCENE ANCHOR SELECT sender={} remoteThread={} kind={} ref={:08X} base={:08X} pos=({:.3f},{:.3f},{:.3f},{:.5f}) authoritative=({:.3f},{:.3f},{:.3f},{:.5f})",
             sender,
             *threadID,
-            resolvedActors,
-            localAlignmentMask,
-            localSelfIndex,
-            authoritativeCenter,
-            authoritativePoses,
-            localFurniture,
-            *nodeValue);
+            anchorKind,
+            sceneAnchor ?
+                sceneAnchor->GetFormID() :
+                0,
+            sceneAnchor &&
+                    sceneAnchor->GetBaseObject() ?
+                sceneAnchor->GetBaseObject()->GetFormID() :
+                0,
+            anchorPosition.x,
+            anchorPosition.y,
+            anchorPosition.z,
+            sceneAnchor ?
+                sceneAnchor->GetAngleZ() :
+                0.0F,
+            authoritativeCenter.x,
+            authoritativeCenter.y,
+            authoritativeCenter.z,
+            authoritativeCenter.r);
+
+        const auto localThreadID =
+            OStimBridge::GetSingleton().StartRemoteMirror(
+                sender,
+                *threadID,
+                resolvedActors,
+                localAlignmentMask,
+                localSelfIndex,
+                authoritativeCenter,
+                authoritativePoses,
+                sceneAnchor,
+                *nodeValue);
+
+        if (virtualAnchor) {
+            if (localThreadID >= 0) {
+                BindVirtualSceneAnchor(
+                    sender,
+                    *threadID,
+                    std::move(virtualAnchor));
+
+                SKSE::log::info(
+                    "OSTNET SCENE ANCHOR VIRTUAL BIND sender={} remoteThread={} localThread={} lifetime=until-stop",
+                    sender,
+                    *threadID,
+                    localThreadID);
+            } else {
+                const auto formID =
+                    virtualAnchor->GetFormID();
+                virtualAnchor->Disable();
+
+                SKSE::log::warn(
+                    "OSTNET SCENE ANCHOR VIRTUAL ABORT ref={:08X} sender={} remoteThread={} reason=mirror-start-failed",
+                    formID,
+                    sender,
+                    *threadID);
+            }
+        }
     }
 
     void ActorResolver::HandlePayload(
@@ -777,6 +1122,10 @@ namespace OStimTogether
             const auto threadID = ParseThreadID(payload);
             if (threadID) {
                 OStimBridge::GetSingleton().StopRemoteMirror(
+                    sender,
+                    *threadID);
+
+                ScheduleVirtualSceneAnchorRelease(
                     sender,
                     *threadID);
             }
