@@ -62,6 +62,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/FreeSceneAlignmentFix.h
         src/FreeScenePhaseSync.cpp
         src/FreeScenePhaseSync.h
+        src/ParticipantAlignmentSync.cpp
+        src/ParticipantAlignmentSync.h
         src/FreeSceneRootSync.cpp
         src/FreeSceneRootSync.h
         src/SharedSceneControl.cpp
