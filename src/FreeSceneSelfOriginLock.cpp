@@ -49,7 +49,7 @@ namespace OStimTogether
                 nullptr) ||
             !exchange.interfaceMap) {
             SKSE::log::warn(
-                "OSTNET SELF ORIGIN unavailable: OStim interface exchange failed");
+                "OSTNET PROXY ORIGIN unavailable: OStim interface exchange failed");
             return false;
         }
 
@@ -57,14 +57,14 @@ namespace OStimTogether
             exchange.interfaceMap->queryInterface(OStim::ThreadInterface::NAME));
         if (!_threads) {
             SKSE::log::warn(
-                "OSTNET SELF ORIGIN unavailable: Threads interface missing");
+                "OSTNET PROXY ORIGIN unavailable: Threads interface missing");
             return false;
         }
 
         _threadInterfaceVersion = _threads->getVersion();
         if (_threadInterfaceVersion < 3) {
             SKSE::log::info(
-                "OSTNET SELF ORIGIN disabled threadsVersion={} reason=no-exact-furniture-state",
+                "OSTNET PROXY ORIGIN disabled threadsVersion={} reason=no-exact-furniture-state",
                 _threadInterfaceVersion);
             return false;
         }
@@ -73,7 +73,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET SELF ORIGIN READY threadsVersion={} ownership=real-local-player write=reference-location-only skeletonWrites=0 update3D=0 proxyWrites=0",
+            "OSTNET PROXY ORIGIN READY threadsVersion={} ownership=remote-str-proxy write=reference-location-only localPlayerWrites=0 skeletonWrites=0 update3D=0",
             _threadInterfaceVersion);
         return true;
     }
@@ -146,6 +146,10 @@ namespace OStimTogether
 
     void FreeSceneSelfOriginLock::HandleStart(OStim::Thread* thread)
     {
+        // Keep observer-only Player+NPC mirrors untouched: they already use
+        // OStim's native alignment correctly. This path is only for a shared
+        // scene where the real local player and at least one STR proxy are both
+        // participants.
         if (!thread ||
             !FindLocalPlayer(thread) ||
             !HasSTRRemoteParticipant(thread)) {
@@ -155,9 +159,6 @@ namespace OStimTogether
         // OStim emits START while its own thread startup is still in progress.
         // Calling the ModAPI GetActorAlignment path synchronously from this
         // listener can re-enter OStim's thread-control state and hang the game.
-        // Match OStimBridge's startup ordering: first hop yields back to OStim
-        // so ChangeNode() can enqueue lockAtPosition(), second hop runs after
-        // those startup tasks and only then reads alignment/scene-center state.
         QueueArmAfterStart(thread->getThreadID());
     }
 
@@ -166,13 +167,13 @@ namespace OStimTogether
         auto* tasks = SKSE::GetTaskInterface();
         if (!tasks) {
             SKSE::log::warn(
-                "OSTNET SELF ORIGIN ARM skipped thread={} reason=no-task-interface",
+                "OSTNET PROXY ORIGIN ARM skipped thread={} reason=no-task-interface",
                 threadID);
             return;
         }
 
         SKSE::log::info(
-            "OSTNET SELF ORIGIN ARM queued thread={} defer=two-hop",
+            "OSTNET PROXY ORIGIN ARM queued thread={} defer=two-hop",
             threadID);
 
         tasks->AddTask(
@@ -211,7 +212,7 @@ namespace OStimTogether
 
         if (!centerReady || !center.IsFinite()) {
             SKSE::log::warn(
-                "OSTNET SELF ORIGIN ARM failed thread={} reason=no-scene-center source={}",
+                "OSTNET PROXY ORIGIN ARM failed thread={} reason=no-scene-center source={}",
                 threadID,
                 remoteMirror ? "remote-start" : "local-derived");
             return;
@@ -222,7 +223,7 @@ namespace OStimTogether
         _lastLog = {};
 
         SKSE::log::info(
-            "OSTNET SELF ORIGIN ARM thread={} center=({:.3f},{:.3f},{:.3f},{:.5f}) source={} mode=reference-location-only continuousLocalAuthority=1 skeletonWrites=0 proxyWrites=0",
+            "OSTNET PROXY ORIGIN ARM thread={} center=({:.3f},{:.3f},{:.3f},{:.5f}) source={} mode=proxy-reference-location-only localPlayerWrites=0 skeletonWrites=0 update3D=0",
             _activeThreadID,
             _center.x,
             _center.y,
@@ -235,7 +236,7 @@ namespace OStimTogether
     {
         if (thread && thread->getThreadID() == _activeThreadID) {
             SKSE::log::info(
-                "OSTNET SELF ORIGIN STOP thread={}",
+                "OSTNET PROXY ORIGIN STOP thread={}",
                 _activeThreadID);
             Reset();
         }
@@ -248,12 +249,9 @@ namespace OStimTogether
         }
 
         auto* thread = _threads->getThread(_activeThreadID);
-        if (!thread || !IsFreeStandingThread(thread)) {
-            return;
-        }
-
-        auto* player = FindLocalPlayer(thread);
-        if (!player) {
+        if (!thread ||
+            !IsFreeStandingThread(thread) ||
+            !FindLocalPlayer(thread)) {
             return;
         }
 
@@ -263,65 +261,98 @@ namespace OStimTogether
             _center.z
         };
 
-        const auto before = player->GetPosition();
-        RE::NiPoint3 rootBefore = before;
-        bool hadRootBefore = false;
-        if (auto* root = player->Get3D()) {
-            rootBefore = root->world.translate;
-            hadRootBefore = true;
-        }
-
-        const auto driftSq = before.GetSquaredDistance(target);
-        bool wrote = false;
-        if (driftSq > kWriteToleranceSq) {
-            // Deliberately modify only the local real player's logical
-            // reference origin. Do not call SetPosition(), TranslateTo(),
-            // Update3DPosition(), or write any skeleton node. The local
-            // animation keeps its rendered displacement while STR publishes a
-            // common free-scene origin to the remote proxy.
-            static_cast<RE::TESObjectREFR*>(player)->data.location = target;
-            wrote = true;
-        }
-
-        const auto after = player->GetPosition();
-        RE::NiPoint3 rootAfter = rootBefore;
-        bool hadRootAfter = false;
-        if (auto* root = player->Get3D()) {
-            rootAfter = root->world.translate;
-            hadRootAfter = true;
-        }
-
+        auto& transport = STRPMTransport::GetSingleton();
         const auto now = std::chrono::steady_clock::now();
-        if (_lastLog.time_since_epoch().count() == 0 ||
-            now - _lastLog >= kLogInterval) {
+        const bool shouldLog =
+            _lastLog.time_since_epoch().count() == 0 ||
+            now - _lastLog >= kLogInterval;
+
+        std::uint32_t proxyCount = 0;
+        std::uint32_t writeCount = 0;
+
+        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+            auto* threadActor = thread->getActor(i);
+            auto* actor = threadActor ?
+                static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
+
+            if (!actor || actor->IsPlayerRef() ||
+                !transport.ResolveConnection(actor->GetFormID())) {
+                continue;
+            }
+
+            ++proxyCount;
+
+            const auto before = actor->GetPosition();
+            RE::NiPoint3 rootBefore = before;
+            bool hadRootBefore = false;
+            if (auto* root = actor->Get3D()) {
+                rootBefore = root->world.translate;
+                hadRootBefore = true;
+            }
+
+            const auto driftSq = before.GetSquaredDistance(target);
+            bool wrote = false;
+            if (driftSq > kWriteToleranceSq) {
+                // STR has already sampled this participant's real local actor,
+                // including the animation/root-motion displacement. If that
+                // displaced sample is left as the proxy reference origin,
+                // OStim's proxy animation applies the role displacement again.
+                // Cancel only that duplicated logical translation. Do not move
+                // the proxy 3D, call SetPosition/TranslateTo/Update3DPosition,
+                // or touch any skeleton transform.
+                static_cast<RE::TESObjectREFR*>(actor)->data.location = target;
+                wrote = true;
+                ++writeCount;
+            }
+
+            const auto after = actor->GetPosition();
+            RE::NiPoint3 rootAfter = rootBefore;
+            bool hadRootAfter = false;
+            if (auto* root = actor->Get3D()) {
+                rootAfter = root->world.translate;
+                hadRootAfter = true;
+            }
+
+            if (shouldLog) {
+                SKSE::log::info(
+                    "OSTNET PROXY ORIGIN LOCK thread={} node={} idx={} actor={:08X} wrote={} refBefore=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) refAfter=({:.3f},{:.3f},{:.3f}) rootBefore={}({:.3f},{:.3f},{:.3f}) rootAfter={}({:.3f},{:.3f},{:.3f}) driftBefore2={:.3f} driftAfter2={:.6f} rootMoved2={:.6f} proxyReferenceOnly=1 localPlayerWrites=0 skeletonWrites=0 update3D=0",
+                    _activeThreadID,
+                    thread->getCurrentNode() && thread->getCurrentNode()->getNodeID() ?
+                        thread->getCurrentNode()->getNodeID() : "",
+                    i,
+                    actor->GetFormID(),
+                    wrote ? 1 : 0,
+                    before.x,
+                    before.y,
+                    before.z,
+                    target.x,
+                    target.y,
+                    target.z,
+                    after.x,
+                    after.y,
+                    after.z,
+                    hadRootBefore ? 1 : 0,
+                    rootBefore.x,
+                    rootBefore.y,
+                    rootBefore.z,
+                    hadRootAfter ? 1 : 0,
+                    rootAfter.x,
+                    rootAfter.y,
+                    rootAfter.z,
+                    driftSq,
+                    after.GetSquaredDistance(target),
+                    hadRootBefore && hadRootAfter ?
+                        rootAfter.GetSquaredDistance(rootBefore) : 0.0F);
+            }
+        }
+
+        if (shouldLog) {
             _lastLog = now;
             SKSE::log::info(
-                "OSTNET SELF ORIGIN LOCK thread={} node={} wrote={} refBefore=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) refAfter=({:.3f},{:.3f},{:.3f}) rootBefore={}({:.3f},{:.3f},{:.3f}) rootAfter={}({:.3f},{:.3f},{:.3f}) driftBefore2={:.3f} driftAfter2={:.6f} rootMoved2={:.6f} referenceOnly=1 skeletonWrites=0 update3D=0 proxyWrites=0",
+                "OSTNET PROXY ORIGIN STATE thread={} proxies={} writes={} owner=remote-proxy-reference localPlayerWrites=0",
                 _activeThreadID,
-                thread->getCurrentNode() && thread->getCurrentNode()->getNodeID() ?
-                    thread->getCurrentNode()->getNodeID() : "",
-                wrote ? 1 : 0,
-                before.x,
-                before.y,
-                before.z,
-                target.x,
-                target.y,
-                target.z,
-                after.x,
-                after.y,
-                after.z,
-                hadRootBefore ? 1 : 0,
-                rootBefore.x,
-                rootBefore.y,
-                rootBefore.z,
-                hadRootAfter ? 1 : 0,
-                rootAfter.x,
-                rootAfter.y,
-                rootAfter.z,
-                driftSq,
-                after.GetSquaredDistance(target),
-                hadRootBefore && hadRootAfter ?
-                    rootAfter.GetSquaredDistance(rootBefore) : 0.0F);
+                proxyCount,
+                writeCount);
         }
     }
 }
