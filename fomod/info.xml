@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.32.0</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI. v0.32.0 unifies remote scene positioning around one OStim anchor pipeline: real furniture is reused when present, while furniture-free and wall scenes receive an invisible temporary XMarkerHeading at the authoritative scene center and are started through the same ThreadBuilder furniture-anchor path. Includes mandatory pre-UI consent, native multi-master scene controls, participant-authored alignment, safe orphan cleanup, OCum live synchronization, and coalesced RaceMenu overlay rebuilds.</Description>
+  <Version>0.32.1</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes. v0.32.1 canonicalizes addon channel names so OCum overlay caches cannot diverge by case, and makes mirror NPC undressing use OStim's native Actor.UnequipItem plus QueueNiNodeUpdate path. Includes mandatory pre-UI consent, native multi-master scene controls, participant-authored alignment, safe orphan cleanup, OCum live synchronization, and coalesced RaceMenu overlay rebuilds.</Description>
 </fomod>
