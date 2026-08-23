@@ -4,20 +4,15 @@
 #include "STRPMApi.h"
 #include "OStimAPI/ThreadEventListener.h"
 #include "OStimAPI/ThreadInterface.h"
+#include "OStimAPI/Thread.h"
 #include "OStimAPI/ModThreadControl.h"
 
-// v0.30.4 proved that OStim's own SetSpeed() is the correct animation replay
-// primitive. v0.30.5 also restores the native OStim alignment step immediately
-// before that replay. OStim Thread::ChangeNode() normally performs:
-//
-//   alignActors() -> SetSpeed() -> playAnimation()
-//
-// The phase barrier previously replayed only SetSpeed(), after STR had already
-// had time to update remote proxy references. PhaseThreadControl reproduces the
-// missing public-API alignment stage by re-submitting each actor's CURRENT
-// OStim alignment through GetActorAlignment()/SetActorAlignment() before the
-// SetSpeed task is queued. No direct reference, 3D-root or skeleton write is
-// performed by OStim Together.
+// Phase sync first tries a direct animation-graph event replay. Older fallback
+// behavior re-submitted OStim SetSpeed(), which also re-runs OStim alignment and
+// restarts playAnimation(). Runtime testing shows that this fallback can destroy
+// the exact PREANCHOR SELF center established for free-standing Player+Player
+// mirrors. The adapter below therefore suppresses only that fallback for ordinary
+// free player scenes while retaining it for furniture, wall and other paths.
 #define OSTIM_TOGETHER_FORCE_NATIVE_PHASE_REPLAY 1
 
 namespace OStimTogether
@@ -33,12 +28,6 @@ namespace OStimTogether
         void Reset();
 
     private:
-        FreeScenePhaseSync() = default;
-        ~FreeScenePhaseSync();
-
-        FreeScenePhaseSync(const FreeScenePhaseSync&) = delete;
-        FreeScenePhaseSync& operator=(const FreeScenePhaseSync&) = delete;
-
         class StartListener final : public OStim::ThreadEventListener
         {
         public:
@@ -87,14 +76,15 @@ namespace OStimTogether
             std::int64_t prepRemoteReceiveUs{ 0 };
         };
 
-        // Narrow adapter used only by FreeScenePhaseSync. It deliberately
-        // intercepts SetSpeed() so the synchronized replay uses the same
-        // align-then-play order as OStim's native ChangeNode(). All other
-        // methods used by this component are direct pass-throughs.
+        // Narrow adapter used only by FreeScenePhaseSync. Ordinary game/user
+        // speed changes use OStimBridge's separate raw Thread ModAPI pointer and
+        // are unaffected by this policy.
         class PhaseThreadControl
         {
         public:
-            PhaseThreadControl() = default;
+            explicit PhaseThreadControl(FreeScenePhaseSync* owner = nullptr) :
+                _owner(owner)
+            {}
 
             PhaseThreadControl& operator=(
                 OStimModAPI::Thread::IThreadInterface* value) noexcept
@@ -153,6 +143,46 @@ namespace OStimTogether
                     return OStimModAPI::Thread::APIResult::Invalid;
                 }
 
+                // Free Player+Player scenes already started natively around the
+                // shared center. If direct event probing failed, do NOT fall
+                // back to SetSpeed(): that call re-aligns/restarts the paired
+                // animation and was observed to move the true mirror player
+                // roughly 25 units away from the correct PREANCHOR position.
+                // Furniture and wall scenes keep the historical fallback.
+                if (_owner &&
+                    _owner->_threads &&
+                    _owner->_threadInterfaceVersion >= 3) {
+                    auto* thread =
+                        _owner->_threads->getThread(
+                            static_cast<std::int32_t>(threadID));
+                    auto* player =
+                        RE::PlayerCharacter::GetSingleton();
+
+                    if (thread &&
+                        player &&
+                        thread->isPlayerThread() &&
+                        !thread->getFurnitureObject() &&
+                        _owner->ThreadContainsActor(thread, player)) {
+                        auto* node = thread->getCurrentNode();
+                        const auto* nodeID =
+                            node ? node->getNodeID() : nullptr;
+
+                        const bool wall =
+                            nodeID &&
+                            std::string_view(nodeID).find("wall") !=
+                                std::string_view::npos;
+
+                        if (nodeID && *nodeID && !wall) {
+                            SKSE::log::info(
+                                "OSTNET PHASE FALLBACK SETSPEED SUPPRESSED thread={} node={} speed={} reason=preserve-free-scene-native-anchor nativeAlign=0 positionWrites=0 skeletonWrites=0",
+                                threadID,
+                                nodeID,
+                                speed);
+                            return OStimModAPI::Thread::APIResult::OK;
+                        }
+                    }
+                }
+
                 const auto actorCount = _raw->GetActorCount(threadID);
                 std::uint32_t aligned = 0;
                 std::uint32_t failed = 0;
@@ -180,16 +210,23 @@ namespace OStimTogether
                     actorCount,
                     failed);
 
-                // OStim ModAPI queues all SetActorAlignment tasks and this
-                // SetSpeed task on the same SKSE task queue in call order.
-                // Therefore the current OStim alignment is re-applied before
-                // Thread::SetSpeed() restarts the paired role animations.
+                // Furniture/wall/other retained paths preserve the original
+                // align-then-SetSpeed fallback ordering.
                 return _raw->SetSpeed(threadID, speed);
             }
 
         private:
+            FreeScenePhaseSync* _owner{ nullptr };
             OStimModAPI::Thread::IThreadInterface* _raw{ nullptr };
         };
+
+        FreeScenePhaseSync() :
+            _threadControl(this)
+        {}
+        ~FreeScenePhaseSync();
+
+        FreeScenePhaseSync(const FreeScenePhaseSync&) = delete;
+        FreeScenePhaseSync& operator=(const FreeScenePhaseSync&) = delete;
 
         bool LoadOStimAPIs();
         bool IsFreeStandingThread(OStim::Thread* thread) const;
