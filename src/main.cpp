@@ -14,6 +14,7 @@
 #include "MirrorUndressRepair.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
+#include "PPAIntegration.h"
 #include "PapyrusConsentBridge.h"
 #include "PreflightGuard.h"
 #include "ProxyOnlyThreadCleanup.h"
@@ -185,6 +186,13 @@ namespace
                         SKSE::log::warn(
                             "OSTNET ALIGN SYNC transport unavailable: participant-authored alignment disabled");
                     }
+
+                    // Optional FOMOD integration. Accurate Penetration API V1
+                    // gives us authoritative target-site observations and a
+                    // stable transport protocol today. Remote application is
+                    // intentionally isolated behind PPAIntegration until PPA
+                    // exposes a supported target setter.
+                    OStimTogether::PPAIntegration::GetSingleton().Initialize();
                 }
             }
 
@@ -206,6 +214,7 @@ namespace
             OStimTogether::ParticipantAlignmentSync::GetSingleton().Reset();
             OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Reset();
             OStimTogether::OCumStateSync::GetSingleton().Reset();
+            OStimTogether::PPAIntegration::GetSingleton().Reset();
             break;
 
         case SKSE::MessagingInterface::kPostLoadGame:
