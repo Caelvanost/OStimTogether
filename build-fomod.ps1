@@ -10,6 +10,7 @@ $CoreBuildScript = Join-Path $Root "build-vortex.ps1"
 $CorePackage = Join-Path $Root "package"
 $OptionalPackage = Join-Path $Root "optional\OCumIntegration\package"
 $OptionalSource = Join-Path $Root "optional\OCumIntegration\Data\Scripts\Source\OStimTogetherOCum.psc"
+$PPAOptionalPackage = Join-Path $Root "optional\PPAIntegration\package"
 $UIConsentPackage = Join-Path $Root "compat\OStimUIConsent\package"
 $FomodSource = Join-Path $Root "fomod"
 $Stage = Join-Path $Root "release-fomod"
@@ -50,6 +51,11 @@ if (Test-Path $OptionalSource) {
     }
 }
 
+$PPAMarker = Join-Path $PPAOptionalPackage "Data\SKSE\Plugins\OStimTogether_PPA.ini"
+if (-not (Test-Path $PPAMarker)) {
+    throw "Marqueur PPA optionnel manquant: $PPAMarker"
+}
+
 $UIConsentOSKSE = Join-Path $UIConsentPackage "Data\Scripts\OSKSE.pex"
 $UIConsentNative = Join-Path $UIConsentPackage "Data\Scripts\OStimTogetherNative.pex"
 if (-not (Test-Path $UIConsentOSKSE) -or -not (Test-Path $UIConsentNative)) {
@@ -61,10 +67,12 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 
 $CoreStage = Join-Path $Stage "00 Core"
 $OCumStage = Join-Path $Stage "10 OCum Ascended"
+$PPAStage = Join-Path $Stage "20 Procedural Penis Animations"
 $FomodStage = Join-Path $Stage "fomod"
 
 New-Item -ItemType Directory -Force -Path $CoreStage | Out-Null
 New-Item -ItemType Directory -Force -Path $OCumStage | Out-Null
+New-Item -ItemType Directory -Force -Path $PPAStage | Out-Null
 New-Item -ItemType Directory -Force -Path $FomodStage | Out-Null
 
 Copy-Item (Join-Path $CorePackage "*") $CoreStage -Recurse -Force
@@ -72,6 +80,7 @@ Copy-Item (Join-Path $CorePackage "*") $CoreStage -Recurse -Force
 # OStimTogetherNative.pex directly into 00 Core so the FOMOD cannot omit it.
 Copy-Item (Join-Path $UIConsentPackage "*") $CoreStage -Recurse -Force
 Copy-Item (Join-Path $OptionalPackage "*") $OCumStage -Recurse -Force
+Copy-Item (Join-Path $PPAOptionalPackage "*") $PPAStage -Recurse -Force
 Copy-Item (Join-Path $FomodSource "*") $FomodStage -Recurse -Force
 
 $StagedInfo = Join-Path $FomodStage "info.xml"
@@ -91,6 +100,6 @@ if (Test-Path $Zip) {
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Zip -Force
 
 Write-Host ""
-Write-Host "OK - OStim Together v$Version FOMOD STRPM cree :" -ForegroundColor Green
+Write-Host "OK - OStim Together v$Version FOMOD cree :" -ForegroundColor Green
 Write-Host $Zip
 Write-Host "Add Actor consent gate inclus obligatoirement dans 00 Core." -ForegroundColor Green
