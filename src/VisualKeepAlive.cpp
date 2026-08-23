@@ -2,6 +2,7 @@
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
+#include "OCumStateSync.h"
 #include "OStimBridge.h"
 
 namespace OStimTogether
@@ -91,11 +92,19 @@ namespace OStimTogether
                             FreeSceneRootSync::GetSingleton()
                                 .Tick();
 
-                            // v0.31.1: keep only the REAL local player's
-                            // logical network origin on the captured OStim
-                            // free-scene center. No remote proxy, rendered 3D
-                            // or skeleton transform is written here.
+                            // Keep only the remote STR proxy's logical origin
+                            // on the common free-scene center. The real local
+                            // PlayerCharacter and all rendered roots remain
+                            // OStim-owned.
                             FreeSceneSelfOriginLock::GetSingleton()
+                                .Tick();
+
+                            // Internally rate-limited to 100 ms. Detects live
+                            // OCum equip-object armor state on active scene
+                            // actors, refreshes local 3D through Skyrim's own
+                            // QueueNiNodeUpdate path, and publishes real-player
+                            // mesh state changes over STRPM.
+                            OCumStateSync::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
