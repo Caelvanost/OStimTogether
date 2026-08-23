@@ -2,6 +2,7 @@
 #include "FreeSceneSelfOriginLock.h"
 
 #include "OStimBridge.h"
+#include "STRPMTransport.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
 #include "OStimAPI/Thread.h"
 
@@ -118,9 +119,84 @@ namespace OStimTogether
         return nullptr;
     }
 
+    bool FreeSceneSelfOriginLock::HasSTRRemoteParticipant(
+        OStim::Thread* thread) const
+    {
+        if (!thread) {
+            return false;
+        }
+
+        auto& transport = STRPMTransport::GetSingleton();
+        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+            auto* threadActor = thread->getActor(i);
+            auto* actor = threadActor ?
+                static_cast<RE::Actor*>(threadActor->getGameActor()) : nullptr;
+
+            if (!actor || actor->IsPlayerRef()) {
+                continue;
+            }
+
+            if (transport.ResolveConnection(actor->GetFormID())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     void FreeSceneSelfOriginLock::HandleStart(OStim::Thread* thread)
     {
-        if (!IsFreeStandingThread(thread) || !FindLocalPlayer(thread)) {
+        if (!thread ||
+            !FindLocalPlayer(thread) ||
+            !HasSTRRemoteParticipant(thread)) {
+            return;
+        }
+
+        // OStim emits START while its own thread startup is still in progress.
+        // Calling the ModAPI GetActorAlignment path synchronously from this
+        // listener can re-enter OStim's thread-control state and hang the game.
+        // Match OStimBridge's startup ordering: first hop yields back to OStim
+        // so ChangeNode() can enqueue lockAtPosition(), second hop runs after
+        // those startup tasks and only then reads alignment/scene-center state.
+        QueueArmAfterStart(thread->getThreadID());
+    }
+
+    void FreeSceneSelfOriginLock::QueueArmAfterStart(std::int32_t threadID)
+    {
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            SKSE::log::warn(
+                "OSTNET SELF ORIGIN ARM skipped thread={} reason=no-task-interface",
+                threadID);
+            return;
+        }
+
+        SKSE::log::info(
+            "OSTNET SELF ORIGIN ARM queued thread={} defer=two-hop",
+            threadID);
+
+        tasks->AddTask(
+            [threadID]() {
+                auto* secondHop = SKSE::GetTaskInterface();
+                if (!secondHop) {
+                    return;
+                }
+
+                secondHop->AddTask(
+                    [threadID]() {
+                        FreeSceneSelfOriginLock::GetSingleton().
+                            ArmAfterStart(threadID);
+                    });
+            });
+    }
+
+    void FreeSceneSelfOriginLock::ArmAfterStart(std::int32_t threadID)
+    {
+        auto* thread = _threads ? _threads->getThread(threadID) : nullptr;
+        if (!thread ||
+            !IsFreeStandingThread(thread) ||
+            !FindLocalPlayer(thread) ||
+            !HasSTRRemoteParticipant(thread)) {
             return;
         }
 
@@ -132,11 +208,11 @@ namespace OStimTogether
             !center.IsFinite()) {
             SKSE::log::warn(
                 "OSTNET SELF ORIGIN ARM failed thread={} reason=no-scene-center",
-                thread->getThreadID());
+                threadID);
             return;
         }
 
-        _activeThreadID = thread->getThreadID();
+        _activeThreadID = threadID;
         _center = center;
         _lastLog = {};
 
