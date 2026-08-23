@@ -1,6 +1,6 @@
 ScriptName OStimTogetherOCum extends Quest
 
-; OStim Together v0.19.3 - optional OCum Ascended integration
+; OStim Together v0.31.0 - optional OCum Ascended integration
 ;
 ; This script intentionally contains ALL OCum-specific knowledge.
 ; OStimTogether.dll only sees opaque addon channels / texture markers /
@@ -25,7 +25,7 @@ Function RegisterIntegration()
     endif
 
     RegisterForModEvent("ocum_applied_cum", "OnOCumApplied")
-    Debug.Trace("[OStimTogetherOCum] v0.19.3 registered for ocum_applied_cum")
+    Debug.Trace("[OStimTogetherOCum] v0.31.0 registered for ocum_applied_cum")
 EndFunction
 
 ; OCum Ascended sends this custom event immediately before it applies the
@@ -61,6 +61,10 @@ EndEvent
 Function SyncCurrentState(Actor Target, String Area)
     bool HasVaginalMesh = false
     bool HasAnalMesh = false
+    bool OStimVaginalMesh = false
+    bool OStimAnalMesh = false
+    bool ArmorVaginalMesh = false
+    bool ArmorAnalMesh = false
     float VaginalState = 0.0
     float AnalState = 0.0
     Armor VaginalMeshArmor = None
@@ -75,20 +79,29 @@ Function SyncCurrentState(Actor Target, String Area)
     ; This covers Face / Body / Hands / Feet without hard-coding nodes here.
     Target.SendModEvent(AddonEventName, "OVR|" + AddonChannel + "|" + OverlayMarker, 0.0)
 
-    ; OActor.IsObjectEquipped() did not reflect OCum's live armor state in the
-    ; multiplayer test. Resolve OCum's real armor forms and query Skyrim's
-    ; equipped state directly. Probe and send BOTH meshes every time so the
-    ; receiver also gets an authoritative removal when either state changes.
+    ; OCum's vaginal/anal meshes are OStim equip objects. OStim's own
+    ; IsObjectEquipped() is the primary source of truth because an equip object
+    ; can be active even when Skyrim inventory queries do not expose the armor
+    ; as a conventional worn item on that exact frame.
+    OStimVaginalMesh = OActor.IsObjectEquipped(Target, VaginalObject)
+    OStimAnalMesh = OActor.IsObjectEquipped(Target, AnalObject)
+
+    ; Keep the validated OCum armor forms as a fallback. Older OCum/OStim paths
+    ; have also been observed to expose the live state here. The authoritative
+    ; state sent over the network is the OR of both representations.
     VaginalMeshArmor = Game.GetFormFromFile(0x00000F37, "OCum.esp") as Armor
     AnalMeshArmor = Game.GetFormFromFile(0x00000F3B, "OCum.esp") as Armor
 
     if VaginalMeshArmor != None
-        HasVaginalMesh = Target.IsEquipped(VaginalMeshArmor)
+        ArmorVaginalMesh = Target.IsEquipped(VaginalMeshArmor)
     endif
 
     if AnalMeshArmor != None
-        HasAnalMesh = Target.IsEquipped(AnalMeshArmor)
+        ArmorAnalMesh = Target.IsEquipped(AnalMeshArmor)
     endif
+
+    HasVaginalMesh = OStimVaginalMesh || ArmorVaginalMesh
+    HasAnalMesh = OStimAnalMesh || ArmorAnalMesh
 
     if HasVaginalMesh
         VaginalState = 1.0
@@ -101,5 +114,5 @@ Function SyncCurrentState(Actor Target, String Area)
     Target.SendModEvent(AddonEventName, "OBJ|" + AddonChannel + "|" + VaginalObject, VaginalState)
     Target.SendModEvent(AddonEventName, "OBJ|" + AddonChannel + "|" + AnalObject, AnalState)
 
-    Debug.Trace("[OStimTogetherOCum] sync area=" + Area + " vagMesh=" + HasVaginalMesh + " analMesh=" + HasAnalMesh)
+    Debug.Trace("[OStimTogetherOCum] sync area=" + Area + " vagMesh=" + HasVaginalMesh + " analMesh=" + HasAnalMesh + " ostimVag=" + OStimVaginalMesh + " armorVag=" + ArmorVaginalMesh + " ostimAnal=" + OStimAnalMesh + " armorAnal=" + ArmorAnalMesh)
 EndFunction
