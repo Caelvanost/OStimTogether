@@ -21,6 +21,17 @@ namespace OStimTogether
             return (actor->GetFormID() & kDynamicMask) == kDynamicMask &&
                    (base->GetFormID() & kDynamicMask) == kDynamicMask;
         }
+
+        bool IsOCumRuntimeArmor(RE::TESObjectARMO* armor)
+        {
+            if (!armor) {
+                return false;
+            }
+
+            auto* data = RE::TESDataHandler::GetSingleton();
+            auto* ocum = data ? data->LookupModByName("OCum.esp") : nullptr;
+            return ocum && armor->GetFile(0) == ocum;
+        }
     }
 
     EquipmentLock& EquipmentLock::GetSingleton()
@@ -43,7 +54,7 @@ namespace OStimTogether
         _config = Config::Load();
 
         SKSE::log::info(
-            "Equipment lock started: interval={}ms slotMask=0x{:08X}",
+            "Equipment lock started: interval={}ms slotMask=0x{:08X} ocumArmorExempt=1",
             _config.intervalMs,
             _config.slotMask);
 
@@ -432,6 +443,17 @@ namespace OStimTogether
 
             auto* armor = object->As<RE::TESObjectARMO>();
             if (!armor) {
+                continue;
+            }
+
+            // OCum uses real armor records as transient overlay-bootstrap
+            // helpers and as persistent OStim equip-object meshes. The NPC
+            // anti-reequip lock runs every few milliseconds, so stripping
+            // those records races OCum's own 50 ms overlay setup and keeps
+            // creampie meshes unequipped until the OStim lock is released.
+            // Exempt every armor whose defining file is OCum.esp; ordinary
+            // clothing/armor remains protected by the existing slot mask.
+            if (IsOCumRuntimeArmor(armor)) {
                 continue;
             }
 
