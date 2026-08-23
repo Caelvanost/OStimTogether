@@ -1,10 +1,87 @@
 # OStim Together
 
-Current development version: **0.31.3**.
+Current development version: **0.31.4**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
+
+## 0.31.4
+
+### Fix experiment: correct the STR proxy origin, never the real local player
+
+The 0.31.3 two-player runtime log established that the authoritative START center itself is now correct, but the remaining visible offset is not an alignment-cache problem. On Player2, the mirror repeatedly reported:
+
+```text
+refBefore=(364.086,-3725.784,63.996)
+target=(347.950,-3711.959,64.350)
+refAfter=(347.950,-3711.959,64.350)
+rootBefore=(364.086,-3725.784,63.996)
+rootAfter=(364.086,-3725.784,63.996)
+```
+
+The old self-origin lock therefore changed only the real local PlayerCharacter's logical `TESObjectREFR` origin. The rendered root stayed at the OStim animation/root-motion position, and the engine restored the reference to that rendered position between ticks. STR consequently kept publishing the already-displaced real-player sample. The remote proxy then evaluated its own paired OStim animation on top of that displaced sample, effectively counting the participant displacement twice.
+
+0.31.4 reverses the ownership boundary:
+
+```text
+real local PlayerCharacter
+    -> untouched; OStim owns reference + rendered root
+
+STR remote player proxy
+    -> STR supplies the incoming sample
+    -> OStim Together cancels only the duplicated logical translation
+       by holding proxy TESObjectREFR::data.location on the shared center
+    -> rendered proxy 3D/root remains untouched and OStim-owned
+```
+
+The legacy `FreeSceneSelfOriginLock` class name is retained for source/package stability, but it now writes **remote proxies only**. No `SetPosition`, `TranslateTo`, `Update3DPosition`, skeleton rotation/translation/scale write, or local-player position write is introduced.
+
+Observer-only Player + NPC mirrors remain outside this path because the 0.31.3 runtime test showed they already align correctly with native OStim behavior.
+
+Expected 0.31.4 logs in a Player1 + Player2 scene:
+
+```text
+OSTNET PROXY ORIGIN ARM ... source=local-derived|remote-start ...
+OSTNET PROXY ORIGIN LOCK ... actor=<remote STR proxy> ...
+OSTNET PROXY ORIGIN STATE ... proxies=1 ... localPlayerWrites=0
+```
+
+There should be no recurring `OSTNET SELF ORIGIN LOCK` on the real PlayerCharacter.
+
+### Native live OCum mesh watcher
+
+The 0.31.3 tests separated OCum overlays from OCum equip-object meshes:
+
+- 3D/RaceMenu overlays synchronize and render correctly;
+- vaginal/anal meshes disappear specifically while their wearer participates in the active OStim scene;
+- observer clients can sometimes see the same NPC mesh while the scene owner cannot;
+- pre-scene snapshots can publish `vagMesh=0 / analMesh=0`, and no later `equipped=1` packet was emitted in the failing player-player tests;
+- `AddonStateRepair` then kept reapplying that stale false state to the remote player proxy after node/body rebuilds.
+
+0.31.4 adds a native watcher independent of the optional Papyrus event timing. While OStim threads are active it polls every 100 ms and reads the actual OCum armor forms used by the two OStim equip objects:
+
+```text
+OCum.esp:00000F37 -> ocumvagmesh
+OCum.esp:00000F3B -> ocumanmesh
+```
+
+The watcher does not infer a mesh from an overlay or climax type. It acts only when the corresponding armor is really `IsWorn()`.
+
+For the true local PlayerCharacter, every live mesh transition replaces the previous ADDONOBJ cache immediately:
+
+```text
+actual worn state 0 -> 1
+-> ADDONOBJ ... equipped=1
+-> remote cache becomes true
+-> AddonStateRepair re-applies true, not the stale pre-scene false
+```
+
+For local non-STR-proxy wearers, including ordinary NPC scene actors, the watcher also requests a rate-limited `Actor.QueueNiNodeUpdate` every 500 ms while an OCum mesh remains worn. This is the same Skyrim 3D rebuild mechanism OStim itself uses after equipping an equip object; the repeated refresh is intended to survive later scene-time body/node rebuilds without continuously unequipping/re-equipping the object.
+
+A delayed post-STOP snapshot publishes the final real-player OCum state after OStim cleanup settles.
+
+No Papyrus source changed in 0.31.4, so an already-current 0.31.0+ `OStimTogetherOCum.pex` does not need recompilation.
 
 ## 0.31.3
 
@@ -21,22 +98,13 @@ owner START center
 → FreeSceneSelfOriginLock
 ```
 
-A locally-owned multiplayer scene still derives its center after OStim startup. A remote mirror never derives a second center; it reads the already-stored owner center. Expected logs for the same scene are therefore:
-
-```text
-Player1: OSTNET SELF ORIGIN ARM ... center=(X,Y,Z,R) source=local-derived
-Player2: OSTNET SELF ORIGIN ARM ... center=(X,Y,Z,R) source=remote-start
-```
-
-The four center values must match apart from normal text-format rounding.
+A locally-owned multiplayer scene still derives its center after OStim startup. A remote mirror never derives a second center; it reads the already-stored owner center.
 
 ### Fix: OCum equipment is exempt from NPC anti-reequip locking
 
-The runtime logs also showed the NPC `EquipmentLock` repeatedly calling `UnequipObject()` on worn scene equipment every 25 ms. OCum Ascended itself uses armor records from `OCum.esp` both as short-lived RaceMenu overlay bootstrap helpers and as persistent OStim equip-object meshes. Its overlay initialization contains 50 ms waits, so the previous lock could remove OCum's helper before initialization completed and could continuously remove creampie meshes until OStim STOP released the NPC lock.
+The runtime logs also showed the NPC `EquipmentLock` repeatedly calling `UnequipObject()` on worn scene equipment every 25 ms. OCum Ascended itself uses armor records from `OCum.esp` both as short-lived RaceMenu overlay bootstrap helpers and as persistent OStim equip-object meshes.
 
 0.31.3 excludes every armor whose defining file is `OCum.esp` from `EquipmentLock`. This is intentionally plugin-origin based rather than a hard-coded FormID list, so OCum's current and future runtime helper armors remain under OCum's ownership while normal NPC clothing continues to be governed by `SlotMask`.
-
-No Papyrus source changed in 0.31.3, so an already-current 0.31.0+ `OStimTogetherOCum.pex` does not need recompilation.
 
 ## 0.31.2
 
@@ -46,40 +114,14 @@ No Papyrus source changed in 0.31.3, so an already-current 0.31.0+ `OStimTogethe
 
 The first implementation armed that system synchronously from OStim's `START` listener. Arming calls `OStimBridge::TryComputeSceneCenter()`, which uses OStim's `GetActorAlignment()` ModAPI path. OStim emits `START` while its own thread startup is still in progress, so re-entering thread-control/alignment state from that callback can stall the game before startup returns.
 
-The runtime symptom is a log that reaches the ordinary local thread start and NPC equipment-lock registration, then stops before `OSTNET SELF ORIGIN ARM` or the normal post-start tasks run.
-
 0.31.2 changes the startup path in two ways:
 
-1. **Player + NPC scenes bypass the self-origin system entirely.** The lock is relevant only when the local OStim thread contains the real local PlayerCharacter plus a participant that resolves to an active STR proxy mapping.
+1. **Player + NPC scenes bypass the shared-origin system entirely.**
 2. **Real multiplayer scenes arm through a two-hop game-task defer.** The first hop yields back to OStim so its initial `ChangeNode()` can enqueue `lockAtPosition()` work; the second hop runs after those startup tasks and only then reads alignment/scene-center state.
-
-Expected local Player + NPC behavior in 0.31.2:
-
-```text
-OStim thread START ... actors=2 mirror=0
-...
-OStim auto-lock ON ...
-OSTNET START POST-ALIGN ...
-```
-
-There should be **no** `OSTNET SELF ORIGIN ARM queued` for an ordinary NPC scene.
-
-Expected real Player + STR-player scene behavior:
-
-```text
-OSTNET SELF ORIGIN ARM queued thread=... defer=two-hop
-OSTNET START POST-ALIGN ...
-OSTNET SELF ORIGIN ARM thread=... center=(...)
-OSTNET SELF ORIGIN LOCK ...
-```
-
-The 0.31.1 reference-location-only implementation itself is retained for multiplayer scenes: no remote proxy write, no skeleton transform, no `SetPosition`, no `TranslateTo`, and no `Update3DPosition` is added by this lock.
 
 ## 0.31.0
 
 ### Free-standing alignment: each real player owns their OStim alignment
-
-The 0.30.5 runtime test established an important boundary: both clients now converged to the **same** free-standing arrangement, but that common arrangement could still be wrong relative to the paired animation. That rules out ordinary STR position divergence as the remaining primary fault.
 
 The same human participant is represented by two different Skyrim actors in multiplayer:
 
@@ -88,7 +130,7 @@ Player2 client: real Elir PlayerCharacter
 Player1 client: dynamic STR proxy representing Elir
 ```
 
-OStim derives an alignment key from actor characteristics and resolves `ActorAlignmentData` from that key. A dynamic STR proxy is not guaranteed to resolve the same alignment key/cache entry as the real PlayerCharacter it represents. Re-applying each client's independently-derived proxy alignment can therefore make both clients network-consistent while still using the wrong OStim offset for the paired animation.
+OStim derives an alignment key from actor characteristics and resolves `ActorAlignmentData` from that key. A dynamic STR proxy is not guaranteed to resolve the same alignment key/cache entry as the real PlayerCharacter it represents.
 
 0.31.0 adds a second reliable/ordered STRPM channel:
 
@@ -104,7 +146,7 @@ real local PlayerCharacter
 → ALIGN_STATE(node, offsetX/Y/Z, scale, rotation, sosBend)
 → remote client resolves sender's STR proxy
 → OStim SetActorAlignment(proxy, participant-authored values)
-→ existing clock-calibrated PHASE_COMMIT / SetSpeed replay
+→ existing clock-calibrated phase replay
 ```
 
 Authority is symmetric:
@@ -113,32 +155,11 @@ Authority is symmetric:
 - Elir's real PlayerCharacter is authoritative only for Elir's OStim alignment;
 - additional participants follow the same rule.
 
-The receiver applies the state only if the sender's resolved STR proxy is actually present in the active local OStim player thread and the node IDs match. Early packets get a few bounded retries while the mirror catches up.
-
-This path performs **no** direct skeleton write, no `SetPosition`, no `Update3DPosition`, and no continuous pose correction. It uses OStim's public `SetActorAlignment()` once per node. Furniture and wall scenes are excluded and keep their established anchored handling.
-
-Expected logs:
-
-```text
-OSTNET ALIGN SYNC READY ... authority=real-local-player ...
-OSTNET ALIGN SYNC TRANSPORT READY channel=ostimtogether.align ...
-OSTNET ALIGN SELF TX ... offset=(...) scale=... rotation=... sosBend=...
-OSTNET ALIGN APPLY ... proxy=... offset=(...) source=remote-real-player ...
-```
-
-These logs are also diagnostic: if both real players publish only zero/default alignment yet the paired animation is still visibly offset, the remaining problem is not OStim's alignment cache and the next investigation can focus on the animation graph/phase without touching world or skeleton transforms.
+This path performs no skeleton write and uses OStim's public `SetActorAlignment()` once per node. Furniture and wall scenes are excluded and keep their established anchored handling.
 
 ### OCum equip-object mesh detection
 
-The same runtime test showed the OCum transport/application path was still alive, but Player2 repeatedly published:
-
-```text
-vagMesh=0 analMesh=0
-```
-
-and Player1 correctly applied those false states. The failure was therefore local state detection, not STRPM delivery.
-
-`ocumvagmesh` and `ocumanmesh` are OStim equip-object types. The optional OCum integration now reads both representations:
+`ocumvagmesh` and `ocumanmesh` are OStim equip-object types. The optional OCum integration reads both OStim's object state and the underlying armor equipped state:
 
 ```text
 OActor.IsObjectEquipped(Target, type)
@@ -146,22 +167,7 @@ OR
 Target.IsEquipped(the corresponding OCum armor)
 ```
 
-Either source being true publishes the mesh as equipped. This preserves the armor fallback while restoring OStim's own equip-object state as a source of truth.
-
-Because this is a Papyrus-source change, **`OStimTogetherOCum.pex` must be recompiled for 0.31.0**:
-
-```powershell
-.\optional\OCumIntegration\compile-ocum-integration.ps1 `
-  -SkyrimDir "C:\Games\Steam\steamapps\common\Skyrim Special Edition"
-```
-
-The compile helper uses the local compile-only `OActor.psc` stub and outputs only:
-
-```text
-optional\OCumIntegration\package\Data\Scripts\OStimTogetherOCum.pex
-```
-
-Do not package or compile the stub as `OActor.pex`; OStim provides the real runtime implementation.
+The 0.31.4 native watcher supplements this optional event-based path with direct runtime worn-state observation.
 
 ## 0.30.5
 
@@ -176,12 +182,10 @@ owner thread/node becomes active
 → PHASE_READY with NTP-like timing sample
 → owner chooses a future execution deadline
 → PHASE_COMMIT
-→ every client replays through OStim's native SetSpeed(currentSpeed) path
+→ every client replays through the synchronized animation path
 ```
 
-0.30.5 re-applies OStim actor alignment before the synchronized replay to reproduce the native `ChangeNode` ordering (`alignActors -> SetSpeed -> playAnimation`). In 0.31.0 the remote-proxy alignment cache has first been updated from the corresponding real participant through `ostimtogether.align`.
-
-A delayed native `StopTranslation` clears the transient OStim `TranslateTo` on dynamic STR proxies. The current implementation uses the TESObjectREFR Papyrus native relocation; `RE::Actor` has no CommonLib `StopTranslation()` member.
+A delayed native `StopTranslation` clears transient OStim `TranslateTo` on dynamic STR proxies.
 
 ## 0.28.1 safety rule
 
@@ -199,7 +203,12 @@ The later translation-only root probe also remains disabled because tested nodes
 
 ## Free-standing world-position ownership
 
-Ordinary free-standing scenes do not use a continuous OStim Together proxy pose guard. Skyrim Together owns the dynamic remote `TESObjectREFR` position; OStim handles its native scene alignment and animation work. OStim Together does not continuously pin free-scene proxies to START/NODE world coordinates.
+For ordinary shared free-standing scenes:
+
+- OStim owns the real local PlayerCharacter reference, rendered root and animation;
+- STR remains the source of incoming remote-player movement samples;
+- OStim Together may continuously correct only the **remote proxy's logical `TESObjectREFR::data.location`** to the common scene center so STR-transmitted root-motion displacement is not counted twice;
+- OStim Together does not directly move the proxy 3D or write its skeleton transforms.
 
 Furniture and wall scenes retain their dedicated anchored paths.
 
@@ -213,9 +222,7 @@ CONTROL_SPEED
 CONTROL_STOP
 ```
 
-Player1, Player2 and additional accepted participants have equal control rights. The original initiator is only a deterministic relay/sequencing point; there is **no owner approval or veto**.
-
-Shared SPEED is idempotent so an already-current incoming speed does not trigger another `SetSpeed()` replay and feedback loop.
+Player1, Player2 and additional accepted participants have equal control rights. The original initiator is only a deterministic relay/sequencing point; there is no owner approval or veto.
 
 ## Consent and Add Actor gate
 
@@ -242,11 +249,12 @@ The mandatory Core `OSKSE.pex` patch also suspends OStim's UIExtensions Add Acto
 - clock-calibrated free-standing START/NODE phase barrier;
 - participant-authored OStim alignment over `ostimtogether.align`;
 - safe orphan proxy-only auxiliary OStim thread cleanup;
-- multiplayer-only deferred local-player shared-origin lock using owner START center on mirrors;
+- remote-proxy logical-origin correction for shared free scenes;
 - equipment/outfit protection with OCum.esp runtime armor exemption;
+- native live OCum mesh-state tracking and local 3D refresh;
 - RaceMenu/SKEE overlay rebuild support;
 - generic addon state reapplication;
-- optional live OCum Ascended overlay and equip-object integration.
+- optional OCum Ascended event-based overlay/equip-object integration.
 
 ## Compatibility
 
@@ -261,9 +269,9 @@ The required `OSKSE.pex` compatibility patch is based on the OStim 7.5b `OSKSE.p
 
 ## Build
 
-The mandatory Add Actor Papyrus patch did not change in 0.31.3.
+The mandatory Add Actor Papyrus patch did not change in 0.31.4.
 
-The optional OCum integration also did not change in 0.31.3. Recompile it only if your local packaged `OStimTogetherOCum.pex` is not already the 0.31.0-or-newer build:
+The optional OCum Papyrus integration also did not change in 0.31.4. Recompile it only if your local packaged `OStimTogetherOCum.pex` is not already the 0.31.0-or-newer build:
 
 ```powershell
 .\optional\OCumIntegration\compile-ocum-integration.ps1 `
@@ -280,7 +288,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.31.3-FOMOD.zip
+dist\OStimTogether-v0.31.4-FOMOD.zip
 ```
 
 FOMOD layout:
