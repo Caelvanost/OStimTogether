@@ -27,6 +27,9 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/CoopSessionManager.h
         src/OCumStateSync.cpp
         src/OCumStateSync.h
+        src/AccuratePenetrationAPI.h
+        src/PPAIntegration.cpp
+        src/PPAIntegration.h
         src/PapyrusConsentBridge.cpp
         src/PapyrusConsentBridge.h
         src/PreflightGuard.cpp
