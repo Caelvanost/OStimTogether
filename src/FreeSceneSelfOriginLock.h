@@ -38,9 +38,12 @@ namespace OStimTogether
 
         void HandleStart(OStim::Thread* thread);
         void HandleStop(OStim::Thread* thread);
+        void QueueArmAfterStart(std::int32_t threadID);
+        void ArmAfterStart(std::int32_t threadID);
 
         [[nodiscard]] bool IsFreeStandingThread(OStim::Thread* thread) const;
         [[nodiscard]] RE::PlayerCharacter* FindLocalPlayer(OStim::Thread* thread) const;
+        [[nodiscard]] bool HasSTRRemoteParticipant(OStim::Thread* thread) const;
 
         OStim::ThreadInterface* _threads{ nullptr };
         std::uint32_t _threadInterfaceVersion{ 0 };
