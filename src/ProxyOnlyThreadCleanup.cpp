@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "ProxyOnlyThreadCleanup.h"
 
+#include "OStimBridge.h"
 #include "STRPMTransport.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
 #include "OStimAPI/Thread.h"
@@ -87,13 +88,27 @@ namespace OStimTogether
 
         _threads->registerThreadStartListener(&_startListener);
         SKSE::log::info(
-            "OSTNET AUX CLEANUP READY rule=proxy-present-and-no-local-player action=stop-thread");
+            "OSTNET AUX CLEANUP READY rule=unregistered-proxy-thread-with-no-local-player action=stop-thread registeredRemoteMirror=preserve");
         return true;
     }
 
     void ProxyOnlyThreadCleanup::HandleStart(OStim::Thread* thread)
     {
         if (!thread || !_sceneControl) {
+            return;
+        }
+
+        const auto threadID = thread->getThreadID();
+
+        // A mirror created by OStim Together is legitimate even when the real
+        // local PlayerCharacter is not part of the scene (for example
+        // Player1 + NPC observed from Player2). The old generic cleanup saw a
+        // dynamic STR proxy and no local player and stopped that valid mirror
+        // immediately, which removed the animation and re-equipped the NPC.
+        if (OStimBridge::GetSingleton().IsRemoteMirrorForAlignment(threadID)) {
+            SKSE::log::info(
+                "OSTNET AUX CLEANUP KEEP thread={} reason=registered-remote-mirror",
+                threadID);
             return;
         }
 
@@ -120,9 +135,8 @@ namespace OStimTogether
             return;
         }
 
-        const auto threadID = thread->getThreadID();
         SKSE::log::warn(
-            "OSTNET AUX CLEANUP QUEUED thread={} actors={} mappedProxies={} reason=no-local-player",
+            "OSTNET AUX CLEANUP QUEUED thread={} actors={} mappedProxies={} reason=unregistered-proxy-thread-no-local-player",
             threadID,
             thread->getActorCount(),
             mappedProxyCount);
@@ -133,12 +147,22 @@ namespace OStimTogether
                     return;
                 }
 
+                // Re-check after the queued hop: a legitimate remote mapping
+                // may have been registered by the mirror creation path after
+                // the START event was emitted.
+                if (OStimBridge::GetSingleton().IsRemoteMirrorForAlignment(threadID)) {
+                    SKSE::log::info(
+                        "OSTNET AUX CLEANUP KEEP thread={} reason=registered-remote-mirror-after-start",
+                        threadID);
+                    return;
+                }
+
                 const auto result = _sceneControl->StopScene(
                     kPluginName,
                     static_cast<std::uint32_t>(threadID));
 
                 SKSE::log::warn(
-                    "OSTNET AUX CLEANUP STOP thread={} result={} reason=proxy-only-thread",
+                    "OSTNET AUX CLEANUP STOP thread={} result={} reason=orphan-proxy-thread",
                     threadID,
                     static_cast<std::uint32_t>(result));
             });
