@@ -7,11 +7,13 @@
 
 namespace OStimTogether
 {
-    // Keeps only the real local PlayerCharacter's logical TESObjectREFR origin
-    // on the shared free-scene center. The rendered 3D/skeleton is never
-    // touched. Skyrim Together then publishes the common logical origin to the
-    // remote proxy while OStim/animation remains free to provide the visible
-    // per-role displacement.
+    // Legacy class name retained for source/package stability. The lock no
+    // longer writes the real local PlayerCharacter. In a shared free-standing
+    // scene it keeps only each STR remote-player proxy's logical TESObjectREFR
+    // origin on the common scene center. The rendered proxy 3D/skeleton is not
+    // touched, so OStim remains free to provide the visible per-role animation
+    // displacement while STR's already-root-motion-displaced network sample is
+    // not counted a second time.
     class FreeSceneSelfOriginLock
     {
     public:
