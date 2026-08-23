@@ -12,6 +12,7 @@
 #include "ParticipantAlignmentSync.h"
 #include "Input.h"
 #include "MirrorUndressRepair.h"
+#include "OCumStateSync.h"
 #include "OStimBridge.h"
 #include "PapyrusConsentBridge.h"
 #include "PreflightGuard.h"
@@ -73,12 +74,18 @@ namespace
             // that sender's proxy before the synchronized phase replay.
             OStimTogether::ParticipantAlignmentSync::GetSingleton().Initialize();
 
-            // Keep the logical origin of each REAL local player on the shared
-            // free-scene center. Only TESObjectREFR::data.location is written;
-            // rendered 3D and skeleton transforms remain fully OStim-owned.
-            // STR therefore publishes the common origin instead of publishing
-            // the real player's animation/root-motion drift a second time.
+            // Shared free scenes keep only the REMOTE STR proxy's logical
+            // reference origin on the common center. The true local player is
+            // never written: OStim owns its reference/root-motion completely.
+            // This prevents STR's already-displaced sample from becoming the
+            // proxy origin and receiving OStim's role displacement a second
+            // time.
             OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Initialize();
+
+            // Native OCum mesh watcher. It reads actual worn OCum armor on
+            // active OStim actors, refreshes local equip-object geometry, and
+            // publishes real-player live mesh transitions over STRPM.
+            OStimTogether::OCumStateSync::GetSingleton().Initialize();
 
             // Remote skeleton writes remain disabled. Keep the old probe source
             // only for future read-only diagnostics.
@@ -141,6 +148,7 @@ namespace
             OStimTogether::FreeScenePhaseSync::GetSingleton().Reset();
             OStimTogether::ParticipantAlignmentSync::GetSingleton().Reset();
             OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Reset();
+            OStimTogether::OCumStateSync::GetSingleton().Reset();
             break;
 
         default:
