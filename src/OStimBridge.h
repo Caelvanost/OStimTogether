@@ -34,6 +34,22 @@ namespace OStimTogether
             return IsRemoteMirrorThread(threadID);
         }
 
+        bool TryGetAuthoritativeSceneCenter(
+            std::int32_t threadID,
+            SceneCenter& outCenter)
+        {
+            std::scoped_lock lock(_remoteMirrorMutex);
+
+            const auto it = _sceneCenters.find(threadID);
+            if (it == _sceneCenters.end() || !it->second.IsFinite()) {
+                outCenter = {};
+                return false;
+            }
+
+            outCenter = it->second;
+            return true;
+        }
+
         bool DisableSTRProxyPoseGuard(
             std::int32_t threadID,
             std::string_view reason)
