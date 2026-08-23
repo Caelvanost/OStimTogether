@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.31.5</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI, with mandatory pre-UI consent, native multi-master scene controls, participant-authored OStim alignment plus clock-calibrated phase replay for free scenes, read-only local/proxy role diagnostics, safe orphan proxy-thread cleanup, OCum live scene polling for RaceMenu overlays and OStim equip-object meshes, idempotent shared speed control, and Skyrim-Souls-safe message boxes.</Description>
+  <Version>0.31.6</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn using STRPluginMessagingAPI, with mandatory pre-UI consent, native multi-master scene controls, participant-authored OStim alignment plus clock-calibrated phase replay for free scenes, bounded mirror self-centering after animation startup, safe orphan proxy-thread cleanup, OCum live scene polling with post-load Papyrus registration repair, idempotent shared speed control, and Skyrim-Souls-safe message boxes.</Description>
 </fomod>
