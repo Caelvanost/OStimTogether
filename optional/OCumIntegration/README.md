@@ -4,19 +4,42 @@ This component is intentionally outside the OStimTogether core.
 
 ## Source of truth
 
-It listens to OCum Ascended's `ocum_applied_cum` custom ModEvent.  The local
-true player is authoritative.  Remote STR proxies are ignored as senders.
+Appearance authority belongs to the true local PlayerCharacter. Remote STR
+proxies are ignored as senders.
 
-After an OCum event it performs four bounded snapshots (0.15 / 0.50 / 1.25 /
-2.50 seconds after the event):
+0.31.5 uses two complementary triggers:
 
-- `OVR|ocum|CumOverlays` asks the Core to sync all RaceMenu Face/Body/Hands/Feet
-  slots whose current texture contains `CumOverlays`.
-- for `vagina`, `OActor.IsObjectEquipped(..., "ocumvagmesh")` is sent as the
-  actual object state.
-- for `rectum`, `OActor.IsObjectEquipped(..., "ocumanmesh")` is sent as the
-  actual object state.
-- face/mouth/throat use overlays only; no fake facial mesh is created.
+- OCum Ascended's `ocum_applied_cum` custom ModEvent keeps the existing bounded
+  low-latency snapshots after a cum event;
+- OStim's reliable thread-0 `ostim_start` / `ostim_end` events arm a 0.5-second
+  scene poll for the true local player. This fallback is necessary because the
+  0.31.4 multiplayer test showed that `ocum_applied_cum` can fail to produce a
+  live synchronization callback even though OCum has already changed the local
+  scene state.
 
-This fixes the v0.18.34 mistake where a vaginal decal could cause Player1 to
-invent a vaginal mesh that Player2 did not actually have.
+Every live poll:
+
+- sends `OVR|ocum|CumOverlays`, asking Core to capture all RaceMenu
+  Face/Body/Hands/Feet slots whose current texture contains `CumOverlays` and to
+  refresh that same geometry locally;
+- reads `OActor.IsObjectEquipped(..., "ocumvagmesh")` and
+  `OActor.IsObjectEquipped(..., "ocumanmesh")` as the primary mesh source;
+- ORs those values with the validated OCum F37/F3B armor equipped state as a
+  fallback;
+- sends the actual `OBJ|ocum|...` state to the remote client.
+
+The OStim equip-object query is essential: an OCum mesh can be visibly active
+while ordinary Skyrim inventory `IsWorn()` still reports its backing armor as
+not worn.
+
+## Build
+
+0.31.5 changes this Papyrus source, so recompile it before building the FOMOD:
+
+```powershell
+.\optional\OCumIntegration\compile-ocum-integration.ps1 `
+  -SkyrimDir "C:\Games\Steam\steamapps\common\Skyrim Special Edition"
+```
+
+Then run `build-fomod.ps1`. The FOMOD build intentionally refuses to package a
+PEX older than this source.
