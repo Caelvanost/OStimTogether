@@ -8,6 +8,7 @@
 #include "FreeSceneAlignmentFix.h"
 #include "FreeScenePhaseSync.h"
 #include "FreeSceneRootSync.h"
+#include "FreeSceneSelfOriginLock.h"
 #include "ParticipantAlignmentSync.h"
 #include "Input.h"
 #include "MirrorUndressRepair.h"
@@ -72,14 +73,20 @@ namespace
             // that sender's proxy before the synchronized phase replay.
             OStimTogether::ParticipantAlignmentSync::GetSingleton().Initialize();
 
+            // Keep the logical origin of each REAL local player on the shared
+            // free-scene center. Only TESObjectREFR::data.location is written;
+            // rendered 3D and skeleton transforms remain fully OStim-owned.
+            // STR therefore publishes the common origin instead of publishing
+            // the real player's animation/root-motion drift a second time.
+            OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Initialize();
+
             // Remote skeleton writes remain disabled. Keep the old probe source
             // only for future read-only diagnostics.
             SKSE::log::info(
                 "OSTNET ROOT TRANSLATION DISABLED mode=probe-only reason=no-useful-root-delta skeletonWrites=0");
 
-            // A pre-scene OStim UI path can create a one-actor thread that
-            // contains only the targeted STR proxy. Stop any mapped-proxy
-            // thread that contains no real local player.
+            // Clean only orphan proxy-only OStim threads. Legitimate remote
+            // mirrors (including Player1 + NPC viewed by Player2) are preserved.
             OStimTogether::ProxyOnlyThreadCleanup::GetSingleton().Initialize();
 
             OStimTogether::CoopSessionManager::GetSingleton().Initialize();
@@ -133,6 +140,7 @@ namespace
             OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
             OStimTogether::FreeScenePhaseSync::GetSingleton().Reset();
             OStimTogether::ParticipantAlignmentSync::GetSingleton().Reset();
+            OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Reset();
             break;
 
         default:
