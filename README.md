@@ -1,10 +1,42 @@
 # OStim Together
 
-Current development version: **0.31.2**.
+Current development version: **0.31.3**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
+
+## 0.31.3
+
+### Fix: remote participant uses the owner's START center
+
+The 0.31.2 three-actor runtime test exposed a second free-scene origin bug. Player1 correctly transmitted the authoritative START center, but Player2's mirror later recomputed another center from Player2's own local role position. Because the role-specific graph offset available to that path was zero, the two clients armed different logical origins and STR published Player2 from the wrong point on both machines.
+
+0.31.3 makes the START packet authoritative for mirror clients:
+
+```text
+owner START center
+→ StartRemoteMirror(... authoritativeCenter ...)
+→ OStimBridge::_sceneCenters[localMirrorThread]
+→ FreeSceneSelfOriginLock
+```
+
+A locally-owned multiplayer scene still derives its center after OStim startup. A remote mirror never derives a second center; it reads the already-stored owner center. Expected logs for the same scene are therefore:
+
+```text
+Player1: OSTNET SELF ORIGIN ARM ... center=(X,Y,Z,R) source=local-derived
+Player2: OSTNET SELF ORIGIN ARM ... center=(X,Y,Z,R) source=remote-start
+```
+
+The four center values must match apart from normal text-format rounding.
+
+### Fix: OCum equipment is exempt from NPC anti-reequip locking
+
+The runtime logs also showed the NPC `EquipmentLock` repeatedly calling `UnequipObject()` on worn scene equipment every 25 ms. OCum Ascended itself uses armor records from `OCum.esp` both as short-lived RaceMenu overlay bootstrap helpers and as persistent OStim equip-object meshes. Its overlay initialization contains 50 ms waits, so the previous lock could remove OCum's helper before initialization completed and could continuously remove creampie meshes until OStim STOP released the NPC lock.
+
+0.31.3 excludes every armor whose defining file is `OCum.esp` from `EquipmentLock`. This is intentionally plugin-origin based rather than a hard-coded FormID list, so OCum's current and future runtime helper armors remain under OCum's ownership while normal NPC clothing continues to be governed by `SlotMask`.
+
+No Papyrus source changed in 0.31.3, so an already-current 0.31.0+ `OStimTogetherOCum.pex` does not need recompilation.
 
 ## 0.31.2
 
@@ -210,8 +242,8 @@ The mandatory Core `OSKSE.pex` patch also suspends OStim's UIExtensions Add Acto
 - clock-calibrated free-standing START/NODE phase barrier;
 - participant-authored OStim alignment over `ostimtogether.align`;
 - safe orphan proxy-only auxiliary OStim thread cleanup;
-- multiplayer-only deferred local-player shared-origin lock;
-- equipment/outfit protection and residual apparel restoration;
+- multiplayer-only deferred local-player shared-origin lock using owner START center on mirrors;
+- equipment/outfit protection with OCum.esp runtime armor exemption;
 - RaceMenu/SKEE overlay rebuild support;
 - generic addon state reapplication;
 - optional live OCum Ascended overlay and equip-object integration.
@@ -229,9 +261,9 @@ The required `OSKSE.pex` compatibility patch is based on the OStim 7.5b `OSKSE.p
 
 ## Build
 
-The mandatory Add Actor Papyrus patch did not change in 0.31.2.
+The mandatory Add Actor Papyrus patch did not change in 0.31.3.
 
-The optional OCum integration also did not change in 0.31.2. Recompile it only if your local packaged `OStimTogetherOCum.pex` is not already the 0.31.0-or-newer build:
+The optional OCum integration also did not change in 0.31.3. Recompile it only if your local packaged `OStimTogetherOCum.pex` is not already the 0.31.0-or-newer build:
 
 ```powershell
 .\optional\OCumIntegration\compile-ocum-integration.ps1 `
@@ -248,7 +280,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.31.2-FOMOD.zip
+dist\OStimTogether-v0.31.3-FOMOD.zip
 ```
 
 FOMOD layout:
