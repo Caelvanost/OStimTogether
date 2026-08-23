@@ -38,8 +38,7 @@ namespace OStimTogether
             }
 
             auto* skyrimVM = RE::SkyrimVM::GetSingleton();
-            auto* vm = skyrimVM ? skyrimVM->impl : nullptr;
-            if (!skyrimVM || !vm) {
+            if (!skyrimVM || !skyrimVM->impl) {
                 return false;
             }
 
@@ -51,7 +50,7 @@ namespace OStimTogether
                     static_cast<RE::VMTypeID>(RE::Actor::FORMTYPE),
                     actor);
 
-            return vm->DispatchMethodCall2(
+            return skyrimVM->impl->DispatchMethodCall2(
                 handle,
                 "Actor",
                 "QueueNiNodeUpdate",
