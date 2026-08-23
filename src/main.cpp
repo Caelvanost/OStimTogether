@@ -8,6 +8,7 @@
 #include "FreeSceneAlignmentFix.h"
 #include "FreeScenePhaseSync.h"
 #include "FreeSceneRootSync.h"
+#include "ParticipantAlignmentSync.h"
 #include "Input.h"
 #include "MirrorUndressRepair.h"
 #include "OStimBridge.h"
@@ -62,17 +63,17 @@ namespace
             OStimTogether::FreeSceneAlignmentFix::GetSingleton().Initialize();
 
             // Synchronize animation replay phase for ordinary free-standing
-            // multiplayer scenes. v0.30.4 forces this barrier through OStim's
-            // own ModAPI SetSpeed(currentSpeed) replay path instead of direct
-            // NotifyAnimationGraph calls, which were rejected in 0.30.3.
+            // multiplayer scenes.
             OStimTogether::FreeScenePhaseSync::GetSingleton().Initialize();
 
-            // v0.30.4 deliberately leaves FreeSceneRootSync uninitialized.
-            // 0.30.3 logs proved NPC Root [Root].local.translate was always
-            // (0,0,0) for the tested scenes, so writing that value to remote
-            // proxies adds no alignment information and can only interfere
-            // with locally evaluated animation state. Keep the source only for
-            // future read-only diagnostics.
+            // A real PlayerCharacter and its STR proxy can resolve different
+            // OStim alignment cache keys. Each real player therefore publishes
+            // only their own ActorAlignmentData; receivers apply it once to
+            // that sender's proxy before the synchronized phase replay.
+            OStimTogether::ParticipantAlignmentSync::GetSingleton().Initialize();
+
+            // Remote skeleton writes remain disabled. Keep the old probe source
+            // only for future read-only diagnostics.
             SKSE::log::info(
                 "OSTNET ROOT TRANSLATION DISABLED mode=probe-only reason=no-useful-root-delta skeletonWrites=0");
 
@@ -109,9 +110,15 @@ namespace
                 if (!strpmReady) {
                     SKSE::log::error(
                         "OSTNET STRPM unavailable: multiplayer synchronization disabled; no UDP fallback");
-                } else if (!OStimTogether::FreeScenePhaseSync::GetSingleton().StartTransport()) {
-                    SKSE::log::warn(
-                        "OSTNET PHASE SYNC transport unavailable: free-scene phase barrier disabled");
+                } else {
+                    if (!OStimTogether::FreeScenePhaseSync::GetSingleton().StartTransport()) {
+                        SKSE::log::warn(
+                            "OSTNET PHASE SYNC transport unavailable: free-scene phase barrier disabled");
+                    }
+                    if (!OStimTogether::ParticipantAlignmentSync::GetSingleton().StartTransport()) {
+                        SKSE::log::warn(
+                            "OSTNET ALIGN SYNC transport unavailable: participant-authored alignment disabled");
+                    }
                 }
             }
 
@@ -125,6 +132,7 @@ namespace
             OStimTogether::CoopSessionManager::GetSingleton().Reset();
             OStimTogether::OStimBridge::GetSingleton().ResetRemoteState();
             OStimTogether::FreeScenePhaseSync::GetSingleton().Reset();
+            OStimTogether::ParticipantAlignmentSync::GetSingleton().Reset();
             break;
 
         default:
