@@ -179,14 +179,17 @@ namespace OStimTogether
 
         // The old mirror startup workaround re-submitted SetSpeed(currentSpeed)
         // after builder->start(), which restarts playAnimation() on every actor.
-        // The 0.31.5/0.31.6 runtime diagnostics showed that on OStim 7.5b this
-        // second animation start can move the TRUE local mirror participant
-        // roughly 22 units away from the authoritative center immediately after
-        // PREANCHOR SELF established the correct Thread::center.
+        // PREANCHOR SELF already places the true local mirror player exactly on
+        // the authoritative center before OStim constructs its thread. Runtime
+        // tests showed that replaying SetSpeed afterwards moves that player away
+        // from the shared center in free-standing Player+Player scenes.
         //
-        // Keep the legacy replay for furniture, wall scenes, observer-only
-        // mirrors and older validated OStim layouts. Suppress it only for a
-        // 7.5b free-standing mirror that actually contains the local player.
+        // builder->start() may return before getCurrentNode() becomes visible.
+        // Therefore insertion itself cannot safely decide whether this is a wall
+        // node. Keep the legacy pending bit, but resolve eligibility lazily from
+        // contains(): while the node is unavailable the replay is held back; as
+        // soon as the node resolves, ordinary free 7.5b mirrors suppress it,
+        // while wall/furniture/observer/older-runtime paths retain it.
         class InitialAnimationReplaySet
         {
         public:
@@ -197,6 +200,15 @@ namespace OStimTogether
             std::pair<std::unordered_set<std::int32_t>::iterator, bool>
                 insert(std::int32_t threadID)
             {
+                return _entries.insert(threadID);
+            }
+
+            bool contains(std::int32_t threadID)
+            {
+                if (!_entries.contains(threadID)) {
+                    return false;
+                }
+
                 if (_owner &&
                     _owner->_graphLayout ==
                         OStimInternalProbe::GraphLayout::OStim75b &&
@@ -212,42 +224,48 @@ namespace OStimTogether
                         const auto* nodeID =
                             node ? node->getNodeID() : nullptr;
 
+                        // OStim can expose the thread before its starting node.
+                        // Never let the 4 ms VisualKeepAlive consume the replay
+                        // during that gap.
+                        if (!nodeID || !*nodeID) {
+                            return false;
+                        }
+
                         const bool wall =
-                            nodeID &&
                             std::string_view(nodeID).find("wall") !=
                                 std::string_view::npos;
 
-                        if (nodeID && !wall) {
-                            SKSE::log::info(
-                                "OSTNET MIRROR INITIAL ANIM REPLAY SUPPRESSED localThread={} node={} runtime=OStim-7.5b reason=preanchor-native-start-authoritative",
-                                threadID,
-                                nodeID);
-                            return { _entries.end(), false };
+                        if (!wall) {
+                            if (_suppressionLogged.insert(threadID).second) {
+                                SKSE::log::info(
+                                    "OSTNET MIRROR INITIAL ANIM REPLAY SUPPRESSED localThread={} node={} runtime=OStim-7.5b reason=preanchor-native-start-authoritative",
+                                    threadID,
+                                    nodeID);
+                            }
+                            return false;
                         }
                     }
                 }
 
-                return _entries.insert(threadID);
-            }
-
-            bool contains(std::int32_t threadID) const
-            {
-                return _entries.contains(threadID);
+                return true;
             }
 
             std::size_t erase(std::int32_t threadID)
             {
+                _suppressionLogged.erase(threadID);
                 return _entries.erase(threadID);
             }
 
             void clear()
             {
+                _suppressionLogged.clear();
                 _entries.clear();
             }
 
         private:
             OStimBridge* _owner{ nullptr };
             std::unordered_set<std::int32_t> _entries;
+            std::unordered_set<std::int32_t> _suppressionLogged;
         };
 
         OStimBridge() :
