@@ -28,6 +28,9 @@
 
 namespace
 {
+    constexpr std::string_view kOCumIntegrationQuestEditorID =
+        "OSTogetherOCumIntegrationQuest";
+
     void InitLogging()
     {
         auto path = SKSE::log::log_directory();
@@ -45,6 +48,57 @@ namespace
         spdlog::set_default_logger(std::move(log));
         spdlog::set_level(spdlog::level::trace);
         spdlog::flush_on(spdlog::level::trace);
+    }
+
+    void RefreshOptionalOCumPapyrusRegistration(std::string_view reason)
+    {
+        auto* data = RE::TESDataHandler::GetSingleton();
+        if (!data ||
+            !data->LookupModByName("OStimTogether_OCum.esp") ||
+            !data->LookupModByName("OCum.esp")) {
+            return;
+        }
+
+        auto* quest = RE::TESForm::LookupByEditorID<RE::TESQuest>(
+            kOCumIntegrationQuestEditorID);
+        if (!quest) {
+            SKSE::log::warn(
+                "OSTNET OCUM PAPYRUS REFRESH skipped reason={} quest={} not-found",
+                reason,
+                kOCumIntegrationQuestEditorID);
+            return;
+        }
+
+        auto* skyrimVM = RE::SkyrimVM::GetSingleton();
+        if (!skyrimVM || !skyrimVM->impl) {
+            SKSE::log::warn(
+                "OSTNET OCUM PAPYRUS REFRESH skipped reason={} no-vm",
+                reason);
+            return;
+        }
+
+        RE::BSTSmartPointer<
+            RE::BSScript::IStackCallbackFunctor> callback;
+        auto args = RE::MakeFunctionArguments();
+        const auto handle =
+            skyrimVM->handlePolicy.GetHandleForObject(
+                static_cast<RE::VMTypeID>(RE::TESQuest::FORMTYPE),
+                quest);
+
+        const bool dispatched =
+            skyrimVM->impl->DispatchMethodCall2(
+                handle,
+                "OStimTogetherOCum",
+                "RegisterIntegration",
+                args,
+                callback);
+
+        SKSE::log::info(
+            "OSTNET OCUM PAPYRUS REFRESH reason={} quest={:08X} running={} dispatched={}",
+            reason,
+            quest->GetFormID(),
+            quest->IsRunning() ? 1 : 0,
+            dispatched ? 1 : 0);
     }
 
     void OnSKSEMessage(SKSE::MessagingInterface::Message* message)
@@ -75,16 +129,14 @@ namespace
             OStimTogether::ParticipantAlignmentSync::GetSingleton().Initialize();
 
             // Shared free scenes keep only the REMOTE STR proxy's logical
-            // reference origin on the common center. The true local player is
-            // never written: OStim owns its reference/root-motion completely.
-            // This prevents STR's already-displaced sample from becoming the
-            // proxy origin and receiving OStim's role displacement a second
-            // time.
+            // reference origin on the common center. The mirror's true local
+            // player may receive only bounded post-animation self corrections;
+            // there is no continuous player position lock.
             OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Initialize();
 
             // Native OCum mesh watcher. It reads actual worn OCum armor on
-            // active OStim actors, refreshes local equip-object geometry, and
-            // publishes real-player live mesh transitions over STRPM.
+            // active OStim actors; the optional Papyrus integration supplements
+            // this with OStim's own equip-object state and live overlay capture.
             OStimTogether::OCumStateSync::GetSingleton().Initialize();
 
             // Remote skeleton writes remain disabled. Keep the old probe source
@@ -136,6 +188,11 @@ namespace
                 }
             }
 
+            // Useful for a new game or a freshly created quest instance. A
+            // loaded save restores its Papyrus registrations later, so the
+            // kPostLoadGame refresh below is the authoritative repair path.
+            RefreshOptionalOCumPapyrusRegistration("data-loaded");
+
             OStimTogether::VisualKeepAlive::GetSingleton().Start();
             break;
 
@@ -149,6 +206,15 @@ namespace
             OStimTogether::ParticipantAlignmentSync::GetSingleton().Reset();
             OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Reset();
             OStimTogether::OCumStateSync::GetSingleton().Reset();
+            break;
+
+        case SKSE::MessagingInterface::kPostLoadGame:
+            // Replacing an attached quest PEX in an existing save does not
+            // rerun OnInit(). Invoke the script's public registration function
+            // directly after Papyrus save state has been restored, so 0.31.5+
+            // ostim_start/ostim_end polling works without a new save or manual
+            // stopquest/startquest cycle.
+            RefreshOptionalOCumPapyrusRegistration("post-load-game");
             break;
 
         default:
