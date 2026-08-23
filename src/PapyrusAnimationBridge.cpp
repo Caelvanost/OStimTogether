@@ -361,15 +361,17 @@ namespace OStimTogether
             changed ? 1 : 0,
             dispatched ? 1 : 0);
 
-        // Remote OCum sends its RaceMenu overlay packet immediately before
-        // its equip-object packet. On dynamic STR proxies SKEE can already
-        // have an overlay holder, so merely changing Body [OvlN] properties
-        // does not necessarily rebuild the geometry/material. Queueing the
-        // normal public AddOverlays path here rebuilds that existing holder
-        // after the freshly received overrides have been stored.
-        SKEEOverlayRefresh::Queue(
-            actor,
-            "ADDON-OBJECT");
+        // 0.31.6 crash evidence showed that repeated unchanged OBJ packets
+        // were causing a SKEE AddOverlays rebuild storm on the remote proxy.
+        // Only a genuine equip-object transition may request a geometry rebuild.
+        // Repeated idempotent state repairs still dispatch OActor so a rebuilt
+        // OStim actor can recover the desired mesh state, but they no longer
+        // recreate RaceMenu overlay geometry.
+        if (changed) {
+            SKEEOverlayRefresh::Queue(
+                actor,
+                "ADDON-OBJECT-CHANGED");
+        }
 
         // OActor.EquipObject only succeeds once the actor is registered in an
         // active OStim thread. STRPM addon state can arrive a few frames before
