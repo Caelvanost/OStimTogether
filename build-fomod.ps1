@@ -9,6 +9,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CoreBuildScript = Join-Path $Root "build-vortex.ps1"
 $CorePackage = Join-Path $Root "package"
 $OptionalPackage = Join-Path $Root "optional\OCumIntegration\package"
+$OptionalSource = Join-Path $Root "optional\OCumIntegration\Data\Scripts\Source\OStimTogetherOCum.psc"
 $UIConsentPackage = Join-Path $Root "compat\OStimUIConsent\package"
 $FomodSource = Join-Path $Root "fomod"
 $Stage = Join-Path $Root "release-fomod"
@@ -38,7 +39,15 @@ if (-not (Test-Path $OptionalEsp)) {
 }
 
 if (-not (Test-Path $OptionalPex)) {
-    throw "PEX OCum optionnel manquant: $OptionalPex`nCompile Data\Scripts\Source\OStimTogetherOCum.psc puis copie le PEX dans optional\OCumIntegration\package\Data\Scripts."
+    throw "PEX OCum optionnel manquant: $OptionalPex`nExecute optional\OCumIntegration\compile-ocum-integration.ps1 puis relance build-fomod.ps1."
+}
+
+if (Test-Path $OptionalSource) {
+    $PscTime = (Get-Item $OptionalSource).LastWriteTimeUtc
+    $PexTime = (Get-Item $OptionalPex).LastWriteTimeUtc
+    if ($PexTime -lt $PscTime) {
+        throw "OStimTogetherOCum.pex est plus ancien que sa source.`nExecute .\optional\OCumIntegration\compile-ocum-integration.ps1 puis relance build-fomod.ps1."
+    }
 }
 
 $UIConsentOSKSE = Join-Path $UIConsentPackage "Data\Scripts\OSKSE.pex"
