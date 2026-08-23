@@ -4,6 +4,7 @@
 
 #include "OStimAPI/ThreadEventListener.h"
 #include "OStimAPI/ThreadInterface.h"
+#include "OStimAPI/Thread.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
 #include "OStimAPI/ModThreadControl.h"
 #include "OStimAPI/ModSceneControl.h"
@@ -176,7 +177,82 @@ namespace OStimTogether
             void listen(OStim::Thread* thread) override;
         };
 
-        OStimBridge() = default;
+        // The old mirror startup workaround re-submitted SetSpeed(currentSpeed)
+        // after builder->start(), which restarts playAnimation() on every actor.
+        // The 0.31.5/0.31.6 runtime diagnostics showed that on OStim 7.5b this
+        // second animation start can move the TRUE local mirror participant
+        // roughly 22 units away from the authoritative center immediately after
+        // PREANCHOR SELF established the correct Thread::center.
+        //
+        // Keep the legacy replay for furniture, wall scenes, observer-only
+        // mirrors and older validated OStim layouts. Suppress it only for a
+        // 7.5b free-standing mirror that actually contains the local player.
+        class InitialAnimationReplaySet
+        {
+        public:
+            explicit InitialAnimationReplaySet(OStimBridge* owner) :
+                _owner(owner)
+            {}
+
+            std::pair<std::unordered_set<std::int32_t>::iterator, bool>
+                insert(std::int32_t threadID)
+            {
+                if (_owner &&
+                    _owner->_graphLayout ==
+                        OStimInternalProbe::GraphLayout::OStim75b &&
+                    _owner->_threads &&
+                    _owner->_localSelfIndices.contains(threadID)) {
+                    auto* thread =
+                        _owner->_threads->getThread(threadID);
+
+                    if (thread &&
+                        thread->isPlayerThread() &&
+                        !thread->getFurnitureObject()) {
+                        auto* node = thread->getCurrentNode();
+                        const auto* nodeID =
+                            node ? node->getNodeID() : nullptr;
+
+                        const bool wall =
+                            nodeID &&
+                            std::string_view(nodeID).find("wall") !=
+                                std::string_view::npos;
+
+                        if (nodeID && !wall) {
+                            SKSE::log::info(
+                                "OSTNET MIRROR INITIAL ANIM REPLAY SUPPRESSED localThread={} node={} runtime=OStim-7.5b reason=preanchor-native-start-authoritative",
+                                threadID,
+                                nodeID);
+                            return { _entries.end(), false };
+                        }
+                    }
+                }
+
+                return _entries.insert(threadID);
+            }
+
+            bool contains(std::int32_t threadID) const
+            {
+                return _entries.contains(threadID);
+            }
+
+            std::size_t erase(std::int32_t threadID)
+            {
+                return _entries.erase(threadID);
+            }
+
+            void clear()
+            {
+                _entries.clear();
+            }
+
+        private:
+            OStimBridge* _owner{ nullptr };
+            std::unordered_set<std::int32_t> _entries;
+        };
+
+        OStimBridge() :
+            _pendingInitialAnimationReplay(this)
+        {}
 
         void HandleStart(OStim::Thread* thread);
         void HandleNode(OStim::Thread* thread);
@@ -261,7 +337,7 @@ namespace OStimTogether
         std::unordered_map<std::int32_t, PendingWallStart> _pendingWallStarts;
         std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _strProxyPoseGuardAfter;
         std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _lastSTRProxyPoseGuardLog;
-        std::unordered_set<std::int32_t> _pendingInitialAnimationReplay;
+        InitialAnimationReplaySet _pendingInitialAnimationReplay;
         std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _lastAnimationRefresh;
         std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _lastDirectEventLog;
         std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _wallRootProbeUntil;
