@@ -1,10 +1,47 @@
 # OStim Together
 
-Current development version: **0.31.0**.
+Current development version: **0.31.2**.
 
 The root `VERSION` file is the single source of truth for CMake, DLL startup logs and archive names. Small fixes increment patch; larger feature/architecture work increments minor and resets patch.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
+
+## 0.31.2
+
+### Fix: Player + NPC scene freeze during OStim START
+
+0.31.1 introduced `FreeSceneSelfOriginLock` to keep each real multiplayer participant's logical `TESObjectREFR` origin on the shared free-scene center while OStim remains responsible for rendered animation/root motion.
+
+The first implementation armed that system synchronously from OStim's `START` listener. Arming calls `OStimBridge::TryComputeSceneCenter()`, which uses OStim's `GetActorAlignment()` ModAPI path. OStim emits `START` while its own thread startup is still in progress, so re-entering thread-control/alignment state from that callback can stall the game before startup returns.
+
+The runtime symptom is a log that reaches the ordinary local thread start and NPC equipment-lock registration, then stops before `OSTNET SELF ORIGIN ARM` or the normal post-start tasks run.
+
+0.31.2 changes the startup path in two ways:
+
+1. **Player + NPC scenes bypass the self-origin system entirely.** The lock is relevant only when the local OStim thread contains the real local PlayerCharacter plus a participant that resolves to an active STR proxy mapping.
+2. **Real multiplayer scenes arm through a two-hop game-task defer.** The first hop yields back to OStim so its initial `ChangeNode()` can enqueue `lockAtPosition()` work; the second hop runs after those startup tasks and only then reads alignment/scene-center state.
+
+Expected local Player + NPC behavior in 0.31.2:
+
+```text
+OStim thread START ... actors=2 mirror=0
+...
+OStim auto-lock ON ...
+OSTNET START POST-ALIGN ...
+```
+
+There should be **no** `OSTNET SELF ORIGIN ARM queued` for an ordinary NPC scene.
+
+Expected real Player + STR-player scene behavior:
+
+```text
+OSTNET SELF ORIGIN ARM queued thread=... defer=two-hop
+OSTNET START POST-ALIGN ...
+OSTNET SELF ORIGIN ARM thread=... center=(...)
+OSTNET SELF ORIGIN LOCK ...
+```
+
+The 0.31.1 reference-location-only implementation itself is retained for multiplayer scenes: no remote proxy write, no skeleton transform, no `SetPosition`, no `TranslateTo`, and no `Update3DPosition` is added by this lock.
 
 ## 0.31.0
 
@@ -172,7 +209,8 @@ The mandatory Core `OSKSE.pex` patch also suspends OStim's UIExtensions Add Acto
 - shared native OStim NODE/SPEED/STOP controls;
 - clock-calibrated free-standing START/NODE phase barrier;
 - participant-authored OStim alignment over `ostimtogether.align`;
-- proxy-only auxiliary OStim thread cleanup;
+- safe orphan proxy-only auxiliary OStim thread cleanup;
+- multiplayer-only deferred local-player shared-origin lock;
 - equipment/outfit protection and residual apparel restoration;
 - RaceMenu/SKEE overlay rebuild support;
 - generic addon state reapplication;
@@ -191,9 +229,9 @@ The required `OSKSE.pex` compatibility patch is based on the OStim 7.5b `OSKSE.p
 
 ## Build
 
-The mandatory Add Actor Papyrus patch only needs recompilation when its sources change. **It did not change in 0.31.0.**
+The mandatory Add Actor Papyrus patch did not change in 0.31.2.
 
-The optional OCum integration **did change** and must be recompiled:
+The optional OCum integration also did not change in 0.31.2. Recompile it only if your local packaged `OStimTogetherOCum.pex` is not already the 0.31.0-or-newer build:
 
 ```powershell
 .\optional\OCumIntegration\compile-ocum-integration.ps1 `
@@ -210,10 +248,10 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.31.0-FOMOD.zip
+dist\OStimTogether-v0.31.2-FOMOD.zip
 ```
 
 FOMOD layout:
 
 - `00 Core` — required DLL/INI plus mandatory Add Actor gate scripts;
-- `10 OCum Ascended` — optional OCum integration with the newly compiled `OStimTogetherOCum.pex`.
+- `10 OCum Ascended` — optional OCum integration with `OStimTogetherOCum.pex`.
