@@ -249,9 +249,10 @@ namespace OStimTogether
         }
 
         auto* thread = _threads->getThread(_activeThreadID);
+        auto* localPlayer = thread ? FindLocalPlayer(thread) : nullptr;
         if (!thread ||
             !IsFreeStandingThread(thread) ||
-            !FindLocalPlayer(thread)) {
+            !localPlayer) {
             return;
         }
 
@@ -266,6 +267,41 @@ namespace OStimTogether
         const bool shouldLog =
             _lastLog.time_since_epoch().count() == 0 ||
             now - _lastLog >= kLogInterval;
+
+        // 0.31.5 alignment diagnostic: read the true local participant as well
+        // as the STR proxy. This is deliberately read-only. Comparing these
+        // values across the two clients tells us whether STR is simply copying
+        // OStim's rendered role/root displacement to the proxy or whether the
+        // proxy acquires an additional transform/scale divergence locally.
+        if (shouldLog) {
+            const auto playerRef = localPlayer->GetPosition();
+            RE::NiPoint3 playerRoot = playerRef;
+            bool hadPlayerRoot = false;
+            float playerRootScale = 1.0F;
+            if (auto* root = localPlayer->Get3D()) {
+                playerRoot = root->world.translate;
+                playerRootScale = root->world.scale;
+                hadPlayerRoot = true;
+            }
+
+            SKSE::log::info(
+                "OSTNET FREE ROLE DIAG thread={} node={} kind=local-player actor={:08X} ref=({:.3f},{:.3f},{:.3f}) root={}({:.3f},{:.3f},{:.3f}) rootFromCenter=({:.3f},{:.3f},{:.3f}) rootScale={:.5f} writes=0",
+                _activeThreadID,
+                thread->getCurrentNode() && thread->getCurrentNode()->getNodeID() ?
+                    thread->getCurrentNode()->getNodeID() : "",
+                localPlayer->GetFormID(),
+                playerRef.x,
+                playerRef.y,
+                playerRef.z,
+                hadPlayerRoot ? 1 : 0,
+                playerRoot.x,
+                playerRoot.y,
+                playerRoot.z,
+                playerRoot.x - target.x,
+                playerRoot.y - target.y,
+                playerRoot.z - target.z,
+                playerRootScale);
+        }
 
         std::uint32_t proxyCount = 0;
         std::uint32_t writeCount = 0;
@@ -285,8 +321,10 @@ namespace OStimTogether
             const auto before = actor->GetPosition();
             RE::NiPoint3 rootBefore = before;
             bool hadRootBefore = false;
+            float rootScale = 1.0F;
             if (auto* root = actor->Get3D()) {
                 rootBefore = root->world.translate;
+                rootScale = root->world.scale;
                 hadRootBefore = true;
             }
 
@@ -310,12 +348,13 @@ namespace OStimTogether
             bool hadRootAfter = false;
             if (auto* root = actor->Get3D()) {
                 rootAfter = root->world.translate;
+                rootScale = root->world.scale;
                 hadRootAfter = true;
             }
 
             if (shouldLog) {
                 SKSE::log::info(
-                    "OSTNET PROXY ORIGIN LOCK thread={} node={} idx={} actor={:08X} wrote={} refBefore=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) refAfter=({:.3f},{:.3f},{:.3f}) rootBefore={}({:.3f},{:.3f},{:.3f}) rootAfter={}({:.3f},{:.3f},{:.3f}) driftBefore2={:.3f} driftAfter2={:.6f} rootMoved2={:.6f} proxyReferenceOnly=1 localPlayerWrites=0 skeletonWrites=0 update3D=0",
+                    "OSTNET PROXY ORIGIN LOCK thread={} node={} idx={} actor={:08X} wrote={} refBefore=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) refAfter=({:.3f},{:.3f},{:.3f}) rootBefore={}({:.3f},{:.3f},{:.3f}) rootAfter={}({:.3f},{:.3f},{:.3f}) rootFromCenter=({:.3f},{:.3f},{:.3f}) rootScale={:.5f} driftBefore2={:.3f} driftAfter2={:.6f} rootMoved2={:.6f} proxyReferenceOnly=1 localPlayerWrites=0 skeletonWrites=0 update3D=0",
                     _activeThreadID,
                     thread->getCurrentNode() && thread->getCurrentNode()->getNodeID() ?
                         thread->getCurrentNode()->getNodeID() : "",
@@ -339,6 +378,10 @@ namespace OStimTogether
                     rootAfter.x,
                     rootAfter.y,
                     rootAfter.z,
+                    rootAfter.x - target.x,
+                    rootAfter.y - target.y,
+                    rootAfter.z - target.z,
+                    rootScale,
                     driftSq,
                     after.GetSquaredDistance(target),
                     hadRootBefore && hadRootAfter ?
