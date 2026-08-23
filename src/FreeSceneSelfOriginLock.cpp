@@ -200,15 +200,20 @@ namespace OStimTogether
             return;
         }
 
+        auto& bridge = OStimBridge::GetSingleton();
+        const bool remoteMirror =
+            bridge.IsRemoteMirrorForAlignment(threadID);
+
         SceneCenter center{};
-        if (!OStimBridge::GetSingleton().TryComputeSceneCenter(
-                thread,
-                center,
-                false) ||
-            !center.IsFinite()) {
+        const bool centerReady = remoteMirror ?
+            bridge.TryGetAuthoritativeSceneCenter(threadID, center) :
+            bridge.TryComputeSceneCenter(thread, center, false);
+
+        if (!centerReady || !center.IsFinite()) {
             SKSE::log::warn(
-                "OSTNET SELF ORIGIN ARM failed thread={} reason=no-scene-center",
-                threadID);
+                "OSTNET SELF ORIGIN ARM failed thread={} reason=no-scene-center source={}",
+                threadID,
+                remoteMirror ? "remote-start" : "local-derived");
             return;
         }
 
@@ -217,12 +222,13 @@ namespace OStimTogether
         _lastLog = {};
 
         SKSE::log::info(
-            "OSTNET SELF ORIGIN ARM thread={} center=({:.3f},{:.3f},{:.3f},{:.5f}) mode=reference-location-only continuousLocalAuthority=1 skeletonWrites=0 proxyWrites=0",
+            "OSTNET SELF ORIGIN ARM thread={} center=({:.3f},{:.3f},{:.3f},{:.5f}) source={} mode=reference-location-only continuousLocalAuthority=1 skeletonWrites=0 proxyWrites=0",
             _activeThreadID,
             _center.x,
             _center.y,
             _center.z,
-            _center.r);
+            _center.r,
+            remoteMirror ? "remote-start" : "local-derived");
     }
 
     void FreeSceneSelfOriginLock::HandleStop(OStim::Thread* thread)
