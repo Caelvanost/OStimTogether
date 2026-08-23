@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.32.1 STRPM</moduleName>
+  <moduleName>OStim Together 0.33.0</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -20,6 +20,25 @@
                     <pattern>
                       <dependencies operator="And">
                         <fileDependency file="OCum.esp" state="Active" />
+                      </dependencies>
+                      <type name="Recommended" />
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+            <plugin name="PPA - Procedural Penis Animations synchronization">
+              <description>Enables the optional Accurate Penetration bridge. OStim Together captures and transports the local player's per-stage penetration target (Vagina, Anus, Mouth, hands, etc.) using PPA's public SKSE API. PPA API V1 is currently read-only, so the received target is cached for the remote apply bridge but cannot yet be imposed safely without a PPA target setter.</description>
+              <files>
+                <folder source="20 Procedural Penis Animations" destination="" priority="0" />
+              </files>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="NotUsable" />
+                  <patterns>
+                    <pattern>
+                      <dependencies operator="And">
+                        <fileDependency file="SKSE\Plugins\AccuratePenetration.dll" state="Active" />
                       </dependencies>
                       <type name="Recommended" />
                     </pattern>
