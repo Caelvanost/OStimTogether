@@ -1,6 +1,11 @@
 #include "PCH.h"
 #include "SKEEOverlayRefresh.h"
 
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+
 namespace OStimTogether::SKEEOverlayRefresh
 {
     namespace
@@ -33,10 +38,6 @@ namespace OStimTogether::SKEEOverlayRefresh
                 IInterfaceMap* interfaceMap{ nullptr };
             };
 
-            // Public SKEE IOverlayInterface vtable prefix. In RaceMenu's
-            // implementation the boolean passed to AddOverlays controls
-            // immediate execution: false queues SKSETaskUpdateOverlays, true
-            // rebuilds synchronously on the current game thread.
             class IOverlayInterface : public IPluginInterface
             {
             public:
@@ -46,6 +47,12 @@ namespace OStimTogether::SKEEOverlayRefresh
                     bool immediate = false) = 0;
             };
         }
+
+        constexpr auto kQuietDelay = std::chrono::milliseconds(250);
+
+        std::mutex g_queueMutex;
+        std::unordered_map<RE::FormID, std::uint64_t> g_actorGeneration;
+        std::atomic<std::uint64_t> g_nextGeneration{ 1 };
 
         SKEE::IOverlayInterface* QueryOverlayInterface()
         {
@@ -69,65 +76,14 @@ namespace OStimTogether::SKEEOverlayRefresh
                 exchange.interfaceMap->QueryInterface("Overlay"));
         }
 
-        void QueueOne(
+        bool IsGenerationCurrent(
             RE::FormID actorID,
-            std::string reason,
-            std::chrono::milliseconds delay,
-            const char* phase)
+            std::uint64_t generation)
         {
-            std::thread(
-                [actorID,
-                 reason = std::move(reason),
-                 delay,
-                 phase = std::string(phase)]() {
-                    std::this_thread::sleep_for(delay);
-
-                    auto* tasks = SKSE::GetTaskInterface();
-                    if (!tasks) {
-                        return;
-                    }
-
-                    tasks->AddTask(
-                        [actorID,
-                         reason = std::move(reason),
-                         phase = std::move(phase)]() {
-                            auto* form = RE::TESForm::LookupByID(actorID);
-                            auto* actor = form ? form->As<RE::Actor>() : nullptr;
-                            if (!actor || actor->IsPlayerRef()) {
-                                return;
-                            }
-
-                            auto* overlay = QueryOverlayInterface();
-                            if (!overlay) {
-                                SKSE::log::warn(
-                                    "OSTNET SKEE OVERLAY REBUILD reason={} phase={} actor={:08X} interface=0",
-                                    reason,
-                                    phase,
-                                    actorID);
-                                return;
-                            }
-
-                            const bool hadOverlays =
-                                overlay->HasOverlays(actor);
-
-                            // AddOverlays() uses a set internally, so invoking
-                            // it for an already registered proxy is safe. Run
-                            // the rebuild immediately on this game-thread task
-                            // instead of queueing another task behind OStim/STR
-                            // geometry work. RaceMenu's build copies the live
-                            // skin instance and reapplies stored node overrides
-                            // to each overlay shape.
-                            overlay->AddOverlays(actor, true);
-
-                            SKSE::log::info(
-                                "OSTNET SKEE OVERLAY REBUILD reason={} phase={} actor={:08X} hadOverlays={} immediate=1",
-                                reason,
-                                phase,
-                                actorID,
-                                hadOverlays ? 1 : 0);
-                        });
-                })
-                .detach();
+            std::scoped_lock lock(g_queueMutex);
+            const auto it = g_actorGeneration.find(actorID);
+            return it != g_actorGeneration.end() &&
+                   it->second == generation;
         }
     }
 
@@ -139,19 +95,72 @@ namespace OStimTogether::SKEEOverlayRefresh
 
         const auto actorID = actor->GetFormID();
         const std::string reasonCopy(reason);
+        const auto generation =
+            g_nextGeneration.fetch_add(1, std::memory_order_relaxed);
 
-        // The packet path stores SKEE overrides before reaching this helper.
-        // Rebuild twice: once immediately after that store, then again after
-        // the short OStim/STR geometry-settle window.
-        QueueOne(
-            actorID,
-            reasonCopy,
-            std::chrono::milliseconds(80),
-            "T80");
-        QueueOne(
-            actorID,
-            reasonCopy,
-            std::chrono::milliseconds(450),
-            "T450");
+        {
+            std::scoped_lock lock(g_queueMutex);
+            g_actorGeneration[actorID] = generation;
+        }
+
+        // 0.31.6 could enqueue two synchronous rebuilds for every OBJ packet.
+        // OCum's live poll then produced more than a thousand RaceMenu rebuilds
+        // in one scene and Player1 crashed inside skee64 while installing the
+        // remote proxy's face overlay. Debounce by actor: only the newest request
+        // survives a quiet window, and let RaceMenu execute through its normal
+        // queued path instead of rebuilding synchronously inside our game task.
+        std::thread(
+            [actorID,
+             reasonCopy,
+             generation]() {
+                std::this_thread::sleep_for(kQuietDelay);
+
+                if (!IsGenerationCurrent(actorID, generation)) {
+                    return;
+                }
+
+                auto* tasks = SKSE::GetTaskInterface();
+                if (!tasks) {
+                    return;
+                }
+
+                tasks->AddTask(
+                    [actorID,
+                     reasonCopy,
+                     generation]() {
+                        if (!IsGenerationCurrent(actorID, generation)) {
+                            return;
+                        }
+
+                        auto* form = RE::TESForm::LookupByID(actorID);
+                        auto* actor2 = form ? form->As<RE::Actor>() : nullptr;
+                        if (!actor2 || actor2->IsPlayerRef()) {
+                            return;
+                        }
+
+                        auto* overlay = QueryOverlayInterface();
+                        if (!overlay) {
+                            SKSE::log::warn(
+                                "OSTNET SKEE OVERLAY REBUILD reason={} actor={:08X} interface=0 generation={}",
+                                reasonCopy,
+                                actorID,
+                                generation);
+                            return;
+                        }
+
+                        const bool hadOverlays =
+                            overlay->HasOverlays(actor2);
+
+                        overlay->AddOverlays(actor2, false);
+
+                        SKSE::log::info(
+                            "OSTNET SKEE OVERLAY REBUILD reason={} actor={:08X} hadOverlays={} immediate=0 coalesced=1 generation={}",
+                            reasonCopy,
+                            actorID,
+                            hadOverlays ? 1 : 0,
+                            generation);
+                    });
+            })
+            .detach();
     }
 }
