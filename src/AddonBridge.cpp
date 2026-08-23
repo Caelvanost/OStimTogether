@@ -51,6 +51,19 @@ namespace OStimTogether
                            ch == '.';
                 });
         }
+
+        std::string CanonicalAddonChannel(std::string_view value)
+        {
+            std::string out(value);
+            std::transform(
+                out.begin(),
+                out.end(),
+                out.begin(),
+                [](unsigned char ch) {
+                    return static_cast<char>(std::tolower(ch));
+                });
+            return out;
+        }
     }
 
     AddonBridge& AddonBridge::GetSingleton()
@@ -321,6 +334,9 @@ namespace OStimTogether
             return;
         }
 
+        const std::string canonicalChannel =
+            CanonicalAddonChannel(channel);
+
         const auto chunks =
             RaceMenuOverlayBridge::GetSingleton()
                 .CaptureMarkedOverlayChunks(
@@ -331,16 +347,17 @@ namespace OStimTogether
         // OCum has already written these overrides. During an OStim body
         // rebuild RaceMenu can retain the values without applying them to the
         // live overlay geometry, so refresh the exact marked nodes locally as
-        // well as sending them to the other player.
+        // well as sending them to the other player. Channel names are
+        // canonicalized here so OCum/ocum cannot become competing caches.
         RaceMenuOverlayBridge::GetSingleton()
             .RefreshLocalOverlayGeometry(
                 actor,
-                channel,
+                canonicalChannel,
                 chunks);
 
         SKSE::log::info(
             "OSTNET ADDON OVR TX channel={} actor={:08X} name=\"{}\" marker=\"{}\" chunks={}",
-            channel,
+            canonicalChannel,
             actor->GetFormID(),
             name,
             textureMarker,
@@ -352,7 +369,7 @@ namespace OStimTogether
             UdpTransport::GetSingleton().Send(
                 fmt::format(
                     "ADDONOVR|channel={}|name={}|seq={}|count={}|props={}",
-                    HexEncode(channel),
+                    HexEncode(canonicalChannel),
                     HexEncode(name),
                     i,
                     chunks.size(),
@@ -378,17 +395,20 @@ namespace OStimTogether
             return;
         }
 
+        const std::string canonicalChannel =
+            CanonicalAddonChannel(channel);
+
         UdpTransport::GetSingleton().Send(
             fmt::format(
                 "ADDONOBJ|channel={}|name={}|type={}|equipped={}",
-                HexEncode(channel),
+                HexEncode(canonicalChannel),
                 HexEncode(name),
                 HexEncode(objectType),
                 equipped ? 1 : 0));
 
         SKSE::log::info(
             "OSTNET ADDON OBJ TX channel={} actor={:08X} name=\"{}\" type={} equipped={}",
-            channel,
+            canonicalChannel,
             actor->GetFormID(),
             name,
             objectType,
@@ -447,6 +467,9 @@ namespace OStimTogether
                 return;
             }
 
+            const std::string canonicalChannel =
+                CanonicalAddonChannel(*channel);
+
             auto* actor =
                 ActorResolver::GetSingleton()
                     .ResolveRemotePlayerByName(*name);
@@ -455,7 +478,7 @@ namespace OStimTogether
                 SKSE::log::warn(
                     "OSTNET ADDON OVR RX unresolved sender={} channel={} name=\"{}\"",
                     sender,
-                    *channel,
+                    canonicalChannel,
                     *name);
                 return;
             }
@@ -463,7 +486,7 @@ namespace OStimTogether
             {
                 std::scoped_lock lock(_stateMutex);
                 auto& cached =
-                    _remoteOverlays[actor->GetFormID()][*channel];
+                    _remoteOverlays[actor->GetFormID()][canonicalChannel];
 
                 if (cached.expectedCount != count ||
                     cached.chunks.size() != count) {
@@ -477,13 +500,13 @@ namespace OStimTogether
             RaceMenuOverlayBridge::GetSingleton()
                 .ApplyRemoteOverlayChunk(
                     actor,
-                    *channel,
+                    canonicalChannel,
                     *props);
 
             SKSE::log::info(
                 "OSTNET ADDON OVR RX sender={} channel={} name=\"{}\" actor={:08X}",
                 sender,
-                *channel,
+                canonicalChannel,
                 *name,
                 actor->GetFormID());
             return;
@@ -517,6 +540,9 @@ namespace OStimTogether
                 return;
             }
 
+            const std::string canonicalChannel =
+                CanonicalAddonChannel(*channel);
+
             auto* actor =
                 ActorResolver::GetSingleton()
                     .ResolveRemotePlayerByName(*name);
@@ -525,7 +551,7 @@ namespace OStimTogether
                 SKSE::log::warn(
                     "OSTNET ADDON OBJ RX unresolved sender={} channel={} name=\"{}\" type={}",
                     sender,
-                    *channel,
+                    canonicalChannel,
                     *name,
                     *objectType);
                 return;
@@ -538,11 +564,11 @@ namespace OStimTogether
                 std::scoped_lock lock(_stateMutex);
                 const auto key = fmt::format(
                     "{}|{}",
-                    *channel,
+                    canonicalChannel,
                     *objectType);
                 _remoteObjects[actor->GetFormID()][key] =
                     CachedObjectState{
-                        *channel,
+                        canonicalChannel,
                         *objectType,
                         equipped };
             }
@@ -557,7 +583,7 @@ namespace OStimTogether
             SKSE::log::info(
                 "OSTNET ADDON OBJ RX sender={} channel={} name=\"{}\" actor={:08X} type={} equipped={} dispatched={}",
                 sender,
-                *channel,
+                canonicalChannel,
                 *name,
                 actor->GetFormID(),
                 *objectType,
