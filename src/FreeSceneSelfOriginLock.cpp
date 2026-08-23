@@ -12,6 +12,34 @@ namespace OStimTogether
     {
         constexpr auto kLogInterval = std::chrono::milliseconds(500);
         constexpr float kWriteToleranceSq = 0.01F;
+
+        // Normal START/NODE phase replay in the validated 7.5b runtime settles
+        // in roughly 0.6 s. The first correction is deliberately later. The
+        // second correction is a bounded backup for high-latency phase commits;
+        // unlike the old self lock this never writes every frame.
+        constexpr auto kMirrorSelfFirstDelay =
+            std::chrono::milliseconds(700);
+        constexpr auto kMirrorSelfSecondDelay =
+            std::chrono::milliseconds(1100);
+        constexpr float kMirrorSelfCorrectionToleranceSq = 1.0F;
+
+        void StopReferenceTranslation(RE::TESObjectREFR* object)
+        {
+            if (!object) {
+                return;
+            }
+
+            using func_t = void(
+                RE::BSScript::IVirtualMachine*,
+                RE::VMStackID,
+                RE::TESObjectREFR*);
+
+            static REL::Relocation<func_t> func{
+                RELOCATION_ID(55712, 56243)
+            };
+
+            func(nullptr, 0, object);
+        }
     }
 
     FreeSceneSelfOriginLock& FreeSceneSelfOriginLock::GetSingleton()
@@ -73,7 +101,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET PROXY ORIGIN READY threadsVersion={} ownership=remote-str-proxy write=reference-location-only localPlayerWrites=0 skeletonWrites=0 update3D=0",
+            "OSTNET PROXY ORIGIN READY threadsVersion={} proxyWrite=reference-location-only mirrorSelf=bounded-two-shot localOwnerWrites=0 skeletonWrites=0",
             _threadInterfaceVersion);
         return true;
     }
@@ -83,6 +111,9 @@ namespace OStimTogether
         _activeThreadID = -1;
         _center = {};
         _lastLog = {};
+        _mirrorSelfNodeID.clear();
+        _mirrorSelfCorrectionStage = 0;
+        _mirrorSelfCorrectionDue = {};
     }
 
     bool FreeSceneSelfOriginLock::IsFreeStandingThread(OStim::Thread* thread) const
@@ -222,14 +253,139 @@ namespace OStimTogether
         _center = center;
         _lastLog = {};
 
+        if (remoteMirror) {
+            ArmMirrorSelfCorrections(thread);
+        } else {
+            _mirrorSelfNodeID.clear();
+            _mirrorSelfCorrectionStage = 0;
+            _mirrorSelfCorrectionDue = {};
+        }
+
         SKSE::log::info(
-            "OSTNET PROXY ORIGIN ARM thread={} center=({:.3f},{:.3f},{:.3f},{:.5f}) source={} mode=proxy-reference-location-only localPlayerWrites=0 skeletonWrites=0 update3D=0",
+            "OSTNET PROXY ORIGIN ARM thread={} center=({:.3f},{:.3f},{:.3f},{:.5f}) source={} mode=proxy-reference-location-only mirrorSelf={} skeletonWrites=0",
             _activeThreadID,
             _center.x,
             _center.y,
             _center.z,
             _center.r,
-            remoteMirror ? "remote-start" : "local-derived");
+            remoteMirror ? "remote-start" : "local-derived",
+            remoteMirror ? "bounded-two-shot" : "none");
+    }
+
+    void FreeSceneSelfOriginLock::ArmMirrorSelfCorrections(OStim::Thread* thread)
+    {
+        auto* node = thread ? thread->getCurrentNode() : nullptr;
+        const auto* nodeID = node ? node->getNodeID() : nullptr;
+        if (!nodeID || !*nodeID) {
+            return;
+        }
+
+        _mirrorSelfNodeID = nodeID;
+        _mirrorSelfCorrectionStage = 0;
+        _mirrorSelfCorrectionDue =
+            std::chrono::steady_clock::now() +
+            kMirrorSelfFirstDelay;
+
+        SKSE::log::info(
+            "OSTNET MIRROR SELF ONESHOT ARMED thread={} node={} firstDelayMs={} secondDelayMs={} maxWrites=2",
+            thread->getThreadID(),
+            _mirrorSelfNodeID,
+            kMirrorSelfFirstDelay.count(),
+            kMirrorSelfSecondDelay.count());
+    }
+
+    void FreeSceneSelfOriginLock::ApplyMirrorSelfCorrection(
+        OStim::Thread* thread,
+        RE::PlayerCharacter* localPlayer,
+        std::uint32_t stage)
+    {
+        if (!thread || !localPlayer || !_center.IsFinite()) {
+            return;
+        }
+
+        const RE::NiPoint3 target{
+            _center.x,
+            _center.y,
+            _center.z
+        };
+
+        auto* reference =
+            static_cast<RE::TESObjectREFR*>(localPlayer);
+
+        const auto refBefore = localPlayer->GetPosition();
+        const auto headingBefore = localPlayer->GetAngleZ();
+
+        RE::NiPoint3 rootBefore = refBefore;
+        bool hadRootBefore = false;
+        if (auto* root = localPlayer->Get3D()) {
+            rootBefore = root->world.translate;
+            hadRootBefore = true;
+        }
+
+        const float refDistBeforeSq =
+            refBefore.GetSquaredDistance(target);
+        const float rootDistBeforeSq =
+            rootBefore.GetSquaredDistance(target);
+
+        const bool needsWrite =
+            refDistBeforeSq > kMirrorSelfCorrectionToleranceSq ||
+            (hadRootBefore &&
+             rootDistBeforeSq > kMirrorSelfCorrectionToleranceSq);
+
+        if (needsWrite) {
+            // The 0.31.5 logs proved that the true mirror participant acquires
+            // the same ~22-unit role/root displacement later seen on the STR
+            // proxy. Apply the authoritative OStim scene center only after the
+            // startup/node animation has settled. This is a bounded one-shot,
+            // not a continuous position lock.
+            StopReferenceTranslation(reference);
+            localPlayer->SetPosition(target, true);
+            localPlayer->SetRotationZ(_center.r);
+            reference->data.location = target;
+            reference->data.angle.z = _center.r;
+            reference->Update3DPosition(true);
+        }
+
+        const auto refAfter = localPlayer->GetPosition();
+        RE::NiPoint3 rootAfter = refAfter;
+        bool hadRootAfter = false;
+        if (auto* root = localPlayer->Get3D()) {
+            rootAfter = root->world.translate;
+            hadRootAfter = true;
+        }
+
+        SKSE::log::info(
+            "OSTNET MIRROR SELF ONESHOT thread={} node={} stage={} actor={:08X} wrote={} refBefore=({:.3f},{:.3f},{:.3f},{:.5f}) rootBefore={}({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f},{:.5f}) refAfter=({:.3f},{:.3f},{:.3f},{:.5f}) rootAfter={}({:.3f},{:.3f},{:.3f}) refDistBefore2={:.3f} rootDistBefore2={:.3f} refDistAfter2={:.6f} rootDistAfter2={:.6f} bounded=1 continuous=0 skeletonWrites=0",
+            thread->getThreadID(),
+            thread->getCurrentNode() && thread->getCurrentNode()->getNodeID() ?
+                thread->getCurrentNode()->getNodeID() : "",
+            stage,
+            localPlayer->GetFormID(),
+            needsWrite ? 1 : 0,
+            refBefore.x,
+            refBefore.y,
+            refBefore.z,
+            headingBefore,
+            hadRootBefore ? 1 : 0,
+            rootBefore.x,
+            rootBefore.y,
+            rootBefore.z,
+            target.x,
+            target.y,
+            target.z,
+            _center.r,
+            refAfter.x,
+            refAfter.y,
+            refAfter.z,
+            localPlayer->GetAngleZ(),
+            hadRootAfter ? 1 : 0,
+            rootAfter.x,
+            rootAfter.y,
+            rootAfter.z,
+            refDistBeforeSq,
+            rootDistBeforeSq,
+            refAfter.GetSquaredDistance(target),
+            rootAfter.GetSquaredDistance(target));
     }
 
     void FreeSceneSelfOriginLock::HandleStop(OStim::Thread* thread)
@@ -262,17 +418,42 @@ namespace OStimTogether
             _center.z
         };
 
-        auto& transport = STRPMTransport::GetSingleton();
+        auto& bridge = OStimBridge::GetSingleton();
+        const bool remoteMirror =
+            bridge.IsRemoteMirrorForAlignment(_activeThreadID);
+
+        auto* currentNode = thread->getCurrentNode();
+        const auto* currentNodeID =
+            currentNode ? currentNode->getNodeID() : nullptr;
+
         const auto now = std::chrono::steady_clock::now();
+
+        if (remoteMirror && currentNodeID && *currentNodeID) {
+            if (_mirrorSelfNodeID != currentNodeID) {
+                ArmMirrorSelfCorrections(thread);
+            }
+
+            if (_mirrorSelfCorrectionStage < 2 &&
+                _mirrorSelfCorrectionDue.time_since_epoch().count() != 0 &&
+                now >= _mirrorSelfCorrectionDue) {
+                const auto stage = _mirrorSelfCorrectionStage + 1;
+                ApplyMirrorSelfCorrection(thread, localPlayer, stage);
+                ++_mirrorSelfCorrectionStage;
+
+                if (_mirrorSelfCorrectionStage < 2) {
+                    _mirrorSelfCorrectionDue =
+                        now + kMirrorSelfSecondDelay;
+                } else {
+                    _mirrorSelfCorrectionDue = {};
+                }
+            }
+        }
+
+        auto& transport = STRPMTransport::GetSingleton();
         const bool shouldLog =
             _lastLog.time_since_epoch().count() == 0 ||
             now - _lastLog >= kLogInterval;
 
-        // 0.31.5 alignment diagnostic: read the true local participant as well
-        // as the STR proxy. This is deliberately read-only. Comparing these
-        // values across the two clients tells us whether STR is simply copying
-        // OStim's rendered role/root displacement to the proxy or whether the
-        // proxy acquires an additional transform/scale divergence locally.
         if (shouldLog) {
             const auto playerRef = localPlayer->GetPosition();
             RE::NiPoint3 playerRoot = playerRef;
@@ -285,10 +466,9 @@ namespace OStimTogether
             }
 
             SKSE::log::info(
-                "OSTNET FREE ROLE DIAG thread={} node={} kind=local-player actor={:08X} ref=({:.3f},{:.3f},{:.3f}) root={}({:.3f},{:.3f},{:.3f}) rootFromCenter=({:.3f},{:.3f},{:.3f}) rootScale={:.5f} writes=0",
+                "OSTNET FREE ROLE DIAG thread={} node={} kind=local-player actor={:08X} ref=({:.3f},{:.3f},{:.3f}) root={}({:.3f},{:.3f},{:.3f}) rootFromCenter=({:.3f},{:.3f},{:.3f}) rootScale={:.5f} mirror={} correctionStage={} writes=bounded-only",
                 _activeThreadID,
-                thread->getCurrentNode() && thread->getCurrentNode()->getNodeID() ?
-                    thread->getCurrentNode()->getNodeID() : "",
+                currentNodeID ? currentNodeID : "",
                 localPlayer->GetFormID(),
                 playerRef.x,
                 playerRef.y,
@@ -300,7 +480,9 @@ namespace OStimTogether
                 playerRoot.x - target.x,
                 playerRoot.y - target.y,
                 playerRoot.z - target.z,
-                playerRootScale);
+                playerRootScale,
+                remoteMirror ? 1 : 0,
+                _mirrorSelfCorrectionStage);
         }
 
         std::uint32_t proxyCount = 0;
@@ -331,13 +513,6 @@ namespace OStimTogether
             const auto driftSq = before.GetSquaredDistance(target);
             bool wrote = false;
             if (driftSq > kWriteToleranceSq) {
-                // STR has already sampled this participant's real local actor,
-                // including the animation/root-motion displacement. If that
-                // displaced sample is left as the proxy reference origin,
-                // OStim's proxy animation applies the role displacement again.
-                // Cancel only that duplicated logical translation. Do not move
-                // the proxy 3D, call SetPosition/TranslateTo/Update3DPosition,
-                // or touch any skeleton transform.
                 static_cast<RE::TESObjectREFR*>(actor)->data.location = target;
                 wrote = true;
                 ++writeCount;
@@ -354,10 +529,9 @@ namespace OStimTogether
 
             if (shouldLog) {
                 SKSE::log::info(
-                    "OSTNET PROXY ORIGIN LOCK thread={} node={} idx={} actor={:08X} wrote={} refBefore=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) refAfter=({:.3f},{:.3f},{:.3f}) rootBefore={}({:.3f},{:.3f},{:.3f}) rootAfter={}({:.3f},{:.3f},{:.3f}) rootFromCenter=({:.3f},{:.3f},{:.3f}) rootScale={:.5f} driftBefore2={:.3f} driftAfter2={:.6f} rootMoved2={:.6f} proxyReferenceOnly=1 localPlayerWrites=0 skeletonWrites=0 update3D=0",
+                    "OSTNET PROXY ORIGIN LOCK thread={} node={} idx={} actor={:08X} wrote={} refBefore=({:.3f},{:.3f},{:.3f}) target=({:.3f},{:.3f},{:.3f}) refAfter=({:.3f},{:.3f},{:.3f}) rootBefore={}({:.3f},{:.3f},{:.3f}) rootAfter={}({:.3f},{:.3f},{:.3f}) rootFromCenter=({:.3f},{:.3f},{:.3f}) rootScale={:.5f} driftBefore2={:.3f} driftAfter2={:.6f} rootMoved2={:.6f} proxyReferenceOnly=1 skeletonWrites=0 update3D=0",
                     _activeThreadID,
-                    thread->getCurrentNode() && thread->getCurrentNode()->getNodeID() ?
-                        thread->getCurrentNode()->getNodeID() : "",
+                    currentNodeID ? currentNodeID : "",
                     i,
                     actor->GetFormID(),
                     wrote ? 1 : 0,
@@ -392,10 +566,11 @@ namespace OStimTogether
         if (shouldLog) {
             _lastLog = now;
             SKSE::log::info(
-                "OSTNET PROXY ORIGIN STATE thread={} proxies={} writes={} owner=remote-proxy-reference localPlayerWrites=0",
+                "OSTNET PROXY ORIGIN STATE thread={} proxies={} writes={} owner=remote-proxy-reference mirrorSelfStage={}",
                 _activeThreadID,
                 proxyCount,
-                writeCount);
+                writeCount,
+                _mirrorSelfCorrectionStage);
         }
     }
 }
