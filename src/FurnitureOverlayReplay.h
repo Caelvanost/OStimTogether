@@ -55,8 +55,13 @@ namespace OStimTogether
             OStim::Thread* thread,
             RE::FormID* furnitureFormID = nullptr) const;
 
+        // IMPORTANT: callback-safe. The OStim event callback already gives us
+        // the Thread and physical furniture ID. Do not call ThreadInterface
+        // again from here: OStim may still hold its internal thread mutex while
+        // dispatching START/NODE/STOP listeners.
         void ScheduleReplay(
             std::int32_t threadID,
+            RE::FormID expectedFurniture,
             std::string_view trigger);
 
         void RunReplayPass(
@@ -74,6 +79,7 @@ namespace OStimTogether
         NodeListener _nodeListener;
         StopListener _stopListener;
         std::atomic_bool _initialized{ false };
+        bool _supportsFurniture{ false };
 
         std::unordered_set<std::int32_t> _activeFurnitureThreads;
         std::unordered_map<std::int32_t, std::uint64_t> _replayGeneration;
