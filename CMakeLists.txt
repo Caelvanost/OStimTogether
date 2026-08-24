@@ -29,6 +29,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/OCumStateSync.h
         src/OCumOverlayRelink.cpp
         src/OCumOverlayRelink.h
+        src/OCumOverlaySkinFix.cpp
+        src/OCumOverlaySkinFix.h
         src/FurnitureOverlayReplay.cpp
         src/FurnitureOverlayReplay.h
         src/AccuratePenetrationAPI.h
