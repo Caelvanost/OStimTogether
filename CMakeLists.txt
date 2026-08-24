@@ -27,6 +27,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/CoopSessionManager.h
         src/OCumStateSync.cpp
         src/OCumStateSync.h
+        src/OCumOverlayRelink.cpp
+        src/OCumOverlayRelink.h
         src/FurnitureOverlayReplay.cpp
         src/FurnitureOverlayReplay.h
         src/AccuratePenetrationAPI.h
