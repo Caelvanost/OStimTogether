@@ -2,5 +2,5 @@
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
   <Version>0.33.0</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls, NPC undressing and optional OCum integration. v0.33.0 adds an optional Procedural Penis Animations bridge based on Accurate Penetration's public SKSE API, including per-stage penetration-target observation, deduplication and multiplayer transport. Remote target application remains isolated pending a supported PPA target setter.</Description>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls, NPC undressing and optional OCum integration. v0.33.0 adds optional bidirectional Procedural Penis Animations synchronization for the verified Accurate Penetration build, reproducing PPA's own runtime target and explicit target-actor changes between scene participants. The integration validates the exact PPA binary before installing its hooks and disables itself safely on unsupported builds.</Description>
 </fomod>
