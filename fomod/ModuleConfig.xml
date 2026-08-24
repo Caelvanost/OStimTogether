@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.35.5</moduleName>
+  <moduleName>OStim Together 0.35.6</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -9,7 +9,7 @@
         <group name="OStim Together integrations" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="OCum Ascended synchronization">
-              <description>Synchronizes OCum Ascended RaceMenu CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.35.5 uses RaceMenu's public RevertOverlay API for Body [OvlN] in both free/wall and physical-furniture scenes: the overlay is rebound to the actor's current body skin with resetDiffuse=false, then the OCum properties are reapplied locally or to the STR proxy. The unsafe direct NiSkinInstance clone path remains disabled. Requires OCum Ascended on both clients.</description>
+              <description>Synchronizes OCum Ascended RaceMenu CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.35.6 uses one common RaceMenu RevertOverlay(resetDiffuse=false) repair path for Body [OvlN] in free/wall and physical-furniture scenes. The extra FreeSceneOverlayReplay fallback is inactive so free scenes no longer compete with the native relink/material passes that rendered correctly on furniture in 0.35.5. The unsafe direct NiSkinInstance clone path remains disabled. Requires OCum Ascended on both clients.</description>
               <files>
                 <folder source="10 OCum Ascended" destination="" priority="0" />
               </files>
