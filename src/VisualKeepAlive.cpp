@@ -2,7 +2,7 @@
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
-#include "OCumOverlayRelink.h"
+#include "OCumOverlaySkinFix.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
 
@@ -34,11 +34,13 @@ namespace OStimTogether
             return;
         }
 
-        // One common OCum RaceMenu relink path is used for both free-standing
-        // and physical-furniture OStim scenes. The previous furniture-only
-        // replay remains compiled for rollback/diagnostics but is deliberately
-        // not initialized in 0.35.0.
-        OCumOverlayRelink::GetSingleton().Initialize();
+        // 0.35.1 replaces the 0.35.0 BodyUpdate+OverlayUpdate relink runtime.
+        // RaceMenu's QueueOverlayBuild can pick a small auxiliary body-slot
+        // geometry during OStim transitions (observed 2053 vertices / 19
+        // matrices instead of the rendered 18436 / 49 body). The direct skin
+        // fix binds existing Body [OvlN] geometries to the selected live body
+        // without asking RaceMenu to rediscover that source.
+        OCumOverlaySkinFix::GetSingleton().Initialize();
 
         _refreshQueued.store(false);
 
@@ -106,20 +108,18 @@ namespace OStimTogether
                             FreeSceneSelfOriginLock::GetSingleton()
                                 .Tick();
 
-                            // Internally rate-limited to 100 ms. Detects live
-                            // OCum equip-object armor state on active scene
-                            // actors and publishes the authoritative RaceMenu
-                            // CumOverlays snapshots.
+                            // Detect live OCum state first. This may update the
+                            // stored RaceMenu CumOverlays snapshot and can queue
+                            // RaceMenu's historical refresh path.
                             OCumStateSync::GetSingleton()
                                 .Tick();
 
-                            // Common free + furniture RaceMenu repair. It runs
-                            // after OCumStateSync in the same game-thread tick,
-                            // so BodyUpdate -> OverlayUpdate -> NodeOverride can
-                            // supersede the historical delayed proxy hard
-                            // reinstall and relink Body [OvlN] to the body that
-                            // OStim currently renders.
-                            OCumOverlayRelink::GetSingleton()
+                            // Final authoritative live-3D pass for both free and
+                            // furniture scenes. If RaceMenu rebuilt Body [OvlN]
+                            // against the wrong source, the next 100 ms tick sees
+                            // a different skin pointer and binds it back to the
+                            // full rendered body before reapplying OCum props.
+                            OCumOverlaySkinFix::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
