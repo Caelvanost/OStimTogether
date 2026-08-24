@@ -33,6 +33,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/OCumOverlaySkinFix.h
         src/FurnitureOverlayReplay.cpp
         src/FurnitureOverlayReplay.h
+        src/FreeSceneOverlayReplay.cpp
+        src/FreeSceneOverlayReplay.h
         src/AccuratePenetrationAPI.h
         src/PPAIntegration.cpp
         src/PPAAbsoluteHooks.cpp
