@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.33.3</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.3 fixes PPA target synchronization by normalizing PPA's non-explicit target-actor sentinel for transport and reproducing PPA's native active-runtime refresh after remote setTarget/setInteraction writes. OCum 3D overlays continue to use the RaceMenu ActorUpdateManager repair validated in v0.33.2.</Description>
+  <Version>0.33.4</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.4 keeps the validated PPA synchronization from v0.33.3 and fixes asymmetric OCum 3D overlays on remote Skyrim Together proxies by performing one coalesced RaceMenu RemoveOverlays/AddOverlays reinstall when CumOverlays actually changes, then replaying node overrides against the proxy's current body.</Description>
 </fomod>
