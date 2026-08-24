@@ -14,7 +14,14 @@ namespace OStimTogether
         static OCumOverlayRelink& GetSingleton();
 
         bool Initialize();
-        void Reset();
+        void Reset()
+        {
+            _activeThreads.clear();
+            _overlaySignatures.clear();
+            _actorGeneration.clear();
+            _nextGeneration = 1;
+            _nextPoll = {};
+        }
         void Tick();
 
     private:
