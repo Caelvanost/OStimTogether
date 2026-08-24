@@ -14,7 +14,7 @@ namespace OStimTogether
         constexpr std::string_view kMarker = "CumOverlays";
         constexpr std::string_view kVaginalObject = "ocumvagmesh";
         constexpr std::string_view kAnalObject = "ocumanmesh";
-        constexpr auto kPollInterval = std::chrono::milliseconds(100);
+        constexpr auto kPollInterval = std::chrono::milliseconds(250);
         constexpr auto kStopSnapshotDelay = std::chrono::milliseconds(700);
 
         bool IsArmorWorn(RE::Actor* actor, RE::TESObjectARMO* armor)
@@ -174,6 +174,16 @@ namespace OStimTogether
         return out;
     }
 
+    std::string OCumStateSync::BuildOverlaySignature(
+        const std::vector<std::string>& chunks)
+    {
+        std::string signature = fmt::format("{}|", chunks.size());
+        for (const auto& chunk : chunks) {
+            signature += fmt::format("{}:{}|", chunk.size(), chunk);
+        }
+        return signature;
+    }
+
     void OCumStateSync::SendLocalObjectState(
         RE::PlayerCharacter* player,
         std::string_view type,
@@ -253,10 +263,33 @@ namespace OStimTogether
                 }
 
                 auto* player = static_cast<RE::PlayerCharacter*>(actor);
-                const bool vaginalWorn = IsArmorWorn(actor, vaginal);
-                const bool analWorn = IsArmorWorn(actor, anal);
                 auto& state = _meshStates[actorID];
 
+                // Read-only overlay mirroring. Capture the state OCum/RaceMenu
+                // already owns locally; never rebuild/relink/materialize it here.
+                const auto chunks = RaceMenuOverlayBridge::GetSingleton()
+                    .CaptureMarkedOverlayChunks(player, kMarker, 2200);
+                const auto overlaySignature = BuildOverlaySignature(chunks);
+                const bool overlayChanged =
+                    !state.overlayInitialized ||
+                    state.overlaySignature != overlaySignature;
+
+                if (overlayChanged) {
+                    state.overlayInitialized = true;
+                    state.overlaySignature = overlaySignature;
+                    SendLocalSnapshot(
+                        state.initialized ? "overlay-change" : "active-start");
+
+                    SKSE::log::info(
+                        "OSTNET OCUM OVERLAY MIRROR thread={} actor={:08X} chunks={} empty={} action=send-only localOverlayWrites=0",
+                        threadID,
+                        actorID,
+                        chunks.size(),
+                        chunks.empty() ? 1 : 0);
+                }
+
+                const bool vaginalWorn = IsArmorWorn(actor, vaginal);
+                const bool analWorn = IsArmorWorn(actor, anal);
                 const bool first = !state.initialized;
                 const bool vaginalChanged = state.initialized && state.vaginal != vaginalWorn;
                 const bool analChanged = state.initialized && state.anal != analWorn;
