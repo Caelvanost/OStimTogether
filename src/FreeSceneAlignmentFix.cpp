@@ -48,6 +48,23 @@ namespace OStimTogether
                 std::string_view::npos;
         }
 
+        bool HasPhysicalFurniture(OStim::Thread* thread)
+        {
+            if (!thread) {
+                return false;
+            }
+
+            auto* furniture = static_cast<RE::TESObjectREFR*>(
+                thread->getFurnitureObject());
+            auto* base = furniture ? furniture->GetBaseObject() : nullptr;
+
+            // Free/wall mirrors use the unified temporary XMarkerHeading
+            // anchor (base 00000034). It is intentionally passed through
+            // OStim's furniture slot, but it is NOT physical furniture and
+            // must not re-enable the continuous STR proxy pose guard.
+            return base && base->As<RE::TESFurniture>() != nullptr;
+        }
+
         bool HasSTRProxy(OStim::Thread* thread)
         {
             if (!thread) {
@@ -148,7 +165,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ALIGN READY threadsVersion={} mode=root-motion-native poseGuard=0 convergenceWrites=0 update3D=0 startReleaseMs={} nodeReleaseMs={}",
+            "OSTNET FREE SCENE ALIGN READY threadsVersion={} mode=root-motion-native poseGuard=0 convergenceWrites=0 update3D=0 startReleaseMs={} nodeReleaseMs={} virtualAnchorIsFree=1",
             _threads->getVersion(),
             kInitialReleaseDelay.count(),
             kNodeReleaseDelay.count());
@@ -163,7 +180,7 @@ namespace OStimTogether
 
         auto& bridge = OStimBridge::GetSingleton();
         if (!bridge.SupportsThreadFurniture() ||
-            thread->getFurnitureObject() ||
+            HasPhysicalFurniture(thread) ||
             IsWallNode(thread) ||
             !HasSTRProxy(thread)) {
             return;
@@ -187,7 +204,7 @@ namespace OStimTogether
         }
 
         const auto threadID = thread->getThreadID();
-        const bool hasFurniture = thread->getFurnitureObject() != nullptr;
+        const bool hasFurniture = HasPhysicalFurniture(thread);
         const bool wall = IsWallNode(thread);
 
         if (hasFurniture || wall) {
@@ -246,10 +263,10 @@ namespace OStimTogether
         // OStimBridge registers before this listener and may arm its legacy
         // full STR-proxy pose guard during START. That guard writes both the
         // TESObjectREFR and rendered 3D root through Update3DPosition(true).
-        // Runtime 0.27.3 logs proved that this resets the root of free-standing
-        // paired animations to the reference origin and is itself the source
-        // of the visible alignment error. Disable it immediately. Furniture
-        // and wall nodes continue to use the established anchored guard.
+        // Runtime logs proved that this resets the root of free-standing paired
+        // animations to the reference origin and produces visible oscillation.
+        // A virtual XMarkerHeading anchor is still a free scene, so disable the
+        // guard for both the owning thread and the remote mirror.
         bridge.DisableSTRProxyPoseGuard(
             threadID,
             "free-root-motion-native");
@@ -264,7 +281,7 @@ namespace OStimTogether
         }
 
         SKSE::log::info(
-            "OSTNET FREE SCENE ROOT NATIVE thread={} node={} reason={} delayMs={} poseGuard=0 setPosition=0 update3D=0 action=stop-translation-only",
+            "OSTNET FREE SCENE ROOT NATIVE thread={} node={} reason={} delayMs={} poseGuard=0 setPosition=0 update3D=0 action=stop-translation-only virtualAnchorAccepted=1",
             threadID,
             CurrentNodeID(thread),
             reason,
@@ -328,7 +345,7 @@ namespace OStimTogether
         auto* thread = _threads->getThread(threadID);
         if (!thread ||
             !thread->isPlayerThread() ||
-            thread->getFurnitureObject() ||
+            HasPhysicalFurniture(thread) ||
             IsWallNode(thread)) {
             return;
         }
