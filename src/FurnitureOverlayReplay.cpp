@@ -70,15 +70,21 @@ namespace OStimTogether
             return false;
         }
 
+        // Read the interface version once, outside every OStim event callback.
+        // Re-entering ThreadInterface while OStim dispatches NODE/START can
+        // deadlock if the dispatcher still owns its thread mutex.
+        _supportsFurniture = _threads->getVersion() >= 3;
+
         _threads->registerThreadStartListener(&_startListener);
         _threads->registerNodeChangedListener(&_nodeListener);
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET OCUM FURNITURE REPLAY READY pollMs={} delays={}+{} method=free-scene-racemenu-pipeline physicalFurnitureOnly=1",
+            "OSTNET OCUM FURNITURE REPLAY READY pollMs={} delays={}+{} method=free-scene-racemenu-pipeline physicalFurnitureOnly=1 callbackReentry=0 supportsFurniture={}",
             kPollInterval.count(),
             kReplayDelay1.count(),
-            kReplayDelay2.count());
+            kReplayDelay2.count(),
+            _supportsFurniture ? 1 : 0);
         return true;
     }
 
@@ -95,7 +101,7 @@ namespace OStimTogether
         OStim::Thread* thread,
         RE::FormID* furnitureFormID) const
     {
-        if (!thread || !_threads || _threads->getVersion() < 3) {
+        if (!thread || !_supportsFurniture) {
             return false;
         }
 
@@ -135,12 +141,13 @@ namespace OStimTogether
         }
 
         SKSE::log::info(
-            "OSTNET OCUM FURNITURE START thread={} furniture={:08X} actors={} action=schedule-free-pipeline",
+            "OSTNET OCUM FURNITURE START thread={} furniture={:08X} actors={} action=schedule-free-pipeline callbackReentry=0",
             threadID,
             furnitureID,
             thread->getActorCount());
 
-        ScheduleReplay(threadID, "START");
+        // Do not call ThreadInterface::getThread() from this callback.
+        ScheduleReplay(threadID, furnitureID, "START");
     }
 
     void FurnitureOverlayReplay::HandleNode(OStim::Thread* thread)
@@ -157,12 +164,15 @@ namespace OStimTogether
         const char* nodeID = node ? node->getNodeID() : nullptr;
 
         SKSE::log::info(
-            "OSTNET OCUM FURNITURE NODE thread={} furniture={:08X} node={} action=schedule-free-pipeline",
+            "OSTNET OCUM FURNITURE NODE thread={} furniture={:08X} node={} action=schedule-free-pipeline callbackReentry=0",
             threadID,
             furnitureID,
             nodeID ? nodeID : "none");
 
-        ScheduleReplay(threadID, "NODE");
+        // OStim may still hold its internal thread mutex while dispatching this
+        // listener. Carry forward the already-known furniture ID and defer all
+        // ThreadInterface access until the scheduled game-thread pass.
+        ScheduleReplay(threadID, furnitureID, "NODE");
     }
 
     void FurnitureOverlayReplay::HandleStop(OStim::Thread* thread)
@@ -196,15 +206,13 @@ namespace OStimTogether
 
     void FurnitureOverlayReplay::ScheduleReplay(
         std::int32_t threadID,
+        RE::FormID expectedFurniture,
         std::string_view trigger)
     {
-        if (!_threads) {
-            return;
-        }
-
-        auto* thread = _threads->getThread(threadID);
-        RE::FormID furnitureID = 0;
-        if (!IsPhysicalFurniture(thread, &furnitureID)) {
+        // Callback-safe by design: no _threads->getThread(), getVersion(), or
+        // other ThreadInterface calls here. START/NODE listeners can therefore
+        // schedule work without re-entering OStim's thread registry.
+        if (!_supportsFurniture || expectedFurniture == 0) {
             return;
         }
 
@@ -213,13 +221,13 @@ namespace OStimTogether
         const std::string triggerCopy(trigger);
 
         const auto schedule =
-            [threadID, generation, furnitureID, triggerCopy](
+            [threadID, generation, expectedFurniture, triggerCopy](
                 std::chrono::milliseconds delay,
                 const char* phase) {
                 std::thread(
                     [threadID,
                      generation,
-                     furnitureID,
+                     expectedFurniture,
                      triggerCopy,
                      delay,
                      phase = std::string(phase)]() {
@@ -233,14 +241,14 @@ namespace OStimTogether
                         tasks->AddTask(
                             [threadID,
                              generation,
-                             furnitureID,
+                             expectedFurniture,
                              triggerCopy,
                              phase]() {
                                 FurnitureOverlayReplay::GetSingleton().
                                     RunReplayPass(
                                         threadID,
                                         generation,
-                                        furnitureID,
+                                        expectedFurniture,
                                         triggerCopy,
                                         phase);
                             });
@@ -266,6 +274,8 @@ namespace OStimTogether
             return;
         }
 
+        // This runs later on Skyrim's game thread, outside the OStim callback.
+        // ThreadInterface re-entry is safe here.
         auto* thread = _threads->getThread(threadID);
         RE::FormID furnitureID = 0;
         if (!IsPhysicalFurniture(thread, &furnitureID) ||
@@ -357,7 +367,8 @@ namespace OStimTogether
         std::vector<std::int32_t> stale;
         for (const auto threadID : _activeFurnitureThreads) {
             auto* thread = _threads->getThread(threadID);
-            if (!IsPhysicalFurniture(thread)) {
+            RE::FormID furnitureID = 0;
+            if (!IsPhysicalFurniture(thread, &furnitureID)) {
                 stale.push_back(threadID);
                 continue;
             }
@@ -397,7 +408,10 @@ namespace OStimTogether
             // when the snapshot changes. Furniture needs the SAME refresh again
             // after the furniture/body attachment has had time to settle.
             if (changedWithOverlay) {
-                ScheduleReplay(threadID, "OVERLAY-CHANGED");
+                ScheduleReplay(
+                    threadID,
+                    furnitureID,
+                    "OVERLAY-CHANGED");
             }
         }
 
