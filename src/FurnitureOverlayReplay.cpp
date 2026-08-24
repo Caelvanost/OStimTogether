@@ -153,7 +153,7 @@ namespace OStimTogether
         const auto threadID = thread->getThreadID();
         _activeFurnitureThreads.insert(threadID);
 
-        const auto* node = thread->getCurrentNode();
+        auto* node = thread->getCurrentNode();
         const char* nodeID = node ? node->getNodeID() : nullptr;
 
         SKSE::log::info(
