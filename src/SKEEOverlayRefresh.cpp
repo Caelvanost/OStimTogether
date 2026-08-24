@@ -171,6 +171,29 @@ namespace OStimTogether::SKEEOverlayRefresh
             return nullptr;
         }
 
+        bool SceneContainsObject(
+            RE::NiAVObject* object,
+            const RE::NiAVObject* wanted)
+        {
+            if (!object || !wanted) {
+                return false;
+            }
+
+            if (object == wanted) {
+                return true;
+            }
+
+            if (auto* node = object->AsNode()) {
+                for (auto& child : node->GetChildren()) {
+                    if (child && SceneContainsObject(child.get(), wanted)) {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         void LogOverlayGeometryDiagnostic(
             RE::Actor* actor,
             std::string_view phase,
@@ -228,17 +251,57 @@ namespace OStimTogether::SKEEOverlayRefresh
                 }
             }
 
+            auto* skinRoot = skin ? skin->rootParent : nullptr;
+            const char* skinRootName =
+                skinRoot && skinRoot->name.c_str() ?
+                    skinRoot->name.c_str() : "none";
+            const char* parentName =
+                object->parent && object->parent->name.c_str() ?
+                    object->parent->name.c_str() : "none";
+
+            const bool skinRootSameAsActorRoot =
+                skinRoot && root && skinRoot == root;
+            const bool skinRootUnderActor =
+                skinRoot && root && SceneContainsObject(root, skinRoot);
+
+            std::uint32_t sampleBones = 0;
+            std::uint32_t sampleBonesUnderActor = 0;
+            const char* firstBoneName = "none";
+            bool firstBoneUnderActor = false;
+
+            if (skin && skin->bones && skin->numMatrices > 0) {
+                sampleBones = std::min<std::uint32_t>(skin->numMatrices, 16u);
+                for (std::uint32_t i = 0; i < sampleBones; ++i) {
+                    auto* bone = skin->bones[i];
+                    if (!bone) {
+                        continue;
+                    }
+                    const bool underActor =
+                        root && SceneContainsObject(root, bone);
+                    if (underActor) {
+                        ++sampleBonesUnderActor;
+                    }
+                    if (i == 0) {
+                        firstBoneUnderActor = underActor;
+                        if (bone->name.c_str()) {
+                            firstBoneName = bone->name.c_str();
+                        }
+                    }
+                }
+            }
+
             const auto& flags = geometry->GetFlags();
             const char* rawRTTI =
                 geometry->GetRTTI() ? geometry->GetRTTI()->name : nullptr;
 
             SKSE::log::info(
-                "OSTNET SKEE OVERLAY GEOMETRY phase={} actor={:08X} player={} node=1 geometry=1 rtti={} parent={} skin={} skinData={} skinPartition={} partitions={} vertices={} partitionBuffer={} rendererData={} shader={} shaderSkinned={} appCull={} hidden={} disableSorting={} alwaysDraw={} generation={}",
+                "OSTNET SKEE OVERLAY GEOMETRY phase={} actor={:08X} player={} node=1 geometry=1 rtti={} parent={} parentName=\"{}\" skin={} skinData={} skinPartition={} partitions={} vertices={} partitionBuffer={} rendererData={} shader={} shaderSkinned={} skinRoot={} skinRootName=\"{}\" skinRootSameActorRoot={} skinRootUnderActor={} numMatrices={} frameID={} bonesPtr={} boneWorldPtr={} sampleBones={} sampleBonesUnderActor={} firstBone=\"{}\" firstBoneUnderActor={} appCull={} hidden={} disableSorting={} alwaysDraw={} generation={}",
                 phase,
                 actor->GetFormID(),
                 actor->IsPlayerRef() ? 1 : 0,
                 rawRTTI ? rawRTTI : "unknown",
                 object->parent ? 1 : 0,
+                parentName,
                 skin ? 1 : 0,
                 skin && skin->skinData ? 1 : 0,
                 skinPartition ? 1 : 0,
@@ -248,6 +311,18 @@ namespace OStimTogether::SKEEOverlayRefresh
                 runtime.rendererData ? 1 : 0,
                 shader ? 1 : 0,
                 shaderSkinned ? 1 : 0,
+                skinRoot ? 1 : 0,
+                skinRootName,
+                skinRootSameAsActorRoot ? 1 : 0,
+                skinRootUnderActor ? 1 : 0,
+                skin ? skin->numMatrices : 0,
+                skin ? skin->frameID : 0,
+                skin && skin->bones ? 1 : 0,
+                skin && skin->boneWorldTransforms ? 1 : 0,
+                sampleBones,
+                sampleBonesUnderActor,
+                firstBoneName,
+                firstBoneUnderActor ? 1 : 0,
                 object->GetAppCulled() ? 1 : 0,
                 flags.all(RE::NiAVObject::Flag::kHidden) ? 1 : 0,
                 flags.all(RE::NiAVObject::Flag::kDisableSorting) ? 1 : 0,
