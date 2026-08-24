@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.33.5</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.5 keeps the validated PPA synchronization from v0.33.3 and extends the remote OCum overlay repair: after the coalesced RaceMenu proxy overlay reinstall, OStim Together performs a bounded transform-and-world-bound refresh so newly attached Body [OvlN] geometry inherits the proxy's current scene-graph spatial state.</Description>
+  <Version>0.33.6</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.6 keeps the validated PPA synchronization from v0.33.3 and corrects the ordering of the remote OCum overlay repair: RaceMenu's queued RemoveOverlays/AddOverlays work now completes before delayed proxy transform/world-bound passes run at 150 ms and 650 ms. The same passes log Body [Ovl0] skin, partition, renderer and shader state for direct comparison with the known-good local player path.</Description>
 </fomod>
