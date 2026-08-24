@@ -27,14 +27,6 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/CoopSessionManager.h
         src/OCumStateSync.cpp
         src/OCumStateSync.h
-        src/OCumOverlayRelink.cpp
-        src/OCumOverlayRelink.h
-        src/OCumOverlaySkinFix.cpp
-        src/OCumOverlaySkinFix.h
-        src/FurnitureOverlayReplay.cpp
-        src/FurnitureOverlayReplay.h
-        src/FreeSceneOverlayReplay.cpp
-        src/FreeSceneOverlayReplay.h
         src/AccuratePenetrationAPI.h
         src/PPAIntegration.cpp
         src/PPAAbsoluteHooks.cpp
@@ -64,8 +56,6 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/VisualKeepAlive.h
         src/PapyrusAnimationBridge.cpp
         src/PapyrusAnimationBridge.h
-        src/SKEEOverlayRefresh.cpp
-        src/SKEEOverlayRefresh.h
         src/MirrorUndressRepair.cpp
         src/MirrorUndressRepair.h
         src/Input.cpp
