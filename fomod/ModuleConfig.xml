@@ -28,29 +28,12 @@
               </typeDescriptor>
             </plugin>
             <plugin name="PPA - Procedural Penis Animations synchronization">
-              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. v0.33.3+ also reproduces PPA's native active-runtime refresh after remote target writes. Requires PPA on both clients. OStim Together validates the exact supported PPA runtime build and uses direct absolute x64 setter detours with no rel32/ASLR distance dependency.</description>
+              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. v0.33.3+ also reproduces PPA's native active-runtime refresh after remote target writes. Recommended by default and still user-deselectable. If PPA is not installed or the runtime DLL is unsupported, OStim Together disables this optional integration safely. Requires PPA on both clients for synchronization.</description>
               <files>
                 <folder source="20 Procedural Penis Animations" destination="" priority="0" />
               </files>
               <typeDescriptor>
-                <dependencyType>
-                  <!-- Recommended is pre-selected but user-deselectable. Vortex
-                       does not consistently classify SKSE DLLs as Active/Inactive,
-                       so invert the test: only downgrade to Optional when BOTH
-                       canonical PPA artifacts are explicitly reported Missing.
-                       A detected DLL or TOML therefore leaves the default
-                       Recommended state active. -->
-                  <defaultType name="Recommended" />
-                  <patterns>
-                    <pattern>
-                      <dependencies operator="And">
-                        <fileDependency file="SKSE\Plugins\AccuratePenetration.dll" state="Missing" />
-                        <fileDependency file="SKSE\Plugins\accurate-penetration.toml" state="Missing" />
-                      </dependencies>
-                      <type name="Optional" />
-                    </pattern>
-                  </patterns>
-                </dependencyType>
+                <type name="Recommended" />
               </typeDescriptor>
             </plugin>
           </plugins>
