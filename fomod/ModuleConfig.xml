@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.33.5</moduleName>
+  <moduleName>OStim Together 0.33.6</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -9,7 +9,7 @@
         <group name="OStim Together integrations" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="OCum Ascended synchronization">
-              <description>Synchronizes OCum Ascended RaceMenu cum overlays and its actual vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.33.5 keeps the validated local-player ActorUpdateManager refresh and, for remote STR proxies only, follows the coalesced RaceMenu overlay reinstall with a bounded transform-and-world-bound refresh so freshly attached Body [OvlN] geometry inherits the proxy's current scene-graph spatial state. Requires OCum Ascended on both clients.</description>
+              <description>Synchronizes OCum Ascended RaceMenu cum overlays and its actual vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.33.6 keeps the validated local-player ActorUpdateManager refresh and, for remote STR proxies only, lets RaceMenu finish its queued overlay reinstall before delayed transform/world-bound passes run at 150 ms and 650 ms. These passes also log Body [Ovl0] skin/partition/renderer/shader state for comparison with the visible local overlay. Requires OCum Ascended on both clients.</description>
               <files>
                 <folder source="10 OCum Ascended" destination="" priority="0" />
               </files>
