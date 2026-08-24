@@ -2,7 +2,7 @@
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
-#include "FurnitureOverlayReplay.h"
+#include "OCumOverlayRelink.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
 
@@ -34,10 +34,11 @@ namespace OStimTogether
             return;
         }
 
-        // Register the physical-furniture overlay listener before the worker
-        // begins ticking it. The module itself remains a no-op unless OCum and
-        // a real TESFurniture-backed OStim scene are present.
-        FurnitureOverlayReplay::GetSingleton().Initialize();
+        // One common OCum RaceMenu relink path is used for both free-standing
+        // and physical-furniture OStim scenes. The previous furniture-only
+        // replay remains compiled for rollback/diagnostics but is deliberately
+        // not initialized in 0.35.0.
+        OCumOverlayRelink::GetSingleton().Initialize();
 
         _refreshQueued.store(false);
 
@@ -107,14 +108,18 @@ namespace OStimTogether
 
                             // Internally rate-limited to 100 ms. Detects live
                             // OCum equip-object armor state on active scene
-                            // actors and watches RaceMenu CumOverlays changes.
+                            // actors and publishes the authoritative RaceMenu
+                            // CumOverlays snapshots.
                             OCumStateSync::GetSingleton()
                                 .Tick();
 
-                            // Physical furniture only. Replays the exact
-                            // RaceMenu/SKEE overlay path already validated in
-                            // free-standing scenes after furniture/node settling.
-                            FurnitureOverlayReplay::GetSingleton()
+                            // Common free + furniture RaceMenu repair. It runs
+                            // after OCumStateSync in the same game-thread tick,
+                            // so BodyUpdate -> OverlayUpdate -> NodeOverride can
+                            // supersede the historical delayed proxy hard
+                            // reinstall and relink Body [OvlN] to the body that
+                            // OStim currently renders.
+                            OCumOverlayRelink::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
