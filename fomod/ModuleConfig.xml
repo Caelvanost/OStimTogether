@@ -28,17 +28,24 @@
               </typeDescriptor>
             </plugin>
             <plugin name="PPA - Procedural Penis Animations synchronization">
-              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. Requires the verified AccuratePenetration.dll build supported by OStim Together 0.33.0; unsupported PPA builds are detected and the integration disables itself safely.</description>
+              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. Requires AccuratePenetration.dll on both clients. OStim Together validates the exact supported PPA runtime build before installing its hooks and disables the integration safely if the DLL is unsupported.</description>
               <files>
                 <folder source="20 Procedural Penis Animations" destination="" priority="0" />
               </files>
               <typeDescriptor>
                 <dependencyType>
-                  <defaultType name="NotUsable" />
+                  <!-- DLLs are not load-order plugins. Some FOMOD hosts report
+                       an installed SKSE DLL as Inactive even though the file is
+                       present and will be loaded by SKSE. Keep the integration
+                       manually selectable as a safe fallback, and recommend it
+                       whenever AccuratePenetration.dll is present in either
+                       state. Runtime exact-build validation remains authoritative. -->
+                  <defaultType name="Optional" />
                   <patterns>
                     <pattern>
-                      <dependencies operator="And">
-                        <fileDependency file="SKSE\Plugins\AccuratePenetration.dll" state="Active" />
+                      <dependencies operator="Or">
+                        <fileDependency file="SKSE/Plugins/AccuratePenetration.dll" state="Active" />
+                        <fileDependency file="SKSE/Plugins/AccuratePenetration.dll" state="Inactive" />
                       </dependencies>
                       <type name="Recommended" />
                     </pattern>
