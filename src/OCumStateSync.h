@@ -45,6 +45,13 @@ namespace OStimTogether
             bool vaginal{ false };
             bool anal{ false };
             std::chrono::steady_clock::time_point lastVisualRefresh{};
+
+            // RaceMenu overlay state is separate from OCum's worn mesh state.
+            // Track a compact signature so a real overlay/node rebuild is only
+            // requested when CumOverlays actually changes, never every poll.
+            bool overlayInitialized{ false };
+            std::string overlaySignature;
+            std::chrono::steady_clock::time_point lastOverlayPoll{};
         };
 
         void HandleStart(OStim::Thread* thread);
@@ -56,6 +63,8 @@ namespace OStimTogether
             std::string_view reason);
 
         static std::string HexEncode(std::string_view value);
+        static std::string BuildOverlaySignature(
+            const std::vector<std::string>& chunks);
 
         OStim::ThreadInterface* _threads{ nullptr };
         StartListener _startListener;
