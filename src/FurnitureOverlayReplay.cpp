@@ -390,6 +390,8 @@ namespace OStimTogether
         _nextPoll = now + kPollInterval;
 
         std::vector<std::int32_t> stale;
+        auto& transport = STRPMTransport::GetSingleton();
+
         for (const auto threadID : _activeFurnitureThreads) {
             auto* thread = _threads->getThread(threadID);
             RE::FormID furnitureID = 0;
@@ -406,9 +408,11 @@ namespace OStimTogether
                     continue;
                 }
 
-                if (!actor->IsPlayerRef() &&
-                    !STRPMTransport::GetSingleton()
-                         .ResolveConnection(actor->GetFormID()).has_value()) {
+                const bool isPlayer = actor->IsPlayerRef();
+                const bool isProxy =
+                    !isPlayer &&
+                    transport.ResolveConnection(actor->GetFormID()).has_value();
+                if (!isPlayer && !isProxy) {
                     continue;
                 }
 
@@ -425,13 +429,55 @@ namespace OStimTogether
                     previous = signature;
                     if (!chunks.empty()) {
                         changedWithOverlay = true;
+
+                        // Run the known-good furniture materialization path
+                        // immediately in the same keepalive tick that observes
+                        // the new snapshot. OCumStateSync runs immediately before
+                        // this watcher and may have queued the historical proxy
+                        // RemoveOverlays/AddOverlays path. Queueing the furniture
+                        // light path here advances SKEEOverlayRefresh's actor
+                        // generation before that delayed hard pass executes, so
+                        // the obsolete hard reinstall is deterministically
+                        // coalesced away. This is the ordering that made the
+                        // third climax visible on both clients in 0.34.3.
+                        if (isPlayer) {
+                            RaceMenuOverlayBridge::GetSingleton()
+                                .RefreshLocalOverlayGeometry(
+                                    actor,
+                                    kChannel,
+                                    chunks);
+                            SKEEOverlayRefresh::Queue(
+                                actor,
+                                "OCUM-OVERLAY-CHANGED");
+                        } else {
+                            for (const auto& chunk : chunks) {
+                                RaceMenuOverlayBridge::GetSingleton()
+                                    .ApplyRemoteOverlayChunk(
+                                        actor,
+                                        kChannel,
+                                        chunk);
+                            }
+                            SKEEOverlayRefresh::Queue(
+                                actor,
+                                "OCUM-FURNITURE-PROXY-REPLAY");
+                        }
+
+                        SKSE::log::info(
+                            "OSTNET OCUM FURNITURE OVERLAY REPLAY trigger=OVERLAY-CHANGED phase=IMMEDIATE thread={} furniture={:08X} actor={:08X} player={} chunks={} action={}",
+                            threadID,
+                            furnitureID,
+                            actor->GetFormID(),
+                            isPlayer ? 1 : 0,
+                            chunks.size(),
+                            isPlayer ?
+                                "player-direct+racemenu" :
+                                "proxy-direct+light-racemenu");
                     }
                 }
             }
 
-            // OCumStateSync already performs the immediate free-scene refresh
-            // when the snapshot changes. Furniture needs the SAME refresh again
-            // after the furniture/body attachment has had time to settle.
+            // Keep the bounded T350/T1100 passes as post-animation/body-settle
+            // insurance. The immediate pass above owns first-climax ordering.
             if (changedWithOverlay) {
                 ScheduleReplay(
                     threadID,
