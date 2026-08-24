@@ -16,6 +16,10 @@ namespace OStimTogether
             "Data/SKSE/Plugins/OStimTogether_PPA.ini";
         constexpr char kPluginName[] = "OStimTogether";
 
+        // Keep PPA's rel32 branch islands close to AccuratePenetration.dll,
+        // rather than using CommonLib's default pool near SkyrimSE.exe.
+        SKSE::Trampoline g_ppaTrampoline{ "OStimTogether PPA" };
+
         // Exact AccuratePenetration.dll supplied by the user for v0.33.0.
         // SHA-256:
         // 0BD68B935E54211EEA71BE064AEB628B2AA268A7F35229FF554ED65A88EED087
@@ -115,14 +119,12 @@ namespace OStimTogether
 
         template <class Fn, class Hook>
         Fn InstallEntryDetour(
+            SKSE::Trampoline& trampoline,
             std::uintptr_t source,
             Hook hook)
         {
-            auto& trampoline = SKSE::GetTrampoline();
-
             auto* originalStub =
-                static_cast<std::uint8_t*>(
-                    trampoline.allocate(16));
+                static_cast<std::uint8_t*>(trampoline.allocate(16));
             if (!originalStub) {
                 return nullptr;
             }
@@ -141,8 +143,7 @@ namespace OStimTogether
 
             // Redirect PPA's actual function entry to OStim Together. The
             // callable original is our explicit stub above, NOT write_branch's
-            // return value (which is meaningful only when replacing an
-            // existing branch/call instruction).
+            // return value (which only describes a pre-existing branch/call).
             trampoline.write_branch<5>(source, hook);
 
             return reinterpret_cast<Fn>(originalStub);
@@ -340,14 +341,17 @@ namespace OStimTogether
         _getAnimationTagger = reinterpret_cast<GetAnimationTaggerFn>(
             base + kGetAnimationTaggerRVA);
 
-        // Space for two 16-byte original stubs plus any relay islands needed
-        // when the loaded DLLs are farther than rel32 range from each other.
-        SKSE::AllocTrampoline(256);
+        // Allocate an independent executable trampoline within ±2 GiB of the
+        // PPA module. This guarantees CommonLib's five-byte rel32 branches can
+        // always reach their relay islands regardless of ASLR placement.
+        g_ppaTrampoline.create(256, module);
 
         _setInteractionOriginal = InstallEntryDetour<SetInteractionFn>(
+            g_ppaTrampoline,
             base + kSetInteractionRVA,
             &PPAIntegration::SetInteractionHook);
         _setTargetOriginal = InstallEntryDetour<SetTargetFn>(
+            g_ppaTrampoline,
             base + kSetTargetRVA,
             &PPAIntegration::SetTargetHook);
 
@@ -364,7 +368,7 @@ namespace OStimTogether
 
         _hooksInstalled = true;
         SKSE::log::info(
-            "OSTNET PPA INTERNAL READY timestamp=0x{:08X} imageSize=0x{:X} getterRva=0x{:X} setInteractionRva=0x{:X} setTargetRva=0x{:X} stolenBytes={} exactBuild=1 targetWrite=1",
+            "OSTNET PPA INTERNAL READY timestamp=0x{:08X} imageSize=0x{:X} getterRva=0x{:X} setInteractionRva=0x{:X} setTargetRva=0x{:X} stolenBytes={} trampoline=near-ppa exactBuild=1 targetWrite=1",
             kSupportedPETimestamp,
             kSupportedImageSize,
             kGetAnimationTaggerRVA,
