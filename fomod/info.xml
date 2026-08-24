@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.33.2</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.2 completes the optional Procedural Penis Animations bridge with direct absolute x64 setter detours that have no rel32/ASLR distance limit, and repairs OCum 3D overlay materialization through RaceMenu's public ActorUpdateManager overlay + node-override pipeline, coalesced and triggered only when CumOverlays state changes.</Description>
+  <Version>0.33.3</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.3 fixes PPA target synchronization by normalizing PPA's non-explicit target-actor sentinel for transport and reproducing PPA's native active-runtime refresh after remote setTarget/setInteraction writes. OCum 3D overlays continue to use the RaceMenu ActorUpdateManager repair validated in v0.33.2.</Description>
 </fomod>
