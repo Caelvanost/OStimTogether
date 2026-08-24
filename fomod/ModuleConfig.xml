@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.35.0</moduleName>
+  <moduleName>OStim Together 0.35.1</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -9,7 +9,7 @@
         <group name="OStim Together integrations" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="OCum Ascended synchronization">
-              <description>Synchronizes OCum Ascended RaceMenu CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.35.0 uses one common RaceMenu body-relink pipeline in both free-standing and physical-furniture scenes: each CumOverlays change queues BodyUpdate, OverlayUpdate and NodeOverride in RaceMenu's native order, then reapplies the authoritative overlay materials. This repairs Body [OvlN] overlays that remain linked to an obsolete or incorrect body geometry across OStim scene transitions and supersedes the previous furniture-only/hard-reinstall repairs. Requires OCum Ascended on both clients.</description>
+              <description>Synchronizes OCum Ascended RaceMenu CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.35.1 replaces RaceMenu body-source rediscovery with a direct live-geometry skin repair in both free-standing and physical-furniture scenes: OStim Together selects the current full skinned body, binds existing Body [OvlN] geometry to that body skin/vertex descriptor, and then reapplies the authoritative CumOverlays material state. This targets both the wrong 2053-vertex/19-matrix furniture binding and stale remote-proxy bindings seen in free scenes. Requires OCum Ascended on both clients.</description>
               <files>
                 <folder source="10 OCum Ascended" destination="" priority="0" />
               </files>
