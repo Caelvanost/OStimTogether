@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.34.1</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.34.1 keeps the validated PPA synchronization and the owner-authoritative OCum snapshot handling from v0.34.0, and explicitly replays the same RaceMenu/SKEE CumOverlays materialization path that works in free-standing scenes after a physical TESFurniture scene has settled. Bounded replays run after furniture START/NODE transitions and after new CumOverlays appear, without changing OCum equip meshes or free-scene behavior.</Description>
+  <Version>0.34.2</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.34.2 keeps the v0.34.1 physical-furniture CumOverlays replay path but removes all ThreadInterface re-entry from OStim START/NODE callbacks, fixing the scene-start deadlock/freeze while preserving the same delayed free-scene RaceMenu/SKEE overlay materialization method.</Description>
 </fomod>
