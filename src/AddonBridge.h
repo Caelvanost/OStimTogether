@@ -4,16 +4,8 @@
 
 namespace OStimTogether
 {
-    // Generic, addon-agnostic bridge.
-    //
-    // Papyrus addons send the local player a standard SKSE ModEvent named
-    // "ostimtogether_addon".  The event's strArg is one of:
-    //   OVR|<channel>|<texture-marker>
-    //   OBJ|<channel>|<ostim-object-type>
-    // and numArg is used as the boolean state for OBJ.
-    //
-    // The core never needs to know which addon owns a channel, which texture
-    // marker it uses, or which OStim equip-object names it defines.
+    // Generic addon bridge. Local addon visuals remain entirely addon-owned:
+    // this class only captures local state and mirrors it to the remote proxy.
     class AddonBridge final :
         public RE::BSTEventSink<SKSE::ModCallbackEvent>
     {
@@ -26,14 +18,10 @@ namespace OStimTogether
             const SKSE::ModCallbackEvent* event,
             RE::BSTEventSource<SKSE::ModCallbackEvent>* source) override;
 
-        // Called by ActorResolver on Skyrim's game thread for ADDON* packets.
         void HandleRemotePacket(
             const std::string& sender,
             std::string_view payload);
 
-        // OStim removes equip objects and may rebuild actor 3D after its STOP
-        // listener fires. Reapply the last generic addon state after that
-        // cleanup so persistent addon visuals survive scene exit.
         void ScheduleRemoteStateReapply(
             RE::Actor* actor,
             std::string_view reason);
@@ -66,12 +54,8 @@ namespace OStimTogether
             std::string_view objectType,
             bool equipped);
 
-        // Apply one fully assembled remote overlay snapshot. OCum is special:
-        // a mirrored OStim scene can make the local OCum instance write its own
-        // CumOverlays onto the STR proxy while the real owner is also sending
-        // their authoritative state. Before applying an OCum snapshot, remove
-        // only the proxy's current CumOverlays slots, then replay the owner's
-        // complete snapshot. Other RaceMenu overlays are never cleared.
+        // Applies only to the remote actor. OCum snapshots are authoritative for
+        // CumOverlays; unrelated RaceMenu overlays are left untouched.
         void ApplyRemoteOverlaySnapshot(
             RE::Actor* actor,
             std::string_view channel,
@@ -94,6 +78,11 @@ namespace OStimTogether
 
         std::atomic_bool _registered{ false };
         std::mutex _stateMutex;
+
+        // One signature per local channel+marker. Repeated Papyrus polling does
+        // not resend identical snapshots or trigger repeated remote material work.
+        std::unordered_map<std::string, std::string> _localOverlaySignatures;
+
         std::unordered_map<
             RE::FormID,
             std::unordered_map<std::string, CachedOverlayState>>
