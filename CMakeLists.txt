@@ -29,6 +29,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/OCumStateSync.h
         src/AccuratePenetrationAPI.h
         src/PPAIntegration.cpp
+        src/PPAAbsoluteHooks.cpp
         src/PPAIntegration.h
         src/PapyrusConsentBridge.cpp
         src/PapyrusConsentBridge.h
