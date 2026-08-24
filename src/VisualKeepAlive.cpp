@@ -2,6 +2,7 @@
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
+#include "FurnitureOverlayReplay.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
 
@@ -32,6 +33,11 @@ namespace OStimTogether
         if (_running.exchange(true)) {
             return;
         }
+
+        // Register the physical-furniture overlay listener before the worker
+        // begins ticking it. The module itself remains a no-op unless OCum and
+        // a real TESFurniture-backed OStim scene are present.
+        FurnitureOverlayReplay::GetSingleton().Initialize();
 
         _refreshQueued.store(false);
 
@@ -101,10 +107,14 @@ namespace OStimTogether
 
                             // Internally rate-limited to 100 ms. Detects live
                             // OCum equip-object armor state on active scene
-                            // actors, refreshes local 3D through Skyrim's own
-                            // QueueNiNodeUpdate path, and publishes real-player
-                            // mesh state changes over STRPM.
+                            // actors and watches RaceMenu CumOverlays changes.
                             OCumStateSync::GetSingleton()
+                                .Tick();
+
+                            // Physical furniture only. Replays the exact
+                            // RaceMenu/SKEE overlay path already validated in
+                            // free-standing scenes after furniture/node settling.
+                            FurnitureOverlayReplay::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
