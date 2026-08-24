@@ -20,7 +20,7 @@ namespace OStimTogether
         // rather than using CommonLib's default pool near SkyrimSE.exe.
         SKSE::Trampoline g_ppaTrampoline{ "OStimTogether PPA" };
 
-        // Exact AccuratePenetration.dll supplied by the user for v0.33.0.
+        // Exact AccuratePenetration.dll supplied by the user for v0.33.x.
         // SHA-256:
         // 0BD68B935E54211EEA71BE064AEB628B2AA268A7F35229FF554ED65A88EED087
         constexpr std::uint32_t kSupportedPETimestamp = 0x6A633AE8;
@@ -29,6 +29,7 @@ namespace OStimTogether
         constexpr std::uintptr_t kSetInteractionRVA = 0x00057D80;
         constexpr std::uintptr_t kSetTargetRVA = 0x00058070;
         constexpr std::size_t kEntryStolenBytes = 5;
+        constexpr std::size_t kAbsoluteJumpBytes = 14;
 
         // Both setters begin with the same five whole instructions:
         //   push rbp / push rbx / push rsi / push rdi
@@ -117,6 +118,42 @@ namespace OStimTogether
                        signature.size()) == 0;
         }
 
+        bool IsRel32Reachable(
+            std::uintptr_t source,
+            std::uintptr_t target)
+        {
+            constexpr std::uintptr_t kMaxForward = 0x7FFFFFFF;
+            constexpr std::uintptr_t kMaxBackward = 0x80000000;
+            const auto nextInstruction = source + 5;
+
+            if (target >= nextInstruction) {
+                return target - nextInstruction <= kMaxForward;
+            }
+            return nextInstruction - target <= kMaxBackward;
+        }
+
+        void WriteAbsoluteJump(
+            std::uint8_t* destination,
+            std::uintptr_t target)
+        {
+            if (!destination) {
+                return;
+            }
+
+            // jmp qword ptr [rip+0]
+            // dq target
+            // This 14-byte x64 jump has no ±2 GiB restriction and does not
+            // clobber RAX or any other register.
+            constexpr std::array<std::uint8_t, 6> kPrefix{
+                0xFF, 0x25, 0x00, 0x00, 0x00, 0x00
+            };
+            std::memcpy(destination, kPrefix.data(), kPrefix.size());
+            std::memcpy(
+                destination + kPrefix.size(),
+                std::addressof(target),
+                sizeof(target));
+        }
+
         template <class Fn, class Hook>
         Fn InstallEntryDetour(
             SKSE::Trampoline& trampoline,
@@ -124,28 +161,48 @@ namespace OStimTogether
             Hook hook)
         {
             auto* originalStub =
+                static_cast<std::uint8_t*>(trampoline.allocate(32));
+            auto* hookRelay =
                 static_cast<std::uint8_t*>(trampoline.allocate(16));
-            if (!originalStub) {
+            if (!originalStub || !hookRelay) {
                 return nullptr;
             }
 
-            // Copy only the verified instruction-aligned prologue, then jump
-            // back into PPA immediately after those displaced instructions.
+            // Callable original: replay the five verified whole instructions,
+            // then use an absolute x64 jump back to PPA. No rel32 is involved.
             std::memcpy(
                 originalStub,
                 kSetterStolenBytes.data(),
                 kSetterStolenBytes.size());
-
-            trampoline.write_branch<5>(
-                reinterpret_cast<std::uintptr_t>(originalStub) +
-                    kEntryStolenBytes,
+            WriteAbsoluteJump(
+                originalStub + kEntryStolenBytes,
                 source + kEntryStolenBytes);
 
-            // Redirect PPA's actual function entry to OStim Together. The
-            // callable original is our explicit stub above, NOT write_branch's
-            // return value (which only describes a pre-existing branch/call).
-            trampoline.write_branch<5>(source, hook);
+            // PPA itself can only spare five bytes at this entry, so its entry
+            // branches to a relay allocated close to AccuratePenetration.dll.
+            // The relay then makes an unrestricted absolute jump into
+            // OStimTogether.dll, which may be anywhere in the 64-bit address
+            // space under ASLR.
+            const auto hookAddress =
+                reinterpret_cast<std::uintptr_t>(hook);
+            const auto relayAddress =
+                reinterpret_cast<std::uintptr_t>(hookRelay);
+            WriteAbsoluteJump(hookRelay, hookAddress);
 
+            // CommonLib's write_branch<5>() reports/fails fatally when the
+            // displacement is outside signed rel32 range. Check it ourselves
+            // first so an unexpected Windows module layout merely disables PPA
+            // integration instead of closing Skyrim.
+            if (!IsRel32Reachable(source, relayAddress)) {
+                SKSE::log::error(
+                    "OSTNET PPA INTERNAL relay out of rel32 range source=0x{:X} relay=0x{:X} hook=0x{:X} action=disable-no-hook",
+                    source,
+                    relayAddress,
+                    hookAddress);
+                return nullptr;
+            }
+
+            trampoline.write_branch<5>(source, relayAddress);
             return reinterpret_cast<Fn>(originalStub);
         }
     }
@@ -253,7 +310,7 @@ namespace OStimTogether
         auto* declaration = SKSE::PluginDeclaration::GetSingleton();
         const auto version = declaration ?
             declaration->GetVersion() :
-            REL::Version{ 0, 33, 0, 0 };
+            REL::Version{ 0, 33, 1, 0 };
         const auto pluginName = declaration ?
             std::string(declaration->GetName()) :
             std::string(kPluginName);
@@ -341,9 +398,9 @@ namespace OStimTogether
         _getAnimationTagger = reinterpret_cast<GetAnimationTaggerFn>(
             base + kGetAnimationTaggerRVA);
 
-        // Allocate an independent executable trampoline within ±2 GiB of the
-        // PPA module. This guarantees CommonLib's five-byte rel32 branches can
-        // always reach their relay islands regardless of ASLR placement.
+        // Allocate an independent executable trampoline close to the PPA
+        // module. Only the five-byte PPA-entry -> relay jump needs rel32 range;
+        // both relay destinations use absolute x64 jumps.
         g_ppaTrampoline.create(256, module);
 
         _setInteractionOriginal = InstallEntryDetour<SetInteractionFn>(
@@ -359,7 +416,7 @@ namespace OStimTogether
             !_setInteractionOriginal ||
             !_setTargetOriginal) {
             SKSE::log::error(
-                "OSTNET PPA INTERNAL hook installation failed getter={} interactionOriginal={} targetOriginal={}",
+                "OSTNET PPA INTERNAL hook installation failed getter={} interactionOriginal={} targetOriginal={} action=disable-integration",
                 _getAnimationTagger ? 1 : 0,
                 _setInteractionOriginal ? 1 : 0,
                 _setTargetOriginal ? 1 : 0);
@@ -368,7 +425,7 @@ namespace OStimTogether
 
         _hooksInstalled = true;
         SKSE::log::info(
-            "OSTNET PPA INTERNAL READY timestamp=0x{:08X} imageSize=0x{:X} getterRva=0x{:X} setInteractionRva=0x{:X} setTargetRva=0x{:X} stolenBytes={} trampoline=near-ppa exactBuild=1 targetWrite=1",
+            "OSTNET PPA INTERNAL READY timestamp=0x{:08X} imageSize=0x{:X} getterRva=0x{:X} setInteractionRva=0x{:X} setTargetRva=0x{:X} stolenBytes={} trampoline=near-ppa-relay-abs64 exactBuild=1 targetWrite=1",
             kSupportedPETimestamp,
             kSupportedImageSize,
             kGetAnimationTaggerRVA,
