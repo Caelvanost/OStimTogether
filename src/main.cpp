@@ -135,9 +135,9 @@ namespace
             // there is no continuous player position lock.
             OStimTogether::FreeSceneSelfOriginLock::GetSingleton().Initialize();
 
-            // Native OCum mesh watcher. It reads actual worn OCum armor on
-            // active OStim actors; the optional Papyrus integration supplements
-            // this with OStim's own equip-object state and live overlay capture.
+            // Native OCum mesh/overlay watcher. Actual worn OCum armor remains
+            // the source for 3D equip meshes; RaceMenu CumOverlays changes are
+            // materialized through ActorUpdateManager in 0.33.2.
             OStimTogether::OCumStateSync::GetSingleton().Initialize();
 
             // Remote skeleton writes remain disabled. Keep the old probe source
@@ -187,12 +187,17 @@ namespace
                             "OSTNET ALIGN SYNC transport unavailable: participant-authored alignment disabled");
                     }
 
-                    // Optional FOMOD integration. Accurate Penetration API V1
-                    // gives us authoritative target-site observations and a
-                    // stable transport protocol today. Remote application is
-                    // intentionally isolated behind PPAIntegration until PPA
-                    // exposes a supported target setter.
-                    OStimTogether::PPAIntegration::GetSingleton().Initialize();
+                    // Optional FOMOD integration. 0.33.2 preinstalls direct
+                    // absolute-x64 detours at PPA's exact validated runtime
+                    // setters before the normal bridge connects its public API
+                    // and STRPM channel. This removes all rel32/ASLR dependence.
+                    auto& ppa =
+                        OStimTogether::PPAIntegration::GetSingleton();
+                    if (!ppa.PrepareAbsoluteHooks()) {
+                        SKSE::log::warn(
+                            "OSTNET PPA absolute hook preinstall unavailable; integration will remain disabled unless hooks were already installed");
+                    }
+                    ppa.Initialize();
                 }
             }
 
