@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.34.3</moduleName>
+  <moduleName>OStim Together 0.34.4</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -9,7 +9,7 @@
         <group name="OStim Together integrations" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="OCum Ascended synchronization">
-              <description>Synchronizes OCum Ascended RaceMenu CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.34.3 keeps the local physical-furniture replay that made the 3D overlay visible on the owning player, but changes the remote STR proxy replay to direct owner-authoritative Body [OvlN] materialization plus a lightweight RaceMenu update. The furniture replay no longer performs the proxy RemoveOverlays/AddOverlays hard reinstall that transiently duplicated CumOverlays slots on Player1. Requires OCum Ascended on both clients.</description>
+              <description>Synchronizes OCum Ascended RaceMenu CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.34.4 preserves the direct/light physical-furniture overlay replay from v0.34.3 and now runs that path immediately when a new CumOverlays snapshot is observed, before the historical delayed proxy hard reinstall can execute. This reproduces from the first overlay the ordering that rendered correctly on both clients at the third climax in testing, while keeping T350/T1100 post-settle passes as backup. Requires OCum Ascended on both clients.</description>
               <files>
                 <folder source="10 OCum Ascended" destination="" priority="0" />
               </files>
