@@ -2,7 +2,6 @@
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
-#include "OCumOverlaySkinFix.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
 
@@ -34,13 +33,14 @@ namespace OStimTogether
             return;
         }
 
-        // 0.35.1 replaces the 0.35.0 BodyUpdate+OverlayUpdate relink runtime.
-        // RaceMenu's QueueOverlayBuild can pick a small auxiliary body-slot
-        // geometry during OStim transitions (observed 2053 vertices / 19
-        // matrices instead of the rendered 18436 / 49 body). The direct skin
-        // fix binds existing Body [OvlN] geometries to the selected live body
-        // without asking RaceMenu to rediscover that source.
-        OCumOverlaySkinFix::GetSingleton().Initialize();
+        // Safety hotfix: v0.35.2 attempted to deep-clone live NiSkinInstance
+        // objects for Body [OvlN]. CrashLogger confirmed an access violation in
+        // Skyrim's DeepCopyStream during climax while cloning an overlay skin.
+        // Keep the OCumOverlaySkinFix code compiled for future diagnostics, but
+        // do not initialize or tick it until a non-cloning relink strategy is
+        // implemented and validated.
+        SKSE::log::warn(
+            "OSTNET OCUM DIRECT SKIN DISABLED reason=unsafe-live-NiSkinInstance-deep-copy hotfix=0.35.3");
 
         _refreshQueued.store(false);
 
@@ -108,18 +108,11 @@ namespace OStimTogether
                             FreeSceneSelfOriginLock::GetSingleton()
                                 .Tick();
 
-                            // Detect live OCum state first. This may update the
-                            // stored RaceMenu CumOverlays snapshot and can queue
-                            // RaceMenu's historical refresh path.
+                            // Detect live OCum equip-object and RaceMenu overlay
+                            // state through the established non-destructive path.
+                            // The experimental direct skin-clone repair is
+                            // intentionally disabled in v0.35.3.
                             OCumStateSync::GetSingleton()
-                                .Tick();
-
-                            // Final authoritative live-3D pass for both free and
-                            // furniture scenes. If RaceMenu rebuilt Body [OvlN]
-                            // against the wrong source, the next 100 ms tick sees
-                            // a different skin pointer and binds it back to the
-                            // full rendered body before reapplying OCum props.
-                            OCumOverlaySkinFix::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
