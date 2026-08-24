@@ -84,8 +84,11 @@ namespace OStimTogether::SKEEOverlayRefresh
         }
 
         constexpr auto kQuietDelay = std::chrono::milliseconds(250);
+        constexpr auto kProxySpatialDelay1 = std::chrono::milliseconds(150);
+        constexpr auto kProxySpatialDelay2 = std::chrono::milliseconds(650);
         constexpr std::string_view kOCumOverlayChanged =
             "OCUM-OVERLAY-CHANGED";
+        constexpr std::string_view kBodyOverlay0 = "Body [Ovl0]";
 
         std::mutex g_queueMutex;
         std::unordered_map<RE::FormID, std::uint64_t> g_actorGeneration;
@@ -140,51 +143,180 @@ namespace OStimTogether::SKEEOverlayRefresh
                    it->second == generation;
         }
 
-        void QueueProxySpatialRefresh(
-            RE::FormID actorID,
+        RE::NiAVObject* FindSceneObject(
+            RE::NiAVObject* object,
+            std::string_view wantedName)
+        {
+            if (!object || wantedName.empty()) {
+                return nullptr;
+            }
+
+            const char* rawName = object->name.c_str();
+            if (rawName && std::string_view(rawName) == wantedName) {
+                return object;
+            }
+
+            if (auto* node = object->AsNode()) {
+                for (auto& child : node->GetChildren()) {
+                    if (!child) {
+                        continue;
+                    }
+                    if (auto* found = FindSceneObject(
+                            child.get(), wantedName)) {
+                        return found;
+                    }
+                }
+            }
+
+            return nullptr;
+        }
+
+        void LogOverlayGeometryDiagnostic(
+            RE::Actor* actor,
+            std::string_view phase,
             std::uint64_t generation)
         {
-            auto* tasks = SKSE::GetTaskInterface();
-            if (!tasks) {
+            if (!actor) {
                 return;
             }
 
-            // This task is enqueued only after RaceMenu has queued its
-            // RemoveOverlays/AddOverlays/node-override work. The SKSE task queue
-            // therefore reaches this pass after the fresh Body [OvlN] objects
-            // have been attached. UpdateTransformAndBounds deliberately avoids
-            // controller/animation evaluation while forcing the new children to
-            // inherit the proxy's current skeleton transform and world bounds.
-            tasks->AddTask(
-                [actorID, generation]() {
-                    if (!IsGenerationCurrent(actorID, generation)) {
+            auto* root = actor->Get3D();
+            auto* object = root ?
+                FindSceneObject(root, kBodyOverlay0) :
+                nullptr;
+            auto* geometry = object ? object->AsGeometry() : nullptr;
+
+            if (!geometry) {
+                SKSE::log::info(
+                    "OSTNET SKEE OVERLAY GEOMETRY phase={} actor={:08X} player={} root={} node={} geometry=0 generation={}",
+                    phase,
+                    actor->GetFormID(),
+                    actor->IsPlayerRef() ? 1 : 0,
+                    root ? 1 : 0,
+                    object ? 1 : 0,
+                    generation);
+                return;
+            }
+
+            auto& runtime = geometry->GetGeometryRuntimeData();
+            auto* skin = runtime.skinInstance.get();
+            auto* skinPartition = skin ? skin->skinPartition.get() : nullptr;
+
+            std::uint32_t partitionCount = 0;
+            std::uint32_t vertexCount = 0;
+            bool partitionBuffer = false;
+            if (skinPartition) {
+                partitionCount = skinPartition->numPartitions;
+                vertexCount = skinPartition->vertexCount;
+                if (partitionCount > 0) {
+                    partitionBuffer =
+                        skinPartition->partitions[0].buffData != nullptr;
+                }
+            }
+
+            bool shader = false;
+            bool shaderSkinned = false;
+            auto* effect =
+                runtime.properties[RE::BSGeometry::States::kEffect].get();
+            if (effect &&
+                effect->GetType() == RE::NiShadeProperty::Type::kShade) {
+                auto* lighting = static_cast<RE::BSLightingShaderProperty*>(effect);
+                shader = lighting != nullptr;
+                if (lighting) {
+                    shaderSkinned = lighting->flags.any(
+                        RE::BSShaderProperty::EShaderPropertyFlag::kSkinned);
+                }
+            }
+
+            const auto& flags = geometry->GetFlags();
+            const char* rawRTTI =
+                geometry->GetRTTI() ? geometry->GetRTTI()->name : nullptr;
+
+            SKSE::log::info(
+                "OSTNET SKEE OVERLAY GEOMETRY phase={} actor={:08X} player={} node=1 geometry=1 rtti={} parent={} skin={} skinData={} skinPartition={} partitions={} vertices={} partitionBuffer={} rendererData={} shader={} shaderSkinned={} appCull={} hidden={} disableSorting={} alwaysDraw={} generation={}",
+                phase,
+                actor->GetFormID(),
+                actor->IsPlayerRef() ? 1 : 0,
+                rawRTTI ? rawRTTI : "unknown",
+                object->parent ? 1 : 0,
+                skin ? 1 : 0,
+                skin && skin->skinData ? 1 : 0,
+                skinPartition ? 1 : 0,
+                partitionCount,
+                vertexCount,
+                partitionBuffer ? 1 : 0,
+                runtime.rendererData ? 1 : 0,
+                shader ? 1 : 0,
+                shaderSkinned ? 1 : 0,
+                object->GetAppCulled() ? 1 : 0,
+                flags.all(RE::NiAVObject::Flag::kHidden) ? 1 : 0,
+                flags.all(RE::NiAVObject::Flag::kDisableSorting) ? 1 : 0,
+                flags.all(RE::NiAVObject::Flag::kAlwaysDraw) ? 1 : 0,
+                generation);
+        }
+
+        void QueueGeometryPass(
+            RE::FormID actorID,
+            std::uint64_t generation,
+            std::chrono::milliseconds delay,
+            std::string phase,
+            bool spatialRefresh)
+        {
+            // RaceMenu's RemoveOverlays/AddOverlays(false) are asynchronous.
+            // Do not enqueue this pass immediately from the same SKSE task: in
+            // practice that can still execute before the fresh overlay holder
+            // has been installed. Sleep off-thread first, then return to the
+            // game thread and inspect/update the geometry that now exists.
+            std::thread(
+                [actorID,
+                 generation,
+                 delay,
+                 phase = std::move(phase),
+                 spatialRefresh]() {
+                    std::this_thread::sleep_for(delay);
+
+                    auto* tasks = SKSE::GetTaskInterface();
+                    if (!tasks) {
                         return;
                     }
 
-                    auto* form = RE::TESForm::LookupByID(actorID);
-                    auto* actor = form ? form->As<RE::Actor>() : nullptr;
-                    if (!actor || actor->IsPlayerRef()) {
-                        return;
-                    }
+                    tasks->AddTask(
+                        [actorID,
+                         generation,
+                         phase,
+                         spatialRefresh]() {
+                            auto* form = RE::TESForm::LookupByID(actorID);
+                            auto* actor = form ? form->As<RE::Actor>() : nullptr;
+                            if (!actor) {
+                                return;
+                            }
 
-                    auto* root = actor->Get3D();
-                    if (!root) {
-                        SKSE::log::warn(
-                            "OSTNET SKEE PROXY SPATIAL REFRESH actor={:08X} root=0 generation={}",
-                            actorID,
-                            generation);
-                        return;
-                    }
+                            const bool generationCurrent =
+                                IsGenerationCurrent(actorID, generation);
 
-                    RE::NiUpdateData updateData{};
-                    root->UpdateTransformAndBounds(updateData);
-                    root->UpdateWorldBound();
+                            auto* root = actor->Get3D();
+                            if (spatialRefresh &&
+                                root &&
+                                !actor->IsPlayerRef()) {
+                                RE::NiUpdateData updateData{};
+                                root->UpdateTransformAndBounds(updateData);
+                                root->UpdateWorldBound();
 
-                    SKSE::log::info(
-                        "OSTNET SKEE PROXY SPATIAL REFRESH actor={:08X} root=1 transformBounds=1 worldBound=1 generation={}",
-                        actorID,
-                        generation);
-                });
+                                SKSE::log::info(
+                                    "OSTNET SKEE PROXY SPATIAL REFRESH phase={} actor={:08X} root=1 transformBounds=1 worldBound=1 generation={} current={}",
+                                    phase,
+                                    actorID,
+                                    generation,
+                                    generationCurrent ? 1 : 0);
+                            }
+
+                            LogOverlayGeometryDiagnostic(
+                                actor,
+                                phase,
+                                generation);
+                        });
+                })
+                .detach();
         }
     }
 
@@ -258,9 +390,11 @@ namespace OStimTogether::SKEEOverlayRefresh
                             return;
                         }
 
+                        const bool isOCumOverlayChange =
+                            reasonCopy == kOCumOverlayChanged;
                         const bool hardProxyReinstall =
                             !actor2->IsPlayerRef() &&
-                            reasonCopy == kOCumOverlayChanged;
+                            isOCumOverlayChange;
 
                         bool hadOverlays = false;
                         bool reinstalled = false;
@@ -270,23 +404,16 @@ namespace OStimTogether::SKEEOverlayRefresh
                             if (overlay) {
                                 hadOverlays = overlay->HasOverlays(actor2);
 
-                                // RaceMenu queues these tasks in order. Remove
-                                // first so stale proxy overlay geometry is
-                                // detached, then AddOverlays queues a fresh
-                                // build against the actor's current skin.
+                                // These calls QUEUE RaceMenu work. The delayed
+                                // post-passes below intentionally wait before
+                                // touching transforms/bounds on the fresh nodes.
                                 overlay->RemoveOverlays(actor2, false);
                                 overlay->AddOverlays(actor2, false);
                                 reinstalled = true;
 
-                                // The fresh InstallOverlay path already applies
-                                // persisted overrides, and this additional
-                                // manager pass guarantees the current node state
-                                // is replayed after the queued geometry work.
                                 updates->AddNodeOverrideUpdate(actorID);
                                 updates->Flush();
                             } else {
-                                // Safe fallback if only ActorUpdateManager is
-                                // available from this RaceMenu build.
                                 updates->AddOverlayUpdate(actorID);
                                 updates->AddNodeOverrideUpdate(actorID);
                                 updates->Flush();
@@ -298,11 +425,32 @@ namespace OStimTogether::SKEEOverlayRefresh
                         }
 
                         if (hardProxyReinstall) {
-                            QueueProxySpatialRefresh(actorID, generation);
+                            QueueGeometryPass(
+                                actorID,
+                                generation,
+                                kProxySpatialDelay1,
+                                "PROXY-T150",
+                                true);
+                            QueueGeometryPass(
+                                actorID,
+                                generation,
+                                kProxySpatialDelay2,
+                                "PROXY-T650",
+                                true);
+                        } else if (
+                            actor2->IsPlayerRef() &&
+                            isOCumOverlayChange) {
+                            // Comparison sample from the known-good local path.
+                            QueueGeometryPass(
+                                actorID,
+                                generation,
+                                kProxySpatialDelay1,
+                                "LOCAL-T150",
+                                false);
                         }
 
                         SKSE::log::info(
-                            "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} player={} pipeline={} overlay=1 nodeOverrides=1 hardProxyReinstall={} hadOverlays={} spatialRefresh={} coalesced=1 generation={}",
+                            "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} player={} pipeline={} overlay=1 nodeOverrides=1 hardProxyReinstall={} hadOverlays={} delayedSpatial={} coalesced=1 generation={}",
                             reasonCopy,
                             actorID,
                             actor2->IsPlayerRef() ? 1 : 0,
