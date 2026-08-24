@@ -3,6 +3,7 @@
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
 #include "FreeSceneOverlayReplay.h"
+#include "OCumOverlayRelink.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
 
@@ -37,16 +38,17 @@ namespace OStimTogether
         // Safety hotfix: v0.35.2 attempted to deep-clone live NiSkinInstance
         // objects for Body [OvlN]. CrashLogger confirmed an access violation in
         // Skyrim's DeepCopyStream during climax while cloning an overlay skin.
-        // Keep the OCumOverlaySkinFix code compiled for future diagnostics, but
-        // do not initialize or tick it until a non-cloning relink strategy is
-        // implemented and validated.
+        // Keep that experimental code compiled but disabled. v0.35.5 instead
+        // uses RaceMenu's own public RevertOverlay path to relink Body [OvlN]
+        // to the actor's current skin without direct NiSkinInstance writes.
         SKSE::log::warn(
             "OSTNET OCUM DIRECT SKIN DISABLED reason=unsafe-live-NiSkinInstance-deep-copy hotfix=0.35.3");
 
-        // 0.35.4: physical-furniture scenes are currently the known-good
-        // baseline. Free/wall scenes get a dedicated non-destructive replay
-        // that reuses direct Body [OvlN] materialization and a lightweight SKEE
-        // update instead of allowing the old proxy Remove/Add pass to win.
+        OCumOverlayRelink::GetSingleton().Initialize();
+
+        // Retain the 0.35.4 free/wall direct replay as a fallback. The native
+        // relink watcher runs first and fixes the source body binding; this
+        // replay then only reapplies the already-established material state.
         FreeSceneOverlayReplay::GetSingleton().Initialize();
 
         _refreshQueued.store(false);
@@ -117,16 +119,21 @@ namespace OStimTogether
 
                             // Detect live OCum equip-object and RaceMenu overlay
                             // state through the established non-destructive path.
-                            // The experimental direct skin-clone repair is
-                            // intentionally disabled in v0.35.3+.
                             OCumStateSync::GetSingleton()
                                 .Tick();
 
-                            // Runs immediately after OCumStateSync so a free-
-                            // scene direct/light replay can advance the SKEE
-                            // generation before any queued proxy hard reinstall.
-                            // Physical TESFurniture scenes are explicitly
-                            // excluded by this module.
+                            // v0.35.5 common fix for free and furniture scenes:
+                            // when CumOverlays changes (or persists into a new
+                            // scene), ask RaceMenu itself to RevertOverlay with
+                            // resetDiffuse=false so Body [OvlN] is rebound to the
+                            // CURRENT skin source. This runs immediately after
+                            // OCumStateSync and advances the light SKEE generation
+                            // before any obsolete proxy hard reinstall can run.
+                            OCumOverlayRelink::GetSingleton()
+                                .Tick();
+
+                            // Keep the free-scene direct/light material replay as
+                            // a fallback after the native body relink.
                             FreeSceneOverlayReplay::GetSingleton()
                                 .Tick();
 
