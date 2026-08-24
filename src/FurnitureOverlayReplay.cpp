@@ -297,8 +297,11 @@ namespace OStimTogether
             // This repair is for the two multiplayer representations only:
             // the real local player and the connected STR proxy. Ordinary NPC
             // RaceMenu overlays remain entirely mod-owned.
-            if (!actor->IsPlayerRef() &&
-                !transport.ResolveConnection(actor->GetFormID()).has_value()) {
+            const bool isPlayer = actor->IsPlayerRef();
+            const bool isProxy =
+                !isPlayer &&
+                transport.ResolveConnection(actor->GetFormID()).has_value();
+            if (!isPlayer && !isProxy) {
                 continue;
             }
 
@@ -314,31 +317,53 @@ namespace OStimTogether
                 continue;
             }
 
-            // Reuse the exact path that has already rendered these 3D overlays
-            // in free-standing scenes. No furniture-specific shader, material,
-            // slot or mesh implementation is introduced here.
-            if (actor->IsPlayerRef()) {
+            if (isPlayer) {
+                // Known-good local path: materialize the current overrides on
+                // the live Body [OvlN] nodes, then ask RaceMenu's update manager
+                // to rebuild/apply them once more.
                 RaceMenuOverlayBridge::GetSingleton()
                     .RefreshLocalOverlayGeometry(
                         actor,
                         kChannel,
                         chunks);
+                SKEEOverlayRefresh::Queue(
+                    actor,
+                    "OCUM-OVERLAY-CHANGED");
+            } else {
+                // Furniture proxy path must not use OCUM-OVERLAY-CHANGED here:
+                // that reason intentionally performs RemoveOverlays/AddOverlays
+                // for proxies. In the 0.34.2 furniture test that hard reinstall
+                // transiently duplicated one CumOverlays slot into two and the
+                // remote 3D overlay stayed invisible. Re-apply the already-
+                // authoritative snapshot directly to the existing Body [OvlN]
+                // geometry, exactly like the local materialization strategy,
+                // then request only the lightweight ActorUpdateManager path.
+                for (const auto& chunk : chunks) {
+                    RaceMenuOverlayBridge::GetSingleton()
+                        .ApplyRemoteOverlayChunk(
+                            actor,
+                            kChannel,
+                            chunk);
+                }
+                SKEEOverlayRefresh::Queue(
+                    actor,
+                    "OCUM-FURNITURE-PROXY-REPLAY");
             }
 
-            SKEEOverlayRefresh::Queue(
-                actor,
-                "OCUM-OVERLAY-CHANGED");
             ++replayed;
 
             SKSE::log::info(
-                "OSTNET OCUM FURNITURE OVERLAY REPLAY trigger={} phase={} thread={} furniture={:08X} actor={:08X} player={} chunks={} action=free-scene-pipeline",
+                "OSTNET OCUM FURNITURE OVERLAY REPLAY trigger={} phase={} thread={} furniture={:08X} actor={:08X} player={} chunks={} action={}",
                 trigger,
                 phase,
                 threadID,
                 furnitureID,
                 actor->GetFormID(),
-                actor->IsPlayerRef() ? 1 : 0,
-                chunks.size());
+                isPlayer ? 1 : 0,
+                chunks.size(),
+                isPlayer ?
+                    "player-direct+racemenu" :
+                    "proxy-direct+light-racemenu");
         }
 
         SKSE::log::info(
