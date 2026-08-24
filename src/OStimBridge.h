@@ -177,19 +177,15 @@ namespace OStimTogether
             void listen(OStim::Thread* thread) override;
         };
 
-        // The old mirror startup workaround re-submitted SetSpeed(currentSpeed)
-        // after builder->start(), which restarts playAnimation() on every actor.
-        // PREANCHOR SELF already places the true local mirror player exactly on
-        // the authoritative center before OStim constructs its thread. Runtime
-        // tests showed that replaying SetSpeed afterwards moves that player away
-        // from the shared center in free-standing Player+Player scenes.
-        //
-        // builder->start() may return before getCurrentNode() becomes visible.
-        // Therefore insertion itself cannot safely decide whether this is a wall
-        // node. Keep the legacy pending bit, but resolve eligibility lazily from
-        // contains(): while the node is unavailable the replay is held back; as
-        // soon as the node resolves, ordinary free 7.5b mirrors suppress it,
-        // while wall/furniture/observer/older-runtime paths retain it.
+        // The legacy mirror startup workaround re-submits
+        // SetSpeed(currentSpeed), which restarts playAnimation(). For an
+        // ordinary free mirror PREANCHOR already establishes the authoritative
+        // center before OStim starts. Since 0.32.0, furniture-free scenes use a
+        // vanilla XMarkerHeading (base 00000034) as a stable virtual furniture
+        // anchor, so getFurnitureObject() is non-null even though the scene is
+        // semantically still free-standing. Treat that marker like no furniture
+        // for replay suppression, while retaining the legacy path for physical
+        // furniture and wall scenes.
         class InitialAnimationReplaySet
         {
         public:
@@ -217,32 +213,45 @@ namespace OStimTogether
                     auto* thread =
                         _owner->_threads->getThread(threadID);
 
-                    if (thread &&
-                        thread->isPlayerThread() &&
-                        !thread->getFurnitureObject()) {
-                        auto* node = thread->getCurrentNode();
-                        const auto* nodeID =
-                            node ? node->getNodeID() : nullptr;
+                    if (thread && thread->isPlayerThread()) {
+                        auto* furniture =
+                            static_cast<RE::TESObjectREFR*>(
+                                thread->getFurnitureObject());
+                        auto* furnitureBase =
+                            furniture ? furniture->GetBaseObject() : nullptr;
 
-                        // OStim can expose the thread before its starting node.
-                        // Never let the 4 ms VisualKeepAlive consume the replay
-                        // during that gap.
-                        if (!nodeID || !*nodeID) {
-                            return false;
-                        }
+                        const bool virtualAnchor =
+                            furnitureBase &&
+                            furnitureBase->GetFormID() == 0x00000034;
 
-                        const bool wall =
-                            std::string_view(nodeID).find("wall") !=
-                                std::string_view::npos;
+                        if (!furniture || virtualAnchor) {
+                            auto* node = thread->getCurrentNode();
+                            const auto* nodeID =
+                                node ? node->getNodeID() : nullptr;
 
-                        if (!wall) {
-                            if (_suppressionLogged.insert(threadID).second) {
-                                SKSE::log::info(
-                                    "OSTNET MIRROR INITIAL ANIM REPLAY SUPPRESSED localThread={} node={} runtime=OStim-7.5b reason=preanchor-native-start-authoritative",
-                                    threadID,
-                                    nodeID);
+                            // OStim can expose the thread before its starting
+                            // node. Never let VisualKeepAlive consume the replay
+                            // during that gap.
+                            if (!nodeID || !*nodeID) {
+                                return false;
                             }
-                            return false;
+
+                            const bool wall =
+                                std::string_view(nodeID).find("wall") !=
+                                    std::string_view::npos;
+
+                            if (!wall) {
+                                if (_suppressionLogged.insert(threadID).second) {
+                                    SKSE::log::info(
+                                        "OSTNET MIRROR INITIAL ANIM REPLAY SUPPRESSED localThread={} node={} runtime=OStim-7.5b anchor={} reason=single-native-start",
+                                        threadID,
+                                        nodeID,
+                                        virtualAnchor ?
+                                            "virtual-xmarkerheading" :
+                                            "none");
+                                }
+                                return false;
+                            }
                         }
                     }
                 }
@@ -279,7 +288,9 @@ namespace OStimTogether
 
         bool LoadModAPIs();
 
-        static std::string RemoteKey(std::string_view sender, std::int32_t remoteThreadID);
+        static std::string RemoteKey(
+            std::string_view sender,
+            std::int32_t remoteThreadID);
 
         bool IsRemoteMirrorThread(std::int32_t threadID);
         void MarkRemoteMirrorThread(std::int32_t threadID);
@@ -303,9 +314,14 @@ namespace OStimTogether
         void ReleaseMirrorEndSettings();
         void RestoreMirrorEndSettingsNow();
 
-        void ScheduleAuthoritativeSelfPoseOnce(std::int32_t localThreadID, std::string_view reason);
-        void ScheduleLocalSTRProxyPositionRelease(std::int32_t localThreadID, std::string_view reason);
-        void RefreshSTRProxyPoseGuards(std::chrono::steady_clock::time_point now);
+        void ScheduleAuthoritativeSelfPoseOnce(
+            std::int32_t localThreadID,
+            std::string_view reason);
+        void ScheduleLocalSTRProxyPositionRelease(
+            std::int32_t localThreadID,
+            std::string_view reason);
+        void RefreshSTRProxyPoseGuards(
+            std::chrono::steady_clock::time_point now);
         void QueueAuthoritativeWallStart(OStim::Thread* thread);
 
         bool ApplySceneAnchorToLocalSelf(
@@ -324,7 +340,8 @@ namespace OStimTogether
 
         OStim::ThreadInterface* _threads{ nullptr };
         std::uint32_t _threadInterfaceVersion{ 0 };
-        OStimInternalProbe::GraphLayout _graphLayout{ OStimInternalProbe::GraphLayout::Unsupported };
+        OStimInternalProbe::GraphLayout _graphLayout{
+            OStimInternalProbe::GraphLayout::Unsupported };
 
         OStimModAPI::Thread::IThreadInterface* _threadControl{ nullptr };
         OStimModAPI::Scene::ISceneInterface* _sceneControl{ nullptr };
@@ -340,10 +357,12 @@ namespace OStimTogether
         std::unordered_set<std::int32_t> _remoteMirrorThreads;
         std::unordered_map<std::string, std::int32_t> _remoteToLocal;
         std::unordered_map<std::int32_t, std::string> _localToRemote;
-        std::unordered_map<std::int32_t, std::vector<bool>> _localAlignmentMasks;
+        std::unordered_map<std::int32_t, std::vector<bool>>
+            _localAlignmentMasks;
         std::unordered_map<std::int32_t, std::int32_t> _localSelfIndices;
         std::unordered_map<std::int32_t, SceneCenter> _sceneCenters;
-        std::unordered_map<std::int32_t, std::vector<ActorPose>> _authoritativeActorPoses;
+        std::unordered_map<std::int32_t, std::vector<ActorPose>>
+            _authoritativeActorPoses;
 
         struct PendingWallStart
         {
@@ -352,15 +371,35 @@ namespace OStimTogether
             SceneCenter earlyCenter{};
         };
 
-        std::unordered_map<std::int32_t, PendingWallStart> _pendingWallStarts;
-        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _strProxyPoseGuardAfter;
-        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _lastSTRProxyPoseGuardLog;
+        std::unordered_map<std::int32_t, PendingWallStart>
+            _pendingWallStarts;
+        std::unordered_map<
+            std::int32_t,
+            std::chrono::steady_clock::time_point>
+            _strProxyPoseGuardAfter;
+        std::unordered_map<
+            std::int32_t,
+            std::chrono::steady_clock::time_point>
+            _lastSTRProxyPoseGuardLog;
         InitialAnimationReplaySet _pendingInitialAnimationReplay;
-        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _lastAnimationRefresh;
-        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _lastDirectEventLog;
-        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _wallRootProbeUntil;
-        std::unordered_map<std::int32_t, std::chrono::steady_clock::time_point> _lastWallRootProbeLog;
-        std::unordered_map<std::int32_t, std::vector<std::string>> _lastForcedEvents;
+        std::unordered_map<
+            std::int32_t,
+            std::chrono::steady_clock::time_point>
+            _lastAnimationRefresh;
+        std::unordered_map<
+            std::int32_t,
+            std::chrono::steady_clock::time_point>
+            _lastDirectEventLog;
+        std::unordered_map<
+            std::int32_t,
+            std::chrono::steady_clock::time_point>
+            _wallRootProbeUntil;
+        std::unordered_map<
+            std::int32_t,
+            std::chrono::steady_clock::time_point>
+            _lastWallRootProbeLog;
+        std::unordered_map<std::int32_t, std::vector<std::string>>
+            _lastForcedEvents;
 
         std::uint32_t _mirrorEndSettingsRefCount{ 0 };
         std::vector<EndSettingSnapshot> _mirrorEndSettings;
