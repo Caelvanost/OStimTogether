@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.35.2</moduleName>
+  <moduleName>OStim Together 0.35.3</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -9,7 +9,7 @@
         <group name="OStim Together integrations" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="OCum Ascended synchronization">
-              <description>Synchronizes OCum Ascended RaceMenu CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.35.2 mirrors RaceMenu's native body-overlay relink semantics: it copies the current full-body vertex descriptor and clones that body's NiSkinInstance for each Body [OvlN], retries if OStim has not yet exposed a valid body, and relinks again when the source body skin changes during scene settling. This replaces the direct shared-skin experiment from v0.35.1 and applies to both free-standing and physical-furniture scenes on the local player and STR proxy. Requires OCum Ascended on both clients.</description>
+              <description>Synchronizes OCum Ascended RaceMenu CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.35.3 disables the experimental live NiSkinInstance deep-clone repair from v0.35.2 after CrashLogger confirmed a climax-time crash in Skyrim's DeepCopyStream on Body [OvlN]. The established non-destructive RaceMenu/SKEE synchronization remains active while the relink strategy is redesigned without cloning live skin objects. Requires OCum Ascended on both clients.</description>
               <files>
                 <folder source="10 OCum Ascended" destination="" priority="0" />
               </files>
