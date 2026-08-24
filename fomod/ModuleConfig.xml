@@ -28,23 +28,27 @@
               </typeDescriptor>
             </plugin>
             <plugin name="PPA - Procedural Penis Animations synchronization">
-              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. Requires AccuratePenetration.dll on both clients. OStim Together validates the exact supported PPA runtime build and uses direct absolute x64 setter detours with no rel32/ASLR distance dependency.</description>
+              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. Automatically pre-selected when AccuratePenetration.dll is detected. Requires AccuratePenetration.dll on both clients. OStim Together validates the exact supported PPA runtime build and uses direct absolute x64 setter detours with no rel32/ASLR distance dependency.</description>
               <files>
                 <folder source="20 Procedural Penis Animations" destination="" priority="0" />
               </files>
               <typeDescriptor>
                 <dependencyType>
-                  <!-- DLLs are not load-order plugins. Some FOMOD hosts report
-                       an installed SKSE DLL as Inactive even though the file is
-                       present and will be loaded by SKSE. Keep the integration
-                       manually selectable as a safe fallback, and recommend it
-                       whenever AccuratePenetration.dll is present in either
-                       state. Runtime exact-build validation remains authoritative. -->
+                  <!-- Recommended is pre-selected but remains user-deselectable.
+                       Vortex/FOMOD hosts may report an installed SKSE DLL either
+                       Active or Inactive because DLLs are not load-order plugins.
+                       Use separate patterns for maximum installer compatibility.
+                       If neither state matches, keep the option manually selectable. -->
                   <defaultType name="Optional" />
                   <patterns>
                     <pattern>
-                      <dependencies operator="Or">
+                      <dependencies operator="And">
                         <fileDependency file="SKSE/Plugins/AccuratePenetration.dll" state="Active" />
+                      </dependencies>
+                      <type name="Recommended" />
+                    </pattern>
+                    <pattern>
+                      <dependencies operator="And">
                         <fileDependency file="SKSE/Plugins/AccuratePenetration.dll" state="Inactive" />
                       </dependencies>
                       <type name="Recommended" />
