@@ -14,6 +14,12 @@ namespace OStimTogether
     public:
         static PPAIntegration& GetSingleton();
 
+        // Install the exact-build PPA setter detours before Initialize().
+        // 0.33.2 uses direct RIP-indirect absolute x64 jumps at the verified
+        // function entries, so ASLR distance between AccuratePenetration.dll
+        // and OStimTogether.dll cannot disable synchronization.
+        bool PrepareAbsoluteHooks();
+
         bool Initialize();
         void Reset();
 
