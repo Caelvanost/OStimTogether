@@ -66,10 +66,23 @@ namespace OStimTogether
             std::string_view objectType,
             bool equipped);
 
+        // Apply one fully assembled remote overlay snapshot. OCum is special:
+        // a mirrored OStim scene can make the local OCum instance write its own
+        // CumOverlays onto the STR proxy while the real owner is also sending
+        // their authoritative state. Before applying an OCum snapshot, remove
+        // only the proxy's current CumOverlays slots, then replay the owner's
+        // complete snapshot. Other RaceMenu overlays are never cleared.
+        void ApplyRemoteOverlaySnapshot(
+            RE::Actor* actor,
+            std::string_view channel,
+            const std::vector<std::string>& chunks);
+
         struct CachedOverlayState
         {
             std::size_t expectedCount{ 0 };
             std::vector<std::string> chunks;
+            std::vector<bool> received;
+            std::vector<std::string> appliedChunks;
         };
 
         struct CachedObjectState
