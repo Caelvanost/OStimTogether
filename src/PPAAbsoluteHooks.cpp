@@ -163,6 +163,16 @@ namespace OStimTogether
             return true;
         }
 
+        // Do not modify PPA merely because it is installed. The FOMOD marker
+        // remains the user's explicit opt-in for this exact-build integration.
+        // Return true here so main.cpp does not emit a scary hook-failure warning
+        // when the optional component was intentionally left unchecked.
+        if (!IsOptionalIntegrationInstalled()) {
+            SKSE::log::info(
+                "OSTNET PPA ABS64 skipped: optional FOMOD component not installed");
+            return true;
+        }
+
         const auto module = GetModuleHandleW(
             AccuratePenetration::API::kPluginDLL);
         if (!module) {
