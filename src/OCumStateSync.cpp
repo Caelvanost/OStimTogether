@@ -2,6 +2,7 @@
 #include "OCumStateSync.h"
 
 #include "RaceMenuOverlayBridge.h"
+#include "SKEEOverlayRefresh.h"
 #include "STRPMTransport.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
 #include "OStimAPI/Thread.h"
@@ -16,6 +17,7 @@ namespace OStimTogether
         constexpr std::string_view kAnalObject = "ocumanmesh";
         constexpr auto kPollInterval = std::chrono::milliseconds(100);
         constexpr auto kVisualRefreshInterval = std::chrono::milliseconds(500);
+        constexpr auto kOverlayPollInterval = std::chrono::milliseconds(500);
         constexpr auto kStopSnapshotDelay = std::chrono::milliseconds(700);
 
         bool IsArmorWorn(RE::Actor* actor, RE::TESObjectARMO* armor)
@@ -110,9 +112,10 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET OCUM LIVE READY pollMs={} visualRefreshMs={} authority=real-local-player meshSource=worn-OCum-armor",
+            "OSTNET OCUM LIVE READY pollMs={} visualRefreshMs={} overlayPollMs={} authority=real-local-player meshSource=worn-OCum-armor overlayRepair=ActorUpdateManager-on-change",
             kPollInterval.count(),
-            kVisualRefreshInterval.count());
+            kVisualRefreshInterval.count(),
+            kOverlayPollInterval.count());
         return true;
     }
 
@@ -137,8 +140,9 @@ namespace OStimTogether
         _activeThreads.insert(thread->getThreadID());
 
         // Force a fresh baseline for every participant. If a persistent OCum
-        // mesh was already worn before START, the first live poll will still
-        // refresh its geometry after OStim's startup body rebuild.
+        // mesh or overlay already exists before START, the first live poll will
+        // see it as a new state for this scene and materialize it through the
+        // normal RaceMenu update pipeline.
         for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
             auto* ta = thread->getActor(i);
             auto* actor = ta ?
@@ -207,6 +211,24 @@ namespace OStimTogether
             out.push_back(kHex[u & 0x0F]);
         }
         return out;
+    }
+
+    std::string OCumStateSync::BuildOverlaySignature(
+        const std::vector<std::string>& chunks)
+    {
+        std::string signature;
+        std::size_t reserve = 32;
+        for (const auto& chunk : chunks) {
+            reserve += chunk.size() + 24;
+        }
+        signature.reserve(reserve);
+        signature += fmt::format("{}|", chunks.size());
+        for (const auto& chunk : chunks) {
+            signature += fmt::format("{}:", chunk.size());
+            signature += chunk;
+            signature += '|';
+        }
+        return signature;
     }
 
     void OCumStateSync::SendLocalObjectState(
@@ -295,6 +317,51 @@ namespace OStimTogether
                 const bool vaginalWorn = IsArmorWorn(actor, vaginal);
                 const bool analWorn = IsArmorWorn(actor, anal);
                 auto& state = _meshStates[actorID];
+
+                // OCum/RaceMenu overlay data can be correct while the live 3D
+                // holder is stale after an OStim body rebuild. Watch the actual
+                // CumOverlays override snapshot for every participant (real
+                // player, remote STR proxy, NPC) and request RaceMenu's own
+                // overlay+node update only when that snapshot changes.
+                const bool overlayPollDue =
+                    state.lastOverlayPoll.time_since_epoch().count() == 0 ||
+                    now - state.lastOverlayPoll >= kOverlayPollInterval;
+
+                if (overlayPollDue) {
+                    const auto chunks =
+                        RaceMenuOverlayBridge::GetSingleton()
+                            .CaptureMarkedOverlayChunks(
+                                actor,
+                                kMarker,
+                                2200);
+                    const auto signature = BuildOverlaySignature(chunks);
+                    const bool firstOverlayPoll = !state.overlayInitialized;
+                    const bool overlayChanged =
+                        state.overlayInitialized &&
+                        signature != state.overlaySignature;
+                    const bool initialOverlayPresent =
+                        firstOverlayPoll && !chunks.empty();
+
+                    if (overlayChanged || initialOverlayPresent) {
+                        SKEEOverlayRefresh::Queue(
+                            actor,
+                            initialOverlayPresent ?
+                                "OCUM-OVERLAY-INITIAL" :
+                                "OCUM-OVERLAY-CHANGED");
+
+                        SKSE::log::info(
+                            "OSTNET OCUM OVERLAY CHANGE thread={} actor={:08X} player={} chunks={} first={} action=queue-racemenu-update",
+                            threadID,
+                            actorID,
+                            actor->IsPlayerRef() ? 1 : 0,
+                            chunks.size(),
+                            firstOverlayPoll ? 1 : 0);
+                    }
+
+                    state.overlayInitialized = true;
+                    state.overlaySignature = signature;
+                    state.lastOverlayPoll = now;
+                }
 
                 const bool first = !state.initialized;
                 const bool vaginalChanged =
