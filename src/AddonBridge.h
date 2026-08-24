@@ -78,11 +78,6 @@ namespace OStimTogether
 
         std::atomic_bool _registered{ false };
         std::mutex _stateMutex;
-
-        // One signature per local channel+marker. Repeated Papyrus polling does
-        // not resend identical snapshots or trigger repeated remote material work.
-        std::unordered_map<std::string, std::string> _localOverlaySignatures;
-
         std::unordered_map<
             RE::FormID,
             std::unordered_map<std::string, CachedOverlayState>>
