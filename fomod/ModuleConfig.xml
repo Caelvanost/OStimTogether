@@ -28,7 +28,7 @@
               </typeDescriptor>
             </plugin>
             <plugin name="PPA - Procedural Penis Animations synchronization">
-              <description>Enables the optional Accurate Penetration bridge. OStim Together captures and transports the local player's per-stage penetration target (Vagina, Anus, Mouth, hands, etc.) using PPA's public SKSE API. PPA API V1 is currently read-only, so the received target is cached for the remote apply bridge but cannot yet be imposed safely without a PPA target setter.</description>
+              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. Requires the verified AccuratePenetration.dll build supported by OStim Together 0.33.0; unsupported PPA builds are detected and the integration disables itself safely.</description>
               <files>
                 <folder source="20 Procedural Penis Animations" destination="" priority="0" />
               </files>
