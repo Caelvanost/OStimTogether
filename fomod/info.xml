@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.33.7</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.7 keeps the validated PPA synchronization from v0.33.3 and extends the OCum proxy diagnostic to inspect the actual NiSkinInstance binding of Body [Ovl0]: skin root, matrix count and sampled bones are compared against the actor's live scene graph so stale STR skeleton bindings can be distinguished from ordinary RaceMenu geometry/material problems.</Description>
+  <Version>0.33.8</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.8 keeps the validated PPA synchronization and the OCum proxy repair validated in v0.33.7, and makes every OStim scene start from an authoritative empty CumOverlays baseline. Pre-existing OCum overlays are therefore treated as a real changed state and receive the same remote RemoveAdd+ActorUpdateManager plus delayed spatial repair on physical furniture as in free-standing scenes.</Description>
 </fomod>
