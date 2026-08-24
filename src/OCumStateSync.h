@@ -47,10 +47,16 @@ namespace OStimTogether
             std::chrono::steady_clock::time_point lastVisualRefresh{};
 
             // RaceMenu overlay state is separate from OCum's worn mesh state.
-            // Track a compact signature so a real overlay/node rebuild is only
-            // requested when CumOverlays actually changes, never every poll.
-            bool overlayInitialized{ false };
-            std::string overlaySignature;
+            // Start each OStim scene from an authoritative EMPTY overlay
+            // baseline (BuildOverlaySignature({}) == "0|"). This makes an
+            // already-present CumOverlays state at scene start a normal
+            // OCUM-OVERLAY-CHANGED transition instead of the weaker INITIAL
+            // path. Remote STR proxies therefore receive the exact same
+            // RemoveAdd+ActorUpdateManager + delayed spatial repair whether the
+            // scene is free-standing or uses physical furniture. An actually
+            // empty actor remains unchanged and causes no rebuild.
+            bool overlayInitialized{ true };
+            std::string overlaySignature{ "0|" };
             std::chrono::steady_clock::time_point lastOverlayPoll{};
         };
 
