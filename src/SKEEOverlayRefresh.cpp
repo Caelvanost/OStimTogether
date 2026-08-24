@@ -139,6 +139,53 @@ namespace OStimTogether::SKEEOverlayRefresh
             return it != g_actorGeneration.end() &&
                    it->second == generation;
         }
+
+        void QueueProxySpatialRefresh(
+            RE::FormID actorID,
+            std::uint64_t generation)
+        {
+            auto* tasks = SKSE::GetTaskInterface();
+            if (!tasks) {
+                return;
+            }
+
+            // This task is enqueued only after RaceMenu has queued its
+            // RemoveOverlays/AddOverlays/node-override work. The SKSE task queue
+            // therefore reaches this pass after the fresh Body [OvlN] objects
+            // have been attached. UpdateTransformAndBounds deliberately avoids
+            // controller/animation evaluation while forcing the new children to
+            // inherit the proxy's current skeleton transform and world bounds.
+            tasks->AddTask(
+                [actorID, generation]() {
+                    if (!IsGenerationCurrent(actorID, generation)) {
+                        return;
+                    }
+
+                    auto* form = RE::TESForm::LookupByID(actorID);
+                    auto* actor = form ? form->As<RE::Actor>() : nullptr;
+                    if (!actor || actor->IsPlayerRef()) {
+                        return;
+                    }
+
+                    auto* root = actor->Get3D();
+                    if (!root) {
+                        SKSE::log::warn(
+                            "OSTNET SKEE PROXY SPATIAL REFRESH actor={:08X} root=0 generation={}",
+                            actorID,
+                            generation);
+                        return;
+                    }
+
+                    RE::NiUpdateData updateData{};
+                    root->UpdateTransformAndBounds(updateData);
+                    root->UpdateWorldBound();
+
+                    SKSE::log::info(
+                        "OSTNET SKEE PROXY SPATIAL REFRESH actor={:08X} root=1 transformBounds=1 worldBound=1 generation={}",
+                        actorID,
+                        generation);
+                });
+        }
     }
 
     void Queue(RE::Actor* actor, std::string_view reason)
@@ -250,8 +297,12 @@ namespace OStimTogether::SKEEOverlayRefresh
                             updates->Flush();
                         }
 
+                        if (hardProxyReinstall) {
+                            QueueProxySpatialRefresh(actorID, generation);
+                        }
+
                         SKSE::log::info(
-                            "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} player={} pipeline={} overlay=1 nodeOverrides=1 hardProxyReinstall={} hadOverlays={} coalesced=1 generation={}",
+                            "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} player={} pipeline={} overlay=1 nodeOverrides=1 hardProxyReinstall={} hadOverlays={} spatialRefresh={} coalesced=1 generation={}",
                             reasonCopy,
                             actorID,
                             actor2->IsPlayerRef() ? 1 : 0,
@@ -260,6 +311,7 @@ namespace OStimTogether::SKEEOverlayRefresh
                                 "ActorUpdateManager",
                             hardProxyReinstall ? 1 : 0,
                             hadOverlays ? 1 : 0,
+                            hardProxyReinstall ? 1 : 0,
                             generation);
                     });
             })
