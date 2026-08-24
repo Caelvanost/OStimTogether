@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.33.2</moduleName>
+  <moduleName>OStim Together 0.33.3</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -9,7 +9,7 @@
         <group name="OStim Together integrations" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="OCum Ascended synchronization">
-              <description>Synchronizes OCum Ascended RaceMenu cum overlays and its actual vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.33.2 rematerializes changed CumOverlays through RaceMenu's normal ActorUpdateManager pipeline. Requires OCum Ascended on both clients.</description>
+              <description>Synchronizes OCum Ascended RaceMenu cum overlays and its actual vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.33.2+ rematerializes changed CumOverlays through RaceMenu's normal ActorUpdateManager pipeline. Requires OCum Ascended on both clients.</description>
               <files>
                 <folder source="10 OCum Ascended" destination="" priority="0" />
               </files>
@@ -28,7 +28,7 @@
               </typeDescriptor>
             </plugin>
             <plugin name="PPA - Procedural Penis Animations synchronization">
-              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. Automatically pre-selected when PPA is detected through AccuratePenetration.dll or accurate-penetration.toml. Requires PPA on both clients. OStim Together validates the exact supported PPA runtime build and uses direct absolute x64 setter detours with no rel32/ASLR distance dependency.</description>
+              <description>Synchronizes PPA runtime penetration targets between Skyrim Together scene participants, including per-stage target site and explicit target actor in multi-actor scenes. v0.33.3 also reproduces PPA's native active-runtime refresh after remote target writes. Requires PPA on both clients. OStim Together validates the exact supported PPA runtime build and uses direct absolute x64 setter detours with no rel32/ASLR distance dependency.</description>
               <files>
                 <folder source="20 Procedural Penis Animations" destination="" priority="0" />
               </files>
