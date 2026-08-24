@@ -9,6 +9,7 @@ namespace OStimTogether
     namespace
     {
         constexpr std::uintptr_t kGetAnimationTaggerRVA = 0x0004B9B0;
+        constexpr std::uintptr_t kRefreshRuntimeRVA = 0x00034F80;
         constexpr std::uintptr_t kSetInteractionRVA = 0x00057D80;
         constexpr std::uintptr_t kSetTargetRVA = 0x00058070;
         constexpr std::size_t kAbsoluteJumpBytes = 14;
@@ -32,6 +33,17 @@ namespace OStimTogether
             0x41, 0x56,
             0x41, 0x57,
             0x48, 0x8D, 0x6C, 0x24, 0xE9
+        };
+
+        // PPA's native TargetMenu callback invokes this no-argument routine
+        // immediately after setInteraction(). It walks the active penetration
+        // instances and rematerializes the new targeting data into the live
+        // solver. Merely calling the setter updates AnimationTagger storage but
+        // does not update an already-running scene.
+        constexpr std::array<std::uint8_t, 16> kRefreshRuntimeSignature{
+            0x48, 0x83, 0xEC, 0x58,
+            0x48, 0x83, 0x3D, 0x24, 0xED, 0x1E, 0x00, 0x00,
+            0x0F, 0x84, 0x7C, 0x00
         };
 
         void* g_absoluteStubPage{ nullptr };
@@ -157,6 +169,141 @@ namespace OStimTogether
         }
     }
 
+    void PPAIntegration::SetTargetHookNetworkSafe(
+        void* tagger,
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        std::uint8_t target)
+    {
+        // Preserve PPA's local behavior exactly. Its own caller performs the
+        // native active-runtime refresh after completing the requested edits.
+        if (_setTargetRawOriginal) {
+            _setTargetRawOriginal(
+                tagger,
+                animation,
+                stage,
+                performerPosition,
+                target);
+        }
+
+        GetSingleton().PublishSetTarget(
+            animation,
+            stage,
+            performerPosition,
+            target);
+    }
+
+    void PPAIntegration::SetInteractionHookNetworkSafe(
+        void* tagger,
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        const StageInteractionRaw* interaction)
+    {
+        StageInteractionRaw networkSnapshot{};
+        const bool valid = interaction != nullptr;
+        if (valid) {
+            networkSnapshot = *interaction;
+        }
+
+        // The real local setter receives PPA's bytes unchanged. In particular,
+        // 0xFF remains PPA's native "no explicit target actor" sentinel.
+        if (_setInteractionRawOriginal) {
+            _setInteractionRawOriginal(
+                tagger,
+                animation,
+                stage,
+                performerPosition,
+                interaction);
+        }
+
+        if (!valid) {
+            return;
+        }
+
+        // The network protocol historically accepts participant positions 0..5.
+        // PPA also uses 0xFF when hasExplicitTargetActor==0. Normalize only the
+        // transmitted copy; this prevents the receiver from silently rejecting
+        // ordinary Auto/Anus/Vagina menu operations while preserving local PPA.
+        if (networkSnapshot.hasExplicitTargetActor == 0 &&
+            networkSnapshot.targetActorPosition > 5) {
+            SKSE::log::info(
+                "OSTNET PPA SENTINEL NORMALIZE animation=\"{}\" stage={} performer={} actor={}=>0 explicit=0",
+                animation,
+                stage,
+                performerPosition,
+                networkSnapshot.targetActorPosition);
+            networkSnapshot.targetActorPosition = 0;
+        }
+
+        GetSingleton().PublishSetInteraction(
+            animation,
+            stage,
+            performerPosition,
+            networkSnapshot);
+    }
+
+    void PPAIntegration::SetTargetRemoteOriginal(
+        void* tagger,
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        std::uint8_t target)
+    {
+        if (!_setTargetRawOriginal || !_refreshRuntime) {
+            return;
+        }
+
+        _setTargetRawOriginal(
+            tagger,
+            animation,
+            stage,
+            performerPosition,
+            target);
+
+        _refreshRuntime();
+
+        SKSE::log::info(
+            "OSTNET PPA REMOTE REFRESH kind=target animation=\"{}\" stage={} performer={} target={} refreshRva=0x{:X}",
+            animation,
+            stage,
+            performerPosition,
+            target,
+            kRefreshRuntimeRVA);
+    }
+
+    void PPAIntegration::SetInteractionRemoteOriginal(
+        void* tagger,
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        const StageInteractionRaw* interaction)
+    {
+        if (!_setInteractionRawOriginal || !_refreshRuntime) {
+            return;
+        }
+
+        _setInteractionRawOriginal(
+            tagger,
+            animation,
+            stage,
+            performerPosition,
+            interaction);
+
+        _refreshRuntime();
+
+        SKSE::log::info(
+            "OSTNET PPA REMOTE REFRESH kind=interaction animation=\"{}\" stage={} performer={} target={} targetActor={} explicit={} refreshRva=0x{:X}",
+            animation,
+            stage,
+            performerPosition,
+            interaction ? interaction->target : 0,
+            interaction ? interaction->targetActorPosition : 0,
+            interaction && interaction->hasExplicitTargetActor ? 1 : 0,
+            kRefreshRuntimeRVA);
+    }
+
     bool PPAIntegration::PrepareAbsoluteHooks()
     {
         if (_hooksInstalled) {
@@ -191,6 +338,20 @@ namespace OStimTogether
         _getAnimationTagger = reinterpret_cast<GetAnimationTaggerFn>(
             base + kGetAnimationTaggerRVA);
 
+        const auto refreshAddress = base + kRefreshRuntimeRVA;
+        if (std::memcmp(
+                reinterpret_cast<const void*>(refreshAddress),
+                kRefreshRuntimeSignature.data(),
+                kRefreshRuntimeSignature.size()) != 0) {
+            SKSE::log::error(
+                "OSTNET PPA ABS64 refresh signature mismatch rva=0x{:X} action=disable-no-hook",
+                kRefreshRuntimeRVA);
+            return false;
+        }
+
+        _refreshRuntime = reinterpret_cast<RefreshRuntimeFn>(
+            refreshAddress);
+
         if (!g_absoluteStubPage) {
             g_absoluteStubPage = VirtualAlloc(
                 nullptr,
@@ -208,37 +369,46 @@ namespace OStimTogether
 
         auto* cursor = static_cast<std::uint8_t*>(g_absoluteStubPage);
 
-        const auto interactionOriginal =
+        const auto interactionRawOriginal =
             InstallAbsoluteEntryDetour<SetInteractionFn>(
                 cursor,
                 base + kSetInteractionRVA,
-                &PPAIntegration::SetInteractionHook,
+                &PPAIntegration::SetInteractionHookNetworkSafe,
                 kSetInteractionStolenBytes);
-        if (!interactionOriginal) {
+        if (!interactionRawOriginal) {
             SKSE::log::error(
                 "OSTNET PPA ABS64 setInteraction install failed action=disable-integration");
             return false;
         }
-        _setInteractionOriginal = interactionOriginal;
+        _setInteractionRawOriginal = interactionRawOriginal;
 
-        const auto targetOriginal =
+        const auto targetRawOriginal =
             InstallAbsoluteEntryDetour<SetTargetFn>(
                 cursor,
                 base + kSetTargetRVA,
-                &PPAIntegration::SetTargetHook,
+                &PPAIntegration::SetTargetHookNetworkSafe,
                 kSetTargetStolenBytes);
-        if (!targetOriginal) {
+        if (!targetRawOriginal) {
             SKSE::log::error(
                 "OSTNET PPA ABS64 setTarget install failed action=disable-integration");
             return false;
         }
-        _setTargetOriginal = targetOriginal;
+        _setTargetRawOriginal = targetRawOriginal;
+
+        // Existing ApplyRemoteSet*() code calls these two pointers. Route those
+        // calls through wrappers that reproduce the native post-menu runtime
+        // refresh, while local hook forwarding continues to use the raw stubs.
+        _setInteractionOriginal =
+            &PPAIntegration::SetInteractionRemoteOriginal;
+        _setTargetOriginal =
+            &PPAIntegration::SetTargetRemoteOriginal;
 
         _hooksInstalled = true;
 
         SKSE::log::info(
-            "OSTNET PPA ABS64 READY getterRva=0x{:X} setInteractionRva=0x{:X} setTargetRva=0x{:X} stolenInteraction={} stolenTarget={} detour=direct-rip-indirect-abs64 rel32=0 exactBuild=1 targetWrite=1",
+            "OSTNET PPA ABS64 READY getterRva=0x{:X} refreshRva=0x{:X} setInteractionRva=0x{:X} setTargetRva=0x{:X} stolenInteraction={} stolenTarget={} detour=direct-rip-indirect-abs64 rel32=0 sentinelNormalize=1 remoteRefresh=1 exactBuild=1 targetWrite=1",
             kGetAnimationTaggerRVA,
+            kRefreshRuntimeRVA,
             kSetInteractionRVA,
             kSetTargetRVA,
             kSetInteractionStolenBytes.size(),
