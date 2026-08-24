@@ -4,8 +4,9 @@
 
 namespace OStimTogether::SKEEOverlayRefresh
 {
-    // Queue a normal RaceMenu/SKEE overlay rebuild for a dynamic actor after
-    // remote override properties have been stored. This uses only SKEE's
-    // public interface-exchange ABI and never removes existing overlays.
+    // Queue a coalesced RaceMenu/SKEE overlay + node-override update for an
+    // actor. Uses RaceMenu's public ActorUpdateManager pipeline, so it works for
+    // both the real PlayerCharacter and dynamic STR proxies. Requests are
+    // debounced per actor to avoid the 0.31.6 overlay rebuild storm.
     void Queue(RE::Actor* actor, std::string_view reason);
 }
