@@ -116,7 +116,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET OCUM DIRECT SKIN READY pollMs={} source=minVertices{}+minMatrices{} method=direct-vertexDesc+skinInstance scope=free+furniture",
+            "OSTNET OCUM DIRECT SKIN READY pollMs={} source=minVertices{}+minMatrices{} method=racemenu-style-vertexDesc+clonedSkin scope=free+furniture",
             kPollInterval.count(),
             kMinBodyVertices,
             kMinBodyMatrices);
@@ -136,7 +136,9 @@ namespace OStimTogether
             auto* ta = thread->getActor(i);
             auto* actor = ta ? static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
             if (actor) {
-                _overlaySignatures[actor->GetFormID()] = "0|";
+                const auto actorID = actor->GetFormID();
+                _overlaySignatures[actorID] = "0|";
+                _lastSourceSkins.erase(actorID);
             }
         }
 
@@ -157,7 +159,9 @@ namespace OStimTogether
             auto* ta = thread->getActor(i);
             auto* actor = ta ? static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
             if (actor) {
-                _overlaySignatures.erase(actor->GetFormID());
+                const auto actorID = actor->GetFormID();
+                _overlaySignatures.erase(actorID);
+                _lastSourceSkins.erase(actorID);
             }
         }
     }
@@ -283,15 +287,26 @@ namespace OStimTogether
                         result.oldMatrices = oldSkin ? oldSkin->numMatrices : 0;
                     }
 
-                    // RaceMenu InstallOverlay itself initially shares the body
-                    // skin instance. Doing the same here is deliberate: it
-                    // bypasses QueueOverlayBuild's body-source rediscovery and
-                    // binds the overlay to the exact body geometry we selected.
-                    if (oldSkin != sourceSkin) {
-                        runtime.vertexDesc = sourceRuntime.vertexDesc;
-                        runtime.skinInstance = sourceRuntime.skinInstance;
+                    // Match RaceMenu OverlayInterface::RelinkOverlay: always
+                    // copy the current source vertex descriptor and CLONE the
+                    // selected body's NiSkinInstance. Sharing the body's exact
+                    // skin pointer (the 0.35.1 experiment) is not equivalent to
+                    // RaceMenu's relink path and can leave the overlay geometry
+                    // non-rendering even though texture/alpha/material are valid.
+                    runtime.vertexDesc = sourceRuntime.vertexDesc;
+
+                    RE::NiPointer<RE::NiObject> clonedObject;
+                    sourceSkin->CreateDeepCopy(clonedObject);
+                    auto* clonedSkin = clonedObject ?
+                        static_cast<RE::NiSkinInstance*>(clonedObject.get()) :
+                        nullptr;
+
+                    if (clonedSkin) {
+                        runtime.skinInstance.reset(clonedSkin);
                         geometry->UpdateWorldBound();
                         ++result.rebound;
+                    } else {
+                        ++result.cloneFailed;
                     }
                 }
             }
@@ -356,19 +371,24 @@ namespace OStimTogether
                 auto [signatureIt, inserted] =
                     _overlaySignatures.try_emplace(actorID, "0|");
                 const bool signatureChanged = signatureIt->second != signature;
-                if (signatureChanged) {
-                    signatureIt->second = signature;
-                }
 
                 if (chunks.empty()) {
+                    if (signatureChanged) {
+                        signatureIt->second = signature;
+                    }
+                    _lastSourceSkins.erase(actorID);
                     continue;
                 }
 
                 const auto source = FindBestBodySource(actor);
                 if (!source.geometry) {
+                    // IMPORTANT: do not consume the new overlay signature here.
+                    // OStim can expose no suitable body for a few frames while
+                    // changing scene/furniture. Keeping the old signature makes
+                    // the same snapshot retry until a valid body exists.
                     if (signatureChanged) {
                         SKSE::log::warn(
-                            "OSTNET OCUM DIRECT SKIN no-source thread={} actor={:08X} player={} proxy={} chunks={} minVertices={} minMatrices={}",
+                            "OSTNET OCUM DIRECT SKIN no-source thread={} actor={:08X} player={} proxy={} chunks={} minVertices={} minMatrices={} retry=1",
                             threadID,
                             actorID,
                             isPlayer ? 1 : 0,
@@ -380,14 +400,43 @@ namespace OStimTogether
                     continue;
                 }
 
-                const auto rebound = RebindBodyOverlays(actor, source);
-                if (!signatureChanged && rebound.rebound == 0) {
+                auto& sourceRuntime = source.geometry->GetGeometryRuntimeData();
+                auto* sourceSkin = sourceRuntime.skinInstance.get();
+                if (!sourceSkin) {
                     continue;
                 }
 
-                // Reapply the existing OCum override state only after the skin
-                // pointer is corrected. These functions do not rediscover the
-                // body source or rebuild the overlay holder.
+                auto [sourceIt, sourceInserted] =
+                    _lastSourceSkins.try_emplace(actorID, nullptr);
+                const bool sourceChanged = sourceIt->second != sourceSkin;
+
+                // A new cum snapshot must always be relinked, even when the
+                // source skin pointer did not change. A furniture/body settle
+                // can also change the source skin without changing the overlay
+                // snapshot, so sourceChanged independently triggers a relink.
+                if (!signatureChanged && !sourceChanged) {
+                    continue;
+                }
+
+                const auto rebound = RebindBodyOverlays(actor, source);
+                if (rebound.rebound == 0) {
+                    SKSE::log::warn(
+                        "OSTNET OCUM DIRECT SKIN clone-failed thread={} actor={:08X} player={} proxy={} source=\"{}\" overlaysFound={} cloneFailed={} signatureChanged={} sourceChanged={}",
+                        threadID,
+                        actorID,
+                        isPlayer ? 1 : 0,
+                        isProxy ? 1 : 0,
+                        source.name,
+                        rebound.found,
+                        rebound.cloneFailed,
+                        signatureChanged ? 1 : 0,
+                        sourceChanged ? 1 : 0);
+                    continue;
+                }
+
+                // Reapply the existing OCum override state only after the
+                // RaceMenu-style relink. These calls do not rediscover the body
+                // source or replace the newly cloned overlay skin instances.
                 if (isPlayer) {
                     RaceMenuOverlayBridge::GetSingleton()
                         .RefreshLocalOverlayGeometry(
@@ -404,8 +453,11 @@ namespace OStimTogether
                     }
                 }
 
+                signatureIt->second = signature;
+                sourceIt->second = sourceSkin;
+
                 SKSE::log::info(
-                    "OSTNET OCUM DIRECT SKIN REBIND thread={} actor={:08X} player={} proxy={} source=\"{}\" sourceVertices={} sourceMatrices={} overlaysFound={} rebound={} oldVertices={} oldMatrices={} chunks={} signatureChanged={} method=direct-skin-share",
+                    "OSTNET OCUM DIRECT SKIN REBIND thread={} actor={:08X} player={} proxy={} source=\"{}\" sourceVertices={} sourceMatrices={} overlaysFound={} rebound={} cloneFailed={} oldVertices={} oldMatrices={} chunks={} signatureChanged={} sourceChanged={} method=racemenu-style-cloned-skin",
                     threadID,
                     actorID,
                     isPlayer ? 1 : 0,
@@ -415,10 +467,12 @@ namespace OStimTogether
                     source.matrices,
                     rebound.found,
                     rebound.rebound,
+                    rebound.cloneFailed,
                     rebound.oldVertices,
                     rebound.oldMatrices,
                     chunks.size(),
-                    signatureChanged ? 1 : 0);
+                    signatureChanged ? 1 : 0,
+                    sourceChanged ? 1 : 0);
             }
         }
 
