@@ -13,10 +13,6 @@ namespace OStimTogether
 
         bool Initialize();
         void Reset();
-
-        // Watches only the real local player's OCum equip-object state while an
-        // OStim scene is active. RaceMenu CumOverlays are deliberately NOT
-        // rebuilt, relinked or refreshed here: OCum/RaceMenu own local rendering.
         void Tick();
 
         // Publishes the local player's current CumOverlays snapshot and OCum
@@ -43,6 +39,8 @@ namespace OStimTogether
             bool initialized{ false };
             bool vaginal{ false };
             bool anal{ false };
+            bool overlayInitialized{ false };
+            std::string overlaySignature;
         };
 
         void HandleStart(OStim::Thread* thread);
@@ -54,6 +52,8 @@ namespace OStimTogether
             std::string_view reason);
 
         static std::string HexEncode(std::string_view value);
+        static std::string BuildOverlaySignature(
+            const std::vector<std::string>& chunks);
 
         OStim::ThreadInterface* _threads{ nullptr };
         StartListener _startListener;
