@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.33.8</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.33.8 keeps the validated PPA synchronization and the OCum proxy repair validated in v0.33.7, and makes every OStim scene start from an authoritative empty CumOverlays baseline. Pre-existing OCum overlays are therefore treated as a real changed state and receive the same remote RemoveAdd+ActorUpdateManager plus delayed spatial repair on physical furniture as in free-standing scenes.</Description>
+  <Version>0.34.0</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.34.0 keeps the validated PPA synchronization and makes remote OCum RaceMenu state owner-authoritative: complete CumOverlays snapshots are assembled before application, locally simulated/stale CumOverlays slots on the STR proxy are cleared when they are absent from the owner's snapshot, and the validated proxy overlay repair pipeline is then replayed. This prevents mirrored OStim/OCum from accumulating duplicate cum-overlay slots, including on physical furniture.</Description>
 </fomod>
