@@ -2,7 +2,6 @@
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
-#include "FreeSceneOverlayReplay.h"
 #include "OCumOverlayRelink.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
@@ -38,18 +37,20 @@ namespace OStimTogether
         // Safety hotfix: v0.35.2 attempted to deep-clone live NiSkinInstance
         // objects for Body [OvlN]. CrashLogger confirmed an access violation in
         // Skyrim's DeepCopyStream during climax while cloning an overlay skin.
-        // Keep that experimental code compiled but disabled. v0.35.5 instead
+        // Keep that experimental code compiled but disabled. v0.35.5+ instead
         // uses RaceMenu's own public RevertOverlay path to relink Body [OvlN]
         // to the actor's current skin without direct NiSkinInstance writes.
         SKSE::log::warn(
             "OSTNET OCUM DIRECT SKIN DISABLED reason=unsafe-live-NiSkinInstance-deep-copy hotfix=0.35.3");
 
+        // Common authoritative RaceMenu repair for both physical-furniture and
+        // free/wall scenes. v0.35.6 deliberately leaves the old
+        // FreeSceneOverlayReplay fallback inactive: 0.35.5 testing showed that
+        // physical furniture rendered CumOverlays correctly with this relink
+        // path alone, while free scenes ran an additional direct replay that
+        // competed with/coalesced the relink material passes and remained
+        // invisible. Both scene classes now use the same pipeline.
         OCumOverlayRelink::GetSingleton().Initialize();
-
-        // Retain the 0.35.4 free/wall direct replay as a fallback. The native
-        // relink watcher runs first and fixes the source body binding; this
-        // replay then only reapplies the already-established material state.
-        FreeSceneOverlayReplay::GetSingleton().Initialize();
 
         _refreshQueued.store(false);
 
@@ -122,19 +123,15 @@ namespace OStimTogether
                             OCumStateSync::GetSingleton()
                                 .Tick();
 
-                            // v0.35.5 common fix for free and furniture scenes:
-                            // when CumOverlays changes (or persists into a new
-                            // scene), ask RaceMenu itself to RevertOverlay with
-                            // resetDiffuse=false so Body [OvlN] is rebound to the
-                            // CURRENT skin source. This runs immediately after
-                            // OCumStateSync and advances the light SKEE generation
-                            // before any obsolete proxy hard reinstall can run.
+                            // Single common Body [OvlN] repair path for free,
+                            // wall and physical-furniture scenes. When
+                            // CumOverlays changes (or persists into a new scene),
+                            // ask RaceMenu itself to RevertOverlay with
+                            // resetDiffuse=false so the overlay is rebound to the
+                            // CURRENT skin source, then reapply the OCum material
+                            // state at T100/T400. No second free-scene replay runs
+                            // behind it in v0.35.6.
                             OCumOverlayRelink::GetSingleton()
-                                .Tick();
-
-                            // Keep the free-scene direct/light material replay as
-                            // a fallback after the native body relink.
-                            FreeSceneOverlayReplay::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
