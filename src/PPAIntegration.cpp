@@ -1,6 +1,11 @@
 #include "PCH.h"
 #include "PPAIntegration.h"
 
+#include "OStimAPI/InterfaceExchangeMessage.h"
+#include "STRPMTransport.h"
+
+#include <cstring>
+
 namespace OStimTogether
 {
     namespace
@@ -11,6 +16,32 @@ namespace OStimTogether
             "ostimtogether.ppa";
         constexpr char kMarkerPath[] =
             "Data/SKSE/Plugins/OStimTogether_PPA.ini";
+        constexpr char kPluginName[] =
+            "OStimTogether";
+
+        // Exact AccuratePenetration.dll supplied for the 0.33.0 integration.
+        // SHA-256:
+        // 0BD68B935E54211EEA71BE064AEB628B2AA268A7F35229FF554ED65A88EED087
+        constexpr std::uint32_t kSupportedPETimestamp = 0x6A633AE8;
+        constexpr std::uint32_t kSupportedImageSize = 0x00239000;
+        constexpr std::uintptr_t kGetAnimationTaggerRVA = 0x0004B9B0;
+        constexpr std::uintptr_t kSetInteractionRVA = 0x00057D80;
+        constexpr std::uintptr_t kSetTargetRVA = 0x00058070;
+
+        constexpr std::array<std::uint8_t, 18> kGetAnimationTaggerSignature{
+            0x48, 0x83, 0xEC, 0x28, 0x8B, 0x0D, 0x8E, 0xAA, 0x1D,
+            0x00, 0x65, 0x48, 0x8B, 0x04, 0x25, 0x58, 0x00, 0x00
+        };
+
+        constexpr std::array<std::uint8_t, 18> kSetInteractionSignature{
+            0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56,
+            0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24, 0xE1, 0x48, 0x81
+        };
+
+        constexpr std::array<std::uint8_t, 18> kSetTargetSignature{
+            0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55,
+            0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24, 0xE9
+        };
 
         std::optional<std::string> Field(
             std::string_view payload,
@@ -58,6 +89,35 @@ namespace OStimTogether
                 return std::nullopt;
             }
         }
+
+        std::optional<std::int32_t> ParseInt(
+            std::string_view payload,
+            std::string_view key)
+        {
+            const auto value = Field(payload, key);
+            if (!value || value->empty()) {
+                return std::nullopt;
+            }
+
+            try {
+                return static_cast<std::int32_t>(
+                    std::stol(*value));
+            } catch (...) {
+                return std::nullopt;
+            }
+        }
+
+        template <std::size_t N>
+        bool MatchSignature(
+            std::uintptr_t address,
+            const std::array<std::uint8_t, N>& signature)
+        {
+            return address != 0 &&
+                   std::memcmp(
+                       reinterpret_cast<const void*>(address),
+                       signature.data(),
+                       signature.size()) == 0;
+        }
     }
 
     PPAIntegration& PPAIntegration::GetSingleton()
@@ -71,46 +131,270 @@ namespace OStimTogether
         Disconnect();
     }
 
-    std::uint16_t PPAIntegration::TargetKey(
-        std::uint8_t performerPosition,
-        std::uint8_t receiverPosition) noexcept
+    const char* PPAIntegration::TargetName(
+        std::uint8_t target) noexcept
     {
-        return static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(performerPosition) << 8) |
-            static_cast<std::uint16_t>(receiverPosition));
-    }
-
-    const char* PPAIntegration::SiteName(
-        AccuratePenetration::API::PenetrationSite site) noexcept
-    {
-        using Site = AccuratePenetration::API::PenetrationSite;
-
-        switch (site) {
-        case Site::None:
+        switch (static_cast<ActionTarget>(target)) {
+        case ActionTarget::Auto:
+            return "Auto";
+        case ActionTarget::None:
             return "None";
-        case Site::Mouth:
-            return "Mouth";
-        case Site::Anus:
-            return "Anus";
-        case Site::Vagina:
+        case ActionTarget::Vagina:
             return "Vagina";
-        case Site::Both:
-            return "Both";
-        case Site::HandL:
-            return "HandL";
-        case Site::HandR:
-            return "HandR";
-        case Site::Hands:
-            return "Hands";
+        case ActionTarget::Anus:
+            return "Anus";
+        case ActionTarget::Mouth:
+            return "Mouth";
+        case ActionTarget::Hand:
+            return "Hand";
+        case ActionTarget::LeftHand:
+            return "L Hand";
+        case ActionTarget::RightHand:
+            return "R Hand";
         default:
             return "Unknown";
         }
+    }
+
+    std::string PPAIntegration::HexEncode(std::string_view value)
+    {
+        static constexpr char kHex[] = "0123456789ABCDEF";
+
+        std::string out;
+        out.reserve(value.size() * 2);
+        for (const auto ch : value) {
+            const auto u = static_cast<unsigned char>(ch);
+            out.push_back(kHex[(u >> 4) & 0x0F]);
+            out.push_back(kHex[u & 0x0F]);
+        }
+        return out;
+    }
+
+    std::optional<std::string> PPAIntegration::HexDecode(
+        std::string_view value)
+    {
+        if ((value.size() % 2) != 0) {
+            return std::nullopt;
+        }
+
+        const auto nibble = [](char ch) -> int {
+            if (ch >= '0' && ch <= '9') {
+                return ch - '0';
+            }
+            if (ch >= 'a' && ch <= 'f') {
+                return 10 + ch - 'a';
+            }
+            if (ch >= 'A' && ch <= 'F') {
+                return 10 + ch - 'A';
+            }
+            return -1;
+        };
+
+        std::string out;
+        out.reserve(value.size() / 2);
+        for (std::size_t i = 0; i < value.size(); i += 2) {
+            const auto hi = nibble(value[i]);
+            const auto lo = nibble(value[i + 1]);
+            if (hi < 0 || lo < 0) {
+                return std::nullopt;
+            }
+            out.push_back(static_cast<char>((hi << 4) | lo));
+        }
+        return out;
     }
 
     bool PPAIntegration::IsOptionalIntegrationInstalled() const
     {
         std::error_code ec;
         return std::filesystem::exists(kMarkerPath, ec) && !ec;
+    }
+
+    bool PPAIntegration::ConnectOStim()
+    {
+        auto* messaging = SKSE::GetMessagingInterface();
+        const auto module = GetModuleHandleW(L"OStim.dll");
+        if (!messaging || !module) {
+            SKSE::log::warn(
+                "OSTNET PPA OStim bridge unavailable: OStim.dll or messaging missing");
+            return false;
+        }
+
+        OStim::InterfaceExchangeMessage exchange{};
+        if (!messaging->Dispatch(
+                OStim::InterfaceExchangeMessage::MESSAGE_TYPE,
+                &exchange,
+                sizeof(exchange),
+                nullptr) ||
+            !exchange.interfaceMap) {
+            SKSE::log::warn(
+                "OSTNET PPA OStim bridge unavailable: interface exchange failed");
+            return false;
+        }
+
+        auto* base =
+            exchange.interfaceMap->queryInterface(
+                OStim::ThreadInterface::NAME);
+        _threads = base ?
+            static_cast<OStim::ThreadInterface*>(base) :
+            nullptr;
+
+        const auto requestThread =
+            reinterpret_cast<OStimModAPI::Thread::RequestAPI>(
+                reinterpret_cast<void*>(
+                    GetProcAddress(
+                        module,
+                        "RequestPluginAPI_Thread")));
+
+        auto* declaration =
+            SKSE::PluginDeclaration::GetSingleton();
+        const auto version = declaration ?
+            declaration->GetVersion() :
+            REL::Version{ 0, 33, 0, 0 };
+        const auto pluginName = declaration ?
+            std::string(declaration->GetName()) :
+            std::string(kPluginName);
+
+        _threadControl = requestThread ?
+            requestThread(
+                OStimModAPI::Thread::InterfaceVersion::V1,
+                pluginName.c_str(),
+                version) :
+            nullptr;
+
+        if (!_threads || !_threadControl) {
+            SKSE::log::warn(
+                "OSTNET PPA OStim bridge unavailable: thread APIs missing");
+            return false;
+        }
+
+        SKSE::log::info(
+            "OSTNET PPA OSTIM READY threadsVersion={}",
+            _threads->getVersion());
+        return true;
+    }
+
+    bool PPAIntegration::ValidateExactPPABuild(HMODULE module) const
+    {
+        if (!module) {
+            return false;
+        }
+
+        const auto base =
+            reinterpret_cast<std::uintptr_t>(module);
+        const auto* dos =
+            reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+
+        if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) {
+            return false;
+        }
+
+        const auto* nt =
+            reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+                base + static_cast<std::uintptr_t>(dos->e_lfanew));
+
+        if (!nt ||
+            nt->Signature != IMAGE_NT_SIGNATURE ||
+            nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+            return false;
+        }
+
+        if (nt->FileHeader.TimeDateStamp != kSupportedPETimestamp ||
+            nt->OptionalHeader.SizeOfImage != kSupportedImageSize) {
+            SKSE::log::warn(
+                "OSTNET PPA INTERNAL unsupported build timestamp=0x{:08X} imageSize=0x{:X} expectedTimestamp=0x{:08X} expectedImageSize=0x{:X}",
+                nt->FileHeader.TimeDateStamp,
+                nt->OptionalHeader.SizeOfImage,
+                kSupportedPETimestamp,
+                kSupportedImageSize);
+            return false;
+        }
+
+        const bool getterOK =
+            MatchSignature(
+                base + kGetAnimationTaggerRVA,
+                kGetAnimationTaggerSignature);
+        const bool interactionOK =
+            MatchSignature(
+                base + kSetInteractionRVA,
+                kSetInteractionSignature);
+        const bool targetOK =
+            MatchSignature(
+                base + kSetTargetRVA,
+                kSetTargetSignature);
+
+        if (!getterOK || !interactionOK || !targetOK) {
+            SKSE::log::warn(
+                "OSTNET PPA INTERNAL unsupported build signature getter={} setInteraction={} setTarget={} action=disable-no-hook",
+                getterOK ? 1 : 0,
+                interactionOK ? 1 : 0,
+                targetOK ? 1 : 0);
+            return false;
+        }
+
+        return true;
+    }
+
+    bool PPAIntegration::InstallPPAHooks(HMODULE module)
+    {
+        if (_hooksInstalled) {
+            return true;
+        }
+
+        if (!ValidateExactPPABuild(module)) {
+            return false;
+        }
+
+        const auto base =
+            reinterpret_cast<std::uintptr_t>(module);
+
+        _getAnimationTagger =
+            reinterpret_cast<GetAnimationTaggerFn>(
+                base + kGetAnimationTaggerRVA);
+
+        // Each target function begins with exactly five bytes of whole
+        // instructions before the next instruction boundary. CommonLib's
+        // five-byte trampoline therefore preserves the displaced prologue and
+        // gives us a callable original function for remote application.
+        SKSE::AllocTrampoline(64);
+        auto& trampoline = SKSE::GetTrampoline();
+
+        const auto originalInteraction =
+            trampoline.write_branch<5>(
+                base + kSetInteractionRVA,
+                &PPAIntegration::SetInteractionHook);
+        const auto originalTarget =
+            trampoline.write_branch<5>(
+                base + kSetTargetRVA,
+                &PPAIntegration::SetTargetHook);
+
+        _setInteractionOriginal =
+            reinterpret_cast<SetInteractionFn>(
+                originalInteraction);
+        _setTargetOriginal =
+            reinterpret_cast<SetTargetFn>(
+                originalTarget);
+
+        if (!_getAnimationTagger ||
+            !_setInteractionOriginal ||
+            !_setTargetOriginal) {
+            SKSE::log::error(
+                "OSTNET PPA INTERNAL hook installation failed getter={} interactionOriginal={} targetOriginal={}",
+                _getAnimationTagger ? 1 : 0,
+                _setInteractionOriginal ? 1 : 0,
+                _setTargetOriginal ? 1 : 0);
+            return false;
+        }
+
+        _hooksInstalled = true;
+
+        SKSE::log::info(
+            "OSTNET PPA INTERNAL READY timestamp=0x{:08X} imageSize=0x{:X} getterRva=0x{:X} setInteractionRva=0x{:X} setTargetRva=0x{:X} exactBuild=1 targetRead=1 targetWrite=1",
+            kSupportedPETimestamp,
+            kSupportedImageSize,
+            kGetAnimationTaggerRVA,
+            kSetInteractionRVA,
+            kSetTargetRVA);
+        return true;
     }
 
     bool PPAIntegration::ConnectPPA()
@@ -133,38 +417,26 @@ namespace OStimTogether
                 GetProcAddress(
                     module,
                     AccuratePenetration::API::kGetAPIFunctionNameV1));
-
         const auto* api = getAPI ? getAPI() : nullptr;
 
+        // The public API remains our stable identity/ABI check even though PPA
+        // V1 does not expose target setters. Runtime writes below are enabled
+        // only for the exact binary whose internal functions were verified.
         if (!api ||
             api->version != AccuratePenetration::API::kVersion ||
-            api->size < sizeof(AccuratePenetration::API::InterfaceV1) ||
-            !api->RegisterAnimationUpdateListener ||
-            !api->UnregisterAnimationUpdateListener) {
+            api->size < sizeof(AccuratePenetration::API::InterfaceV1)) {
             SKSE::log::warn(
                 "OSTNET PPA API unavailable or incompatible expectedVersion={}",
                 AccuratePenetration::API::kVersion);
             return false;
         }
 
-        const auto listener =
-            api->RegisterAnimationUpdateListener(
-                &PPAIntegration::OnPPAUpdate,
-                this);
-
-        if (listener == 0) {
-            SKSE::log::warn(
-                "OSTNET PPA API listener registration failed");
+        if (!InstallPPAHooks(module)) {
             return false;
         }
 
+        _ppaModule = module;
         _ppaAPI = api;
-        _ppaListener = listener;
-
-        SKSE::log::info(
-            "OSTNET PPA API READY version={} listener={} targetRead=1 targetWrite=0",
-            api->version,
-            listener);
         return true;
     }
 
@@ -185,10 +457,9 @@ namespace OStimTogether
                     STRPMApi::kQueryInterfaceExportName));
 
         const STRPMApi::Interface* api = nullptr;
-        const auto queryResult =
-            query ?
-                query(STRPMApi::kInterfaceVersion, &api) :
-                STRPMApi::Result::kNotAvailable;
+        const auto queryResult = query ?
+            query(STRPMApi::kInterfaceVersion, &api) :
+            STRPMApi::Result::kNotAvailable;
 
         if (queryResult != STRPMApi::Result::kOk ||
             !api ||
@@ -220,7 +491,7 @@ namespace OStimTogether
         _transportListener = listener;
 
         SKSE::log::info(
-            "OSTNET PPA TRANSPORT READY channel={} apiVersion={}",
+            "OSTNET PPA TRANSPORT READY channel={} apiVersion={} routing=active-ostim-participants-only",
             kPPAChannel,
             api->version);
         return true;
@@ -238,12 +509,9 @@ namespace OStimTogether
             return false;
         }
 
-        if (!ConnectPPA()) {
-            Disconnect();
-            return false;
-        }
-
-        if (!ConnectTransport()) {
+        if (!ConnectOStim() ||
+            !ConnectPPA() ||
+            !ConnectTransport()) {
             Disconnect();
             return false;
         }
@@ -251,7 +519,7 @@ namespace OStimTogether
         _enabled.store(true);
 
         SKSE::log::info(
-            "OSTNET PPA integration READY localTargetAuthority=local-player-performer remoteApply=deferred reason=ppa-api-v1-read-only");
+            "OSTNET PPA integration READY authority=real-local-player performerSync=1 targetSiteSync=1 explicitTargetActorSync=1 remoteApply=internal-setter exactBuildFailClosed=1");
         return true;
     }
 
@@ -259,166 +527,351 @@ namespace OStimTogether
     {
         _enabled.store(false);
 
-        if (_ppaAPI &&
-            _ppaListener != 0 &&
-            _ppaAPI->UnregisterAnimationUpdateListener) {
-            _ppaAPI->UnregisterAnimationUpdateListener(_ppaListener);
-        }
-
         if (_transportAPI &&
             _transportListener.value != 0 &&
             _transportAPI->unregisterChannel) {
             _transportAPI->unregisterChannel(_transportListener);
         }
 
-        _ppaListener = 0;
-        _ppaAPI = nullptr;
         _transportListener = {};
         _transportAPI = nullptr;
-
-        Reset();
+        _ppaAPI = nullptr;
+        _ppaModule = nullptr;
+        _threads = nullptr;
+        _threadControl = nullptr;
     }
 
     void PPAIntegration::Reset()
     {
-        std::scoped_lock lock(_stateMutex);
-        _lastSent.clear();
-        _remoteDesired.clear();
+        // Hooks stay installed for the lifetime of the process, exactly like
+        // other SKSE detours. Save changes require no persistent network state.
     }
 
-    void __cdecl PPAIntegration::OnPPAUpdate(
-        const AccuratePenetration::API::AnimationUpdateEvent* event,
-        void* userData)
+    bool PPAIntegration::IsLocalPlayerPerformer(
+        std::uint8_t performerPosition) const
     {
-        if (!event || !userData ||
-            event->apiVersion != AccuratePenetration::API::kVersion ||
-            event->size < sizeof(AccuratePenetration::API::AnimationUpdateEvent)) {
-            return;
-        }
-
-        static_cast<PPAIntegration*>(userData)->HandlePPAUpdate(*event);
-    }
-
-    void PPAIntegration::HandlePPAUpdate(
-        const AccuratePenetration::API::AnimationUpdateEvent& event)
-    {
-        if (!_enabled.load()) {
-            return;
-        }
-
-        auto* localPlayer =
-            RE::PlayerCharacter::GetSingleton();
-        if (!localPlayer) {
-            return;
-        }
-
-        if (event.ending) {
-            std::scoped_lock lock(_stateMutex);
-            for (auto it = _lastSent.begin();
-                 it != _lastSent.end();) {
-                if (it->second.receiverPosition == event.position) {
-                    it = _lastSent.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            return;
-        }
-
-        const auto context =
-            static_cast<std::uint32_t>(event.context);
-
-        const auto publishPartner =
-            [this,
-             localPlayer,
-             receiverPosition = event.position,
-             context](
-                const AccuratePenetration::API::InteractionPartner& partner) {
-                auto performerPtr = partner.actor.get();
-                auto* performer = performerPtr.get();
-
-                // Only the real local player is authoritative. This prevents
-                // the locally simulated STR proxy from echoing remote state
-                // back into the network and gives each player ownership of
-                // their own PPA target selection.
-                if (!performer || performer != localPlayer) {
-                    return;
-                }
-
-                TargetState state{};
-                state.performerPosition = partner.position;
-                state.receiverPosition = receiverPosition;
-                state.site = partner.site;
-                state.context = context;
-
-                if (state.performerPosition == 0 ||
-                    state.receiverPosition == 0) {
-                    return;
-                }
-
-                const auto key =
-                    TargetKey(
-                        state.performerPosition,
-                        state.receiverPosition);
-
-                {
-                    std::scoped_lock lock(_stateMutex);
-                    const auto it = _lastSent.find(key);
-                    if (it != _lastSent.end() &&
-                        it->second.site == state.site &&
-                        it->second.context == state.context) {
-                        return;
-                    }
-                    _lastSent[key] = state;
-                }
-
-                SendTargetState(state);
-            };
-
-        for (std::uint32_t i = 0; i < event.actorCount; ++i) {
-            publishPartner(event.actors[i]);
-        }
-
-        if (event.selfInteraction) {
-            publishPartner(*event.selfInteraction);
-        }
-    }
-
-    bool PPAIntegration::SendTargetState(const TargetState& state)
-    {
-        if (!_transportAPI || !_transportAPI->send) {
+        if (!_enabled.load() ||
+            !_threads ||
+            !_threadControl ||
+            performerPosition == 0) {
             return false;
         }
 
+        const auto tid =
+            _threadControl->GetPlayerThreadID();
+        if (!_threadControl->IsThreadValid(tid)) {
+            return false;
+        }
+
+        auto* thread =
+            _threads->getThread(
+                static_cast<std::int32_t>(tid));
+        if (!thread ||
+            performerPosition > thread->getActorCount()) {
+            return false;
+        }
+
+        auto* threadActor =
+            thread->getActor(
+                static_cast<std::uint32_t>(
+                    performerPosition - 1));
+        auto* actor = threadActor ?
+            static_cast<RE::Actor*>(
+                threadActor->getGameActor()) :
+            nullptr;
+
+        return actor &&
+               actor == RE::PlayerCharacter::GetSingleton();
+    }
+
+    std::vector<STRPMApi::ConnectionID>
+        PPAIntegration::SnapshotRemoteParticipants() const
+    {
+        std::vector<STRPMApi::ConnectionID> result;
+
+        if (!_threads || !_threadControl) {
+            return result;
+        }
+
+        const auto tid =
+            _threadControl->GetPlayerThreadID();
+        if (!_threadControl->IsThreadValid(tid)) {
+            return result;
+        }
+
+        auto* thread =
+            _threads->getThread(
+                static_cast<std::int32_t>(tid));
+        if (!thread) {
+            return result;
+        }
+
+        std::unordered_set<STRPMApi::ConnectionID> unique;
+        for (std::uint32_t i = 0;
+             i < thread->getActorCount();
+             ++i) {
+            auto* threadActor = thread->getActor(i);
+            auto* actor = threadActor ?
+                static_cast<RE::Actor*>(
+                    threadActor->getGameActor()) :
+                nullptr;
+
+            if (!actor || actor->IsPlayerRef()) {
+                continue;
+            }
+
+            const auto connection =
+                STRPMTransport::GetSingleton()
+                    .ResolveConnection(
+                        actor->GetFormID());
+            if (connection && *connection != 0 &&
+                unique.insert(*connection).second) {
+                result.push_back(*connection);
+            }
+        }
+
+        return result;
+    }
+
+    bool PPAIntegration::ValidateRemoteSender(
+        STRPMApi::ConnectionID senderConnectionID,
+        std::uint8_t performerPosition) const
+    {
+        if (!_threads || !_threadControl ||
+            senderConnectionID == 0 ||
+            performerPosition == 0) {
+            return false;
+        }
+
+        const auto proxyFormID =
+            STRPMTransport::GetSingleton()
+                .ResolveProxy(senderConnectionID);
+        if (!proxyFormID) {
+            return false;
+        }
+
+        const auto tid =
+            _threadControl->GetPlayerThreadID();
+        if (!_threadControl->IsThreadValid(tid)) {
+            return false;
+        }
+
+        auto* thread =
+            _threads->getThread(
+                static_cast<std::int32_t>(tid));
+        if (!thread ||
+            performerPosition > thread->getActorCount()) {
+            return false;
+        }
+
+        auto* threadActor =
+            thread->getActor(
+                static_cast<std::uint32_t>(
+                    performerPosition - 1));
+        auto* actor = threadActor ?
+            static_cast<RE::Actor*>(
+                threadActor->getGameActor()) :
+            nullptr;
+
+        return actor &&
+               actor->GetFormID() == *proxyFormID;
+    }
+
+    bool PPAIntegration::ValidateTargetActorPosition(
+        std::uint8_t targetActorPosition,
+        bool explicitTarget) const
+    {
+        if (!explicitTarget) {
+            return true;
+        }
+
+        if (!_threads || !_threadControl ||
+            targetActorPosition == 0) {
+            return false;
+        }
+
+        const auto tid =
+            _threadControl->GetPlayerThreadID();
+        if (!_threadControl->IsThreadValid(tid)) {
+            return false;
+        }
+
+        auto* thread =
+            _threads->getThread(
+                static_cast<std::int32_t>(tid));
+        return thread &&
+               targetActorPosition <= thread->getActorCount();
+    }
+
+    bool PPAIntegration::SendToParticipants(
+        std::string_view payload)
+    {
+        if (!_transportAPI ||
+            !_transportAPI->send ||
+            payload.empty()) {
+            return false;
+        }
+
+        const auto participants =
+            SnapshotRemoteParticipants();
+        bool allOK = !participants.empty();
+
+        for (const auto connectionID : participants) {
+            STRPMApi::Target target{};
+            target.kind = STRPMApi::TargetKind::kPlayer;
+            target.connectionID = connectionID;
+
+            const auto result =
+                _transportAPI->send(
+                    kPPAChannel,
+                    target,
+                    payload.data(),
+                    payload.size(),
+                    STRPMApi::kMessageReliable |
+                        STRPMApi::kMessageOrdered);
+
+            if (result != STRPMApi::Result::kOk) {
+                allOK = false;
+                SKSE::log::warn(
+                    "OSTNET PPA TX failed connection={} result={} bytes={}",
+                    connectionID,
+                    static_cast<std::uint32_t>(result),
+                    payload.size());
+            }
+        }
+
+        return allOK;
+    }
+
+    void PPAIntegration::SetTargetHook(
+        void* tagger,
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        std::uint8_t target)
+    {
+        if (_setTargetOriginal) {
+            _setTargetOriginal(
+                tagger,
+                animation,
+                stage,
+                performerPosition,
+                target);
+        }
+
+        GetSingleton().PublishSetTarget(
+            animation,
+            stage,
+            performerPosition,
+            target);
+    }
+
+    void PPAIntegration::SetInteractionHook(
+        void* tagger,
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        const StageInteractionRaw* interaction)
+    {
+        StageInteractionRaw snapshot{};
+        const bool hasInteraction = interaction != nullptr;
+        if (hasInteraction) {
+            snapshot = *interaction;
+        }
+
+        if (_setInteractionOriginal) {
+            _setInteractionOriginal(
+                tagger,
+                animation,
+                stage,
+                performerPosition,
+                interaction);
+        }
+
+        if (hasInteraction) {
+            GetSingleton().PublishSetInteraction(
+                animation,
+                stage,
+                performerPosition,
+                snapshot);
+        }
+    }
+
+    void PPAIntegration::PublishSetTarget(
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        std::uint8_t target)
+    {
+        if (!IsLocalPlayerPerformer(performerPosition) ||
+            animation.empty() ||
+            animation.size() > 512 ||
+            stage < 1 || stage > 64 ||
+            target > static_cast<std::uint8_t>(ActionTarget::RightHand)) {
+            return;
+        }
+
         const auto payload = fmt::format(
-            "TARGET|performer={}|receiver={}|site={}|context={}",
-            state.performerPosition,
-            state.receiverPosition,
-            static_cast<std::uint32_t>(state.site),
-            state.context);
+            "SETTARGET|v=1|animation={}|stage={}|performer={}|target={}",
+            HexEncode(animation),
+            stage,
+            performerPosition,
+            target);
 
-        STRPMApi::Target target{};
-        target.kind = STRPMApi::TargetKind::kAllPlayers;
-
-        const auto result =
-            _transportAPI->send(
-                kPPAChannel,
-                target,
-                payload.data(),
-                payload.size(),
-                STRPMApi::kMessageReliable |
-                    STRPMApi::kMessageOrdered);
+        const bool sent = SendToParticipants(payload);
 
         SKSE::log::info(
-            "OSTNET PPA TARGET TX performerPos={} receiverPos={} site={}({}) context=0x{:X} result={}",
-            state.performerPosition,
-            state.receiverPosition,
-            static_cast<std::uint32_t>(state.site),
-            SiteName(state.site),
-            state.context,
-            static_cast<std::uint32_t>(result));
+            "OSTNET PPA SETTARGET TX animation=\"{}\" stage={} performer={} target={}({}) participantsSent={}",
+            animation,
+            stage,
+            performerPosition,
+            target,
+            TargetName(target),
+            sent ? 1 : 0);
+    }
 
-        return result == STRPMApi::Result::kOk;
+    void PPAIntegration::PublishSetInteraction(
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        const StageInteractionRaw& interaction)
+    {
+        const bool explicitTarget =
+            interaction.hasExplicitTargetActor != 0;
+
+        if (!IsLocalPlayerPerformer(performerPosition) ||
+            animation.empty() ||
+            animation.size() > 512 ||
+            stage < 1 || stage > 64 ||
+            interaction.target >
+                static_cast<std::uint8_t>(ActionTarget::RightHand) ||
+            !ValidateTargetActorPosition(
+                interaction.targetActorPosition,
+                explicitTarget)) {
+            return;
+        }
+
+        const auto payload = fmt::format(
+            "SETINTERACTION|v=1|animation={}|stage={}|performer={}|target={}|actor={}|explicit={}",
+            HexEncode(animation),
+            stage,
+            performerPosition,
+            interaction.target,
+            interaction.targetActorPosition,
+            explicitTarget ? 1 : 0);
+
+        const bool sent = SendToParticipants(payload);
+
+        SKSE::log::info(
+            "OSTNET PPA SETINTERACTION TX animation=\"{}\" stage={} performer={} target={}({}) targetActor={} explicit={} participantsSent={}",
+            animation,
+            stage,
+            performerPosition,
+            interaction.target,
+            TargetName(interaction.target),
+            interaction.targetActorPosition,
+            explicitTarget ? 1 : 0,
+            sent ? 1 : 0);
     }
 
     void __cdecl PPAIntegration::OnTransportMessage(
@@ -426,14 +879,14 @@ namespace OStimTogether
         void* userData)
     {
         if (!message || !userData ||
-            !message->data || message->size == 0) {
+            !message->data || message->size == 0 ||
+            message->sender.connectionID == 0) {
             return;
         }
 
         std::string payload(
             static_cast<const char*>(message->data),
             message->size);
-
         const auto senderConnection =
             message->sender.connectionID;
 
@@ -456,75 +909,177 @@ namespace OStimTogether
     void PPAIntegration::HandleTransportMessage(
         const STRPMApi::Message& message)
     {
+        if (!_enabled.load()) {
+            return;
+        }
+
         const std::string_view payload(
             static_cast<const char*>(message.data),
             message.size);
 
-        if (!payload.starts_with("TARGET|")) {
-            return;
-        }
-
+        const auto version = ParseUInt(payload, "v");
+        const auto animationHex = Field(payload, "animation");
+        const auto stage = ParseInt(payload, "stage");
         const auto performer = ParseUInt(payload, "performer");
-        const auto receiver = ParseUInt(payload, "receiver");
-        const auto site = ParseUInt(payload, "site");
-        const auto context = ParseUInt(payload, "context");
+        const auto target = ParseUInt(payload, "target");
 
-        if (!performer || !receiver || !site || !context ||
+        if (!version || *version != 1 ||
+            !animationHex || !stage || !performer || !target ||
             *performer == 0 || *performer > 5 ||
-            *receiver == 0 || *receiver > 5 ||
-            *site > static_cast<std::uint32_t>(
-                AccuratePenetration::API::PenetrationSite::Hands)) {
+            *stage < 1 || *stage > 64 ||
+            *target > static_cast<std::uint32_t>(
+                ActionTarget::RightHand)) {
             SKSE::log::warn(
-                "OSTNET PPA TARGET RX invalid senderConnection={} payload={}",
+                "OSTNET PPA RX invalid header senderConnection={} payload={}",
                 message.sender.connectionID,
                 payload);
             return;
         }
 
-        TargetState state{};
-        state.performerPosition =
-            static_cast<std::uint8_t>(*performer);
-        state.receiverPosition =
-            static_cast<std::uint8_t>(*receiver);
-        state.site =
-            static_cast<AccuratePenetration::API::PenetrationSite>(*site);
-        state.context = *context;
-
-        {
-            std::scoped_lock lock(_stateMutex);
-            _remoteDesired[
-                TargetKey(
-                    state.performerPosition,
-                    state.receiverPosition)] = state;
+        const auto animation = HexDecode(*animationHex);
+        if (!animation || animation->empty() ||
+            animation->size() > 512) {
+            SKSE::log::warn(
+                "OSTNET PPA RX invalid animation senderConnection={}",
+                message.sender.connectionID);
+            return;
         }
 
-        const bool applied = ApplyRemoteTarget(state);
+        const auto performerPosition =
+            static_cast<std::uint8_t>(*performer);
 
-        SKSE::log::info(
-            "OSTNET PPA TARGET RX senderConnection={} performerPos={} receiverPos={} site={}({}) context=0x{:X} applied={}",
-            message.sender.connectionID,
-            state.performerPosition,
-            state.receiverPosition,
-            static_cast<std::uint32_t>(state.site),
-            SiteName(state.site),
-            state.context,
-            applied ? 1 : 0);
+        if (!ValidateRemoteSender(
+                message.sender.connectionID,
+                performerPosition)) {
+            SKSE::log::warn(
+                "OSTNET PPA RX rejected senderConnection={} performer={} reason=sender-not-performer-in-current-thread",
+                message.sender.connectionID,
+                performerPosition);
+            return;
+        }
+
+        if (payload.starts_with("SETTARGET|")) {
+            const bool applied =
+                ApplyRemoteSetTarget(
+                    *animation,
+                    *stage,
+                    performerPosition,
+                    static_cast<std::uint8_t>(*target));
+
+            SKSE::log::info(
+                "OSTNET PPA SETTARGET RX senderConnection={} animation=\"{}\" stage={} performer={} target={}({}) applied={}",
+                message.sender.connectionID,
+                *animation,
+                *stage,
+                performerPosition,
+                *target,
+                TargetName(static_cast<std::uint8_t>(*target)),
+                applied ? 1 : 0);
+            return;
+        }
+
+        if (payload.starts_with("SETINTERACTION|")) {
+            const auto actor = ParseUInt(payload, "actor");
+            const auto explicitValue = ParseUInt(payload, "explicit");
+
+            if (!actor || !explicitValue || *actor > 5 ||
+                *explicitValue > 1) {
+                SKSE::log::warn(
+                    "OSTNET PPA SETINTERACTION RX invalid senderConnection={} payload={}",
+                    message.sender.connectionID,
+                    payload);
+                return;
+            }
+
+            StageInteractionRaw interaction{};
+            interaction.target =
+                static_cast<std::uint8_t>(*target);
+            interaction.targetActorPosition =
+                static_cast<std::uint8_t>(*actor);
+            interaction.hasExplicitTargetActor =
+                static_cast<std::uint8_t>(*explicitValue);
+
+            if (!ValidateTargetActorPosition(
+                    interaction.targetActorPosition,
+                    interaction.hasExplicitTargetActor != 0)) {
+                SKSE::log::warn(
+                    "OSTNET PPA SETINTERACTION RX rejected senderConnection={} targetActor={} explicit={} reason=invalid-target-actor-position",
+                    message.sender.connectionID,
+                    interaction.targetActorPosition,
+                    interaction.hasExplicitTargetActor ? 1 : 0);
+                return;
+            }
+
+            const bool applied =
+                ApplyRemoteSetInteraction(
+                    *animation,
+                    *stage,
+                    performerPosition,
+                    interaction);
+
+            SKSE::log::info(
+                "OSTNET PPA SETINTERACTION RX senderConnection={} animation=\"{}\" stage={} performer={} target={}({}) targetActor={} explicit={} applied={}",
+                message.sender.connectionID,
+                *animation,
+                *stage,
+                performerPosition,
+                interaction.target,
+                TargetName(interaction.target),
+                interaction.targetActorPosition,
+                interaction.hasExplicitTargetActor ? 1 : 0,
+                applied ? 1 : 0);
+            return;
+        }
     }
 
-    bool PPAIntegration::ApplyRemoteTarget(const TargetState& state)
+    bool PPAIntegration::ApplyRemoteSetTarget(
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        std::uint8_t target)
     {
-        // Accurate Penetration API V1 intentionally exposes observation only:
-        // listener registration plus AnimationUpdateEvent snapshots. It has no
-        // supported function that changes the active per-stage target selected
-        // by PPA's in-game menu. Keep the received state cached behind this
-        // single application point so a future official setter (or a verified
-        // internal bridge) can be added without changing the network protocol.
-        SKSE::log::warn(
-            "OSTNET PPA TARGET APPLY deferred performerPos={} receiverPos={} site={}({}) reason=ppa-api-v1-read-only",
-            state.performerPosition,
-            state.receiverPosition,
-            static_cast<std::uint32_t>(state.site),
-            SiteName(state.site));
-        return false;
+        if (!CanApplyRemoteTargets()) {
+            return false;
+        }
+
+        auto* tagger = _getAnimationTagger();
+        if (!tagger) {
+            return false;
+        }
+
+        // Call the trampoline/original directly. This intentionally bypasses
+        // our entry hook, so a remotely applied target cannot echo back onto
+        // the network.
+        _setTargetOriginal(
+            tagger,
+            animation,
+            stage,
+            performerPosition,
+            target);
+        return true;
+    }
+
+    bool PPAIntegration::ApplyRemoteSetInteraction(
+        const std::string& animation,
+        std::int32_t stage,
+        std::uint8_t performerPosition,
+        const StageInteractionRaw& interaction)
+    {
+        if (!CanApplyRemoteTargets()) {
+            return false;
+        }
+
+        auto* tagger = _getAnimationTagger();
+        if (!tagger) {
+            return false;
+        }
+
+        _setInteractionOriginal(
+            tagger,
+            animation,
+            stage,
+            performerPosition,
+            std::addressof(interaction));
+        return true;
     }
 }
