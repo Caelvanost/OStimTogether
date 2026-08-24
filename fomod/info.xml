@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.35.4</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.35.4 keeps the validated physical-furniture OCum behavior from v0.35.3 and adds a dedicated non-destructive CumOverlays replay for free/wall scenes only: new RaceMenu overlays are materialized directly on the local player and STR proxy, followed by lightweight SKEE refreshes at immediate, T+350 ms and T+1100 ms phases. Physical TESFurniture scenes, PPA, scene anchors and OCum equip meshes are unchanged; the unsafe live NiSkinInstance cloning experiment remains disabled.</Description>
+  <Version>0.35.5</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.35.5 keeps the validated scene/transport/PPA behavior and adds a common OCum CumOverlays repair for both free and physical-furniture scenes: when a Body [OvlN] appears or persists into a new scene, OStim Together asks RaceMenu's public RevertOverlay API to relink that overlay to the actor's current body skin with resetDiffuse=false, then reapplies the OCum node properties. This avoids direct NiSkinInstance cloning and supersedes obsolete proxy hard-reinstall passes.</Description>
 </fomod>
