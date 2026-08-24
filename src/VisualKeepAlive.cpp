@@ -2,6 +2,7 @@
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
+#include "FreeSceneOverlayReplay.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
 
@@ -41,6 +42,12 @@ namespace OStimTogether
         // implemented and validated.
         SKSE::log::warn(
             "OSTNET OCUM DIRECT SKIN DISABLED reason=unsafe-live-NiSkinInstance-deep-copy hotfix=0.35.3");
+
+        // 0.35.4: physical-furniture scenes are currently the known-good
+        // baseline. Free/wall scenes get a dedicated non-destructive replay
+        // that reuses direct Body [OvlN] materialization and a lightweight SKEE
+        // update instead of allowing the old proxy Remove/Add pass to win.
+        FreeSceneOverlayReplay::GetSingleton().Initialize();
 
         _refreshQueued.store(false);
 
@@ -111,8 +118,16 @@ namespace OStimTogether
                             // Detect live OCum equip-object and RaceMenu overlay
                             // state through the established non-destructive path.
                             // The experimental direct skin-clone repair is
-                            // intentionally disabled in v0.35.3.
+                            // intentionally disabled in v0.35.3+.
                             OCumStateSync::GetSingleton()
+                                .Tick();
+
+                            // Runs immediately after OCumStateSync so a free-
+                            // scene direct/light replay can advance the SKEE
+                            // generation before any queued proxy hard reinstall.
+                            // Physical TESFurniture scenes are explicitly
+                            // excluded by this module.
+                            FreeSceneOverlayReplay::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
