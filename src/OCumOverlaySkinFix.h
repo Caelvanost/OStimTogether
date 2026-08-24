@@ -6,11 +6,11 @@
 
 namespace OStimTogether
 {
-    // Repairs RaceMenu Body [OvlN] skin binding without asking RaceMenu to
-    // rediscover the body source. OStim body/furniture transitions can make
-    // QueueOverlayBuild pick a small auxiliary skinned geometry instead of the
-    // actual rendered body. We select the current full body ourselves and bind
-    // the existing overlay geometries directly to its skin instance.
+    // Repairs RaceMenu Body [OvlN] binding after OStim scene/body transitions.
+    // RaceMenu's native RelinkOverlay copies the source vertex descriptor and
+    // CLONES the source NiSkinInstance. We mirror that behavior here after
+    // selecting the current full body ourselves, because QueueOverlayBuild can
+    // temporarily pick an auxiliary skinned geometry while OStim is settling.
     class OCumOverlaySkinFix
     {
     public:
@@ -23,6 +23,7 @@ namespace OStimTogether
         {
             _activeThreads.clear();
             _overlaySignatures.clear();
+            _lastSourceSkins.clear();
             _nextPoll = {};
         }
 
@@ -54,6 +55,7 @@ namespace OStimTogether
         {
             std::uint32_t found{ 0 };
             std::uint32_t rebound{ 0 };
+            std::uint32_t cloneFailed{ 0 };
             std::uint32_t oldVertices{ 0 };
             std::uint32_t oldMatrices{ 0 };
         };
@@ -74,6 +76,7 @@ namespace OStimTogether
         std::atomic_bool _initialized{ false };
         std::unordered_set<std::int32_t> _activeThreads;
         std::unordered_map<RE::FormID, std::string> _overlaySignatures;
+        std::unordered_map<RE::FormID, const RE::NiSkinInstance*> _lastSourceSkins;
         std::chrono::steady_clock::time_point _nextPoll{};
     };
 }
