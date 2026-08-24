@@ -38,13 +38,33 @@ namespace OStimTogether::SKEEOverlayRefresh
                 IInterfaceMap* interfaceMap{ nullptr };
             };
 
-            class IOverlayInterface : public IPluginInterface
+            class IAddonAttachmentInterface
             {
             public:
-                virtual bool HasOverlays(RE::TESObjectREFR* reference) = 0;
-                virtual void AddOverlays(
-                    RE::TESObjectREFR* reference,
-                    bool immediate = false) = 0;
+                virtual ~IAddonAttachmentInterface() = default;
+            };
+
+            // Public RaceMenu/SKEE ActorUpdateManager interface. Keep virtual
+            // order identical to IPluginInterface.h. This is the same update
+            // pipeline RaceMenu uses after save-load and 3D rebuilds.
+            class IActorUpdateManager : public IPluginInterface
+            {
+            public:
+                virtual void AddBodyUpdate(u32 formId) = 0;
+                virtual void AddTransformUpdate(u32 formId) = 0;
+                virtual void AddOverlayUpdate(u32 formId) = 0;
+                virtual void AddNodeOverrideUpdate(u32 formId) = 0;
+                virtual void AddWeaponOverrideUpdate(u32 formId) = 0;
+                virtual void AddAddonOverrideUpdate(u32 formId) = 0;
+                virtual void AddSkinOverrideUpdate(u32 formId) = 0;
+                virtual void Flush() = 0;
+                virtual void AddInterface(IAddonAttachmentInterface*) = 0;
+                virtual void RemoveInterface(IAddonAttachmentInterface*) = 0;
+                using FlushCallback = void (*)(u32*, u32);
+                virtual bool RegisterFlushCallback(
+                    const char* key,
+                    FlushCallback cb) = 0;
+                virtual bool UnregisterFlushCallback(const char* key) = 0;
             };
         }
 
@@ -54,7 +74,7 @@ namespace OStimTogether::SKEEOverlayRefresh
         std::unordered_map<RE::FormID, std::uint64_t> g_actorGeneration;
         std::atomic<std::uint64_t> g_nextGeneration{ 1 };
 
-        SKEE::IOverlayInterface* QueryOverlayInterface()
+        SKEE::IActorUpdateManager* QueryActorUpdateManager()
         {
             auto* messaging = SKSE::GetMessagingInterface();
             if (!messaging) {
@@ -72,8 +92,8 @@ namespace OStimTogether::SKEEOverlayRefresh
                 return nullptr;
             }
 
-            return static_cast<SKEE::IOverlayInterface*>(
-                exchange.interfaceMap->QueryInterface("Overlay"));
+            return static_cast<SKEE::IActorUpdateManager*>(
+                exchange.interfaceMap->QueryInterface("ActorUpdateManager"));
         }
 
         bool IsGenerationCurrent(
@@ -89,7 +109,7 @@ namespace OStimTogether::SKEEOverlayRefresh
 
     void Queue(RE::Actor* actor, std::string_view reason)
     {
-        if (!actor || actor->IsPlayerRef()) {
+        if (!actor) {
             return;
         }
 
@@ -103,12 +123,13 @@ namespace OStimTogether::SKEEOverlayRefresh
             g_actorGeneration[actorID] = generation;
         }
 
-        // 0.31.6 could enqueue two synchronous rebuilds for every OBJ packet.
-        // OCum's live poll then produced more than a thousand RaceMenu rebuilds
-        // in one scene and Player1 crashed inside skee64 while installing the
-        // remote proxy's face overlay. Debounce by actor: only the newest request
-        // survives a quiet window, and let RaceMenu execute through its normal
-        // queued path instead of rebuilding synchronously inside our game task.
+        // 0.31.6 could enqueue multiple synchronous AddOverlays rebuilds for
+        // every OCum packet and eventually crash inside SKEE. Keep the per-actor
+        // quiet window, but use RaceMenu's own ActorUpdateManager now. Unlike
+        // IOverlayInterface::AddOverlays(), ActorUpdateManager can refresh the
+        // real PlayerCharacter as well as a remote STR proxy, and it sequences
+        // overlay geometry followed by node-override application in RaceMenu's
+        // normal task pipeline.
         std::thread(
             [actorID,
              reasonCopy,
@@ -134,30 +155,29 @@ namespace OStimTogether::SKEEOverlayRefresh
 
                         auto* form = RE::TESForm::LookupByID(actorID);
                         auto* actor2 = form ? form->As<RE::Actor>() : nullptr;
-                        if (!actor2 || actor2->IsPlayerRef()) {
+                        if (!actor2) {
                             return;
                         }
 
-                        auto* overlay = QueryOverlayInterface();
-                        if (!overlay) {
+                        auto* updates = QueryActorUpdateManager();
+                        if (!updates) {
                             SKSE::log::warn(
-                                "OSTNET SKEE OVERLAY REBUILD reason={} actor={:08X} interface=0 generation={}",
+                                "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} manager=0 generation={}",
                                 reasonCopy,
                                 actorID,
                                 generation);
                             return;
                         }
 
-                        const bool hadOverlays =
-                            overlay->HasOverlays(actor2);
-
-                        overlay->AddOverlays(actor2, false);
+                        updates->AddOverlayUpdate(actorID);
+                        updates->AddNodeOverrideUpdate(actorID);
+                        updates->Flush();
 
                         SKSE::log::info(
-                            "OSTNET SKEE OVERLAY REBUILD reason={} actor={:08X} hadOverlays={} immediate=0 coalesced=1 generation={}",
+                            "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} player={} pipeline=ActorUpdateManager overlay=1 nodeOverrides=1 coalesced=1 generation={}",
                             reasonCopy,
                             actorID,
-                            hadOverlays ? 1 : 0,
+                            actor2->IsPlayerRef() ? 1 : 0,
                             generation);
                     });
             })
