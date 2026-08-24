@@ -44,6 +44,21 @@ namespace OStimTogether::SKEEOverlayRefresh
                 virtual ~IAddonAttachmentInterface() = default;
             };
 
+            // Only the leading public Overlay ABI methods used here are
+            // declared. Their virtual order matches RaceMenu's
+            // IPluginInterface.h exactly.
+            class IOverlayInterface : public IPluginInterface
+            {
+            public:
+                virtual bool HasOverlays(RE::TESObjectREFR* reference) = 0;
+                virtual void AddOverlays(
+                    RE::TESObjectREFR* reference,
+                    bool immediate = false) = 0;
+                virtual void RemoveOverlays(
+                    RE::TESObjectREFR* reference,
+                    bool immediate = false) = 0;
+            };
+
             // Public RaceMenu/SKEE ActorUpdateManager interface. Keep virtual
             // order identical to IPluginInterface.h. This is the same update
             // pipeline RaceMenu uses after save-load and 3D rebuilds.
@@ -69,12 +84,14 @@ namespace OStimTogether::SKEEOverlayRefresh
         }
 
         constexpr auto kQuietDelay = std::chrono::milliseconds(250);
+        constexpr std::string_view kOCumOverlayChanged =
+            "OCUM-OVERLAY-CHANGED";
 
         std::mutex g_queueMutex;
         std::unordered_map<RE::FormID, std::uint64_t> g_actorGeneration;
         std::atomic<std::uint64_t> g_nextGeneration{ 1 };
 
-        SKEE::IActorUpdateManager* QueryActorUpdateManager()
+        SKEE::IInterfaceMap* QueryInterfaceMap()
         {
             auto* messaging = SKSE::GetMessagingInterface();
             if (!messaging) {
@@ -92,8 +109,25 @@ namespace OStimTogether::SKEEOverlayRefresh
                 return nullptr;
             }
 
-            return static_cast<SKEE::IActorUpdateManager*>(
-                exchange.interfaceMap->QueryInterface("ActorUpdateManager"));
+            return exchange.interfaceMap;
+        }
+
+        SKEE::IActorUpdateManager* QueryActorUpdateManager(
+            SKEE::IInterfaceMap* map)
+        {
+            return map ?
+                static_cast<SKEE::IActorUpdateManager*>(
+                    map->QueryInterface("ActorUpdateManager")) :
+                nullptr;
+        }
+
+        SKEE::IOverlayInterface* QueryOverlayInterface(
+            SKEE::IInterfaceMap* map)
+        {
+            return map ?
+                static_cast<SKEE::IOverlayInterface*>(
+                    map->QueryInterface("Overlay")) :
+                nullptr;
         }
 
         bool IsGenerationCurrent(
@@ -123,13 +157,20 @@ namespace OStimTogether::SKEEOverlayRefresh
             g_actorGeneration[actorID] = generation;
         }
 
-        // 0.31.6 could enqueue multiple synchronous AddOverlays rebuilds for
-        // every OCum packet and eventually crash inside SKEE. Keep the per-actor
-        // quiet window, but use RaceMenu's own ActorUpdateManager now. Unlike
-        // IOverlayInterface::AddOverlays(), ActorUpdateManager can refresh the
-        // real PlayerCharacter as well as a remote STR proxy, and it sequences
-        // overlay geometry followed by node-override application in RaceMenu's
-        // normal task pipeline.
+        // Requests are coalesced by actor. For the real player, RaceMenu's
+        // ActorUpdateManager update is sufficient and is the path validated in
+        // 0.33.2. A remote STR proxy is different: OStim/STR can rebuild its
+        // body while RaceMenu retains a Body [OvlN] geometry object that is
+        // still registered but skinned/relinked to an older source body. In
+        // that state all node overrides, texture and alpha values can look
+        // correct while the overlay remains visually absent.
+        //
+        // Only when CumOverlays actually changes on a NON-player actor, remove
+        // and add the RaceMenu overlay holder once. RaceMenu then creates or
+        // rebinds the overlay geometry against the proxy's current body before
+        // node overrides are applied. This is deliberately NOT periodic: the
+        // quiet-window generation guard keeps the old rebuild-storm crash from
+        // returning.
         std::thread(
             [actorID,
              reasonCopy,
@@ -159,7 +200,8 @@ namespace OStimTogether::SKEEOverlayRefresh
                             return;
                         }
 
-                        auto* updates = QueryActorUpdateManager();
+                        auto* map = QueryInterfaceMap();
+                        auto* updates = QueryActorUpdateManager(map);
                         if (!updates) {
                             SKSE::log::warn(
                                 "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} manager=0 generation={}",
@@ -169,15 +211,55 @@ namespace OStimTogether::SKEEOverlayRefresh
                             return;
                         }
 
-                        updates->AddOverlayUpdate(actorID);
-                        updates->AddNodeOverrideUpdate(actorID);
-                        updates->Flush();
+                        const bool hardProxyReinstall =
+                            !actor2->IsPlayerRef() &&
+                            reasonCopy == kOCumOverlayChanged;
+
+                        bool hadOverlays = false;
+                        bool reinstalled = false;
+
+                        if (hardProxyReinstall) {
+                            auto* overlay = QueryOverlayInterface(map);
+                            if (overlay) {
+                                hadOverlays = overlay->HasOverlays(actor2);
+
+                                // RaceMenu queues these tasks in order. Remove
+                                // first so stale proxy overlay geometry is
+                                // detached, then AddOverlays queues a fresh
+                                // build against the actor's current skin.
+                                overlay->RemoveOverlays(actor2, false);
+                                overlay->AddOverlays(actor2, false);
+                                reinstalled = true;
+
+                                // The fresh InstallOverlay path already applies
+                                // persisted overrides, and this additional
+                                // manager pass guarantees the current node state
+                                // is replayed after the queued geometry work.
+                                updates->AddNodeOverrideUpdate(actorID);
+                                updates->Flush();
+                            } else {
+                                // Safe fallback if only ActorUpdateManager is
+                                // available from this RaceMenu build.
+                                updates->AddOverlayUpdate(actorID);
+                                updates->AddNodeOverrideUpdate(actorID);
+                                updates->Flush();
+                            }
+                        } else {
+                            updates->AddOverlayUpdate(actorID);
+                            updates->AddNodeOverrideUpdate(actorID);
+                            updates->Flush();
+                        }
 
                         SKSE::log::info(
-                            "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} player={} pipeline=ActorUpdateManager overlay=1 nodeOverrides=1 coalesced=1 generation={}",
+                            "OSTNET SKEE OVERLAY UPDATE reason={} actor={:08X} player={} pipeline={} overlay=1 nodeOverrides=1 hardProxyReinstall={} hadOverlays={} coalesced=1 generation={}",
                             reasonCopy,
                             actorID,
                             actor2->IsPlayerRef() ? 1 : 0,
+                            reinstalled ?
+                                "RemoveAdd+ActorUpdateManager" :
+                                "ActorUpdateManager",
+                            hardProxyReinstall ? 1 : 0,
+                            hadOverlays ? 1 : 0,
                             generation);
                     });
             })
