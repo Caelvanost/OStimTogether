@@ -14,6 +14,7 @@ namespace OStimTogether
         static OCumOverlayRelink& GetSingleton();
 
         bool Initialize();
+        void Reset();
         void Tick();
 
     private:
