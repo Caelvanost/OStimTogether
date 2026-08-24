@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.34.3</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.34.3 keeps the validated local furniture CumOverlays replay from v0.34.2 and changes only the remote STR proxy replay: instead of the proxy-only RemoveOverlays/AddOverlays hard reinstall, furniture replays now directly reapply the owner-authoritative CumOverlays to the existing Body [OvlN] geometry and request a lightweight RaceMenu update. This avoids the transient duplicate CumOverlays slots observed on Player1 while preserving the free-scene and PPA paths.</Description>
+  <Version>0.34.4</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. Uses one unified remote scene-anchor pipeline for physical furniture, free-standing and wall scenes, with synchronized participant alignment, scene controls and NPC undressing. v0.34.4 keeps the v0.34.3 direct/light furniture overlay replay and adds an immediate replay in the same visual tick that first observes a new CumOverlays snapshot. This deterministically supersedes the older delayed proxy RemoveOverlays/AddOverlays refresh before it can run, matching the ordering that made the third climax render correctly on both clients in testing. The T350/T1100 furniture passes remain as post-settle insurance; free-scene, PPA and OCum equip-mesh paths are unchanged.</Description>
 </fomod>
