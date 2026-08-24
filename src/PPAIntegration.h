@@ -4,6 +4,8 @@
 
 #include "AccuratePenetrationAPI.h"
 #include "STRPMApi.h"
+#include "OStimAPI/ThreadInterface.h"
+#include "OStimAPI/ModThreadControl.h"
 
 namespace OStimTogether
 {
@@ -22,23 +24,53 @@ namespace OStimTogether
 
         [[nodiscard]] bool IsPPAConnected() const noexcept
         {
-            return _ppaAPI != nullptr && _ppaListener != 0;
+            return _ppaModule != nullptr && _hooksInstalled;
         }
 
         [[nodiscard]] bool CanApplyRemoteTargets() const noexcept
         {
-            return false;
+            return _hooksInstalled &&
+                   _getAnimationTagger &&
+                   _setTargetOriginal &&
+                   _setInteractionOriginal;
         }
 
     private:
-        struct TargetState
+        enum class ActionTarget : std::uint8_t
         {
-            std::uint8_t performerPosition{ 0 };
-            std::uint8_t receiverPosition{ 0 };
-            AccuratePenetration::API::PenetrationSite site{
-                AccuratePenetration::API::PenetrationSite::None };
-            std::uint32_t context{ 0 };
+            Auto = 0,
+            None = 1,
+            Vagina = 2,
+            Anus = 3,
+            Mouth = 4,
+            Hand = 5,
+            LeftHand = 6,
+            RightHand = 7
         };
+
+#pragma pack(push, 1)
+        struct StageInteractionRaw
+        {
+            std::uint8_t target{ 0 };
+            std::uint8_t targetActorPosition{ 0 };
+            std::uint8_t hasExplicitTargetActor{ 0 };
+        };
+#pragma pack(pop)
+        static_assert(sizeof(StageInteractionRaw) == 3);
+
+        using GetAnimationTaggerFn = void*(__cdecl*)();
+        using SetTargetFn = void (*)(
+            void* tagger,
+            const std::string& animation,
+            std::int32_t stage,
+            std::uint8_t performerPosition,
+            std::uint8_t target);
+        using SetInteractionFn = void (*)(
+            void* tagger,
+            const std::string& animation,
+            std::int32_t stage,
+            std::uint8_t performerPosition,
+            const StageInteractionRaw* interaction);
 
         PPAIntegration() = default;
         ~PPAIntegration();
@@ -46,42 +78,88 @@ namespace OStimTogether
         PPAIntegration(const PPAIntegration&) = delete;
         PPAIntegration& operator=(const PPAIntegration&) = delete;
 
-        static void __cdecl OnPPAUpdate(
-            const AccuratePenetration::API::AnimationUpdateEvent* event,
-            void* userData);
+        static void SetTargetHook(
+            void* tagger,
+            const std::string& animation,
+            std::int32_t stage,
+            std::uint8_t performerPosition,
+            std::uint8_t target);
+
+        static void SetInteractionHook(
+            void* tagger,
+            const std::string& animation,
+            std::int32_t stage,
+            std::uint8_t performerPosition,
+            const StageInteractionRaw* interaction);
 
         static void __cdecl OnTransportMessage(
             const STRPMApi::Message* message,
             void* userData);
 
         bool IsOptionalIntegrationInstalled() const;
+        bool ConnectOStim();
         bool ConnectPPA();
         bool ConnectTransport();
+        bool ValidateExactPPABuild(HMODULE module) const;
+        bool InstallPPAHooks(HMODULE module);
         void Disconnect();
 
-        void HandlePPAUpdate(
-            const AccuratePenetration::API::AnimationUpdateEvent& event);
+        bool IsLocalPlayerPerformer(std::uint8_t performerPosition) const;
+        bool ValidateRemoteSender(
+            STRPMApi::ConnectionID senderConnectionID,
+            std::uint8_t performerPosition) const;
+        bool ValidateTargetActorPosition(
+            std::uint8_t targetActorPosition,
+            bool explicitTarget) const;
+
+        std::vector<STRPMApi::ConnectionID>
+            SnapshotRemoteParticipants() const;
+
+        void PublishSetTarget(
+            const std::string& animation,
+            std::int32_t stage,
+            std::uint8_t performerPosition,
+            std::uint8_t target);
+
+        void PublishSetInteraction(
+            const std::string& animation,
+            std::int32_t stage,
+            std::uint8_t performerPosition,
+            const StageInteractionRaw& interaction);
+
+        bool SendToParticipants(std::string_view payload);
         void HandleTransportMessage(const STRPMApi::Message& message);
 
-        bool SendTargetState(const TargetState& state);
-        bool ApplyRemoteTarget(const TargetState& state);
-
-        static std::uint16_t TargetKey(
+        bool ApplyRemoteSetTarget(
+            const std::string& animation,
+            std::int32_t stage,
             std::uint8_t performerPosition,
-            std::uint8_t receiverPosition) noexcept;
-        static const char* SiteName(
-            AccuratePenetration::API::PenetrationSite site) noexcept;
+            std::uint8_t target);
+
+        bool ApplyRemoteSetInteraction(
+            const std::string& animation,
+            std::int32_t stage,
+            std::uint8_t performerPosition,
+            const StageInteractionRaw& interaction);
+
+        static const char* TargetName(std::uint8_t target) noexcept;
+        static std::string HexEncode(std::string_view value);
+        static std::optional<std::string> HexDecode(std::string_view value);
 
         std::atomic_bool _enabled{ false };
+        bool _hooksInstalled{ false };
 
+        HMODULE _ppaModule{ nullptr };
         const AccuratePenetration::API::InterfaceV1* _ppaAPI{ nullptr };
-        AccuratePenetration::API::ListenerHandle _ppaListener{ 0 };
+        GetAnimationTaggerFn _getAnimationTagger{ nullptr };
+
+        inline static SetTargetFn _setTargetOriginal{ nullptr };
+        inline static SetInteractionFn _setInteractionOriginal{ nullptr };
+
+        OStim::ThreadInterface* _threads{ nullptr };
+        OStimModAPI::Thread::IThreadInterface* _threadControl{ nullptr };
 
         const STRPMApi::Interface* _transportAPI{ nullptr };
         STRPMApi::ListenerHandle _transportListener{};
-
-        mutable std::mutex _stateMutex;
-        std::unordered_map<std::uint16_t, TargetState> _lastSent;
-        std::unordered_map<std::uint16_t, TargetState> _remoteDesired;
     };
 }
