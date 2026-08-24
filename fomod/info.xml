@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.36.0</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.36.0 simplifies OCum synchronization to a mirror-only model: OCum and RaceMenu exclusively own the real local player's CumOverlays rendering, while OStim Together only reads that resulting state and sends it when it changes. The remote STR proxy receives the snapshot through the existing generic RaceMenu bridge. All experimental local overlay relink/rebuild/replay code for free and furniture scenes has been removed from the active build, while the validated scene-anchor, PPA and OCum equip-mesh synchronization remain unchanged.</Description>
+  <Version>0.36.1</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.36.1 keeps the v0.36.0 mirror-only OCum model unchanged and fixes a free-scene alignment regression on remote mirror threads: the temporary XMarkerHeading scene anchor is now recognized as a virtual anchor rather than physical furniture, so the continuous STR proxy pose guard is disabled and OStim root motion remains authoritative. Physical furniture and wall scene guards remain unchanged.</Description>
 </fomod>
