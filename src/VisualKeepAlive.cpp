@@ -2,7 +2,6 @@
 #include "VisualKeepAlive.h"
 #include "FreeSceneRootSync.h"
 #include "FreeSceneSelfOriginLock.h"
-#include "OCumOverlayRelink.h"
 #include "OCumStateSync.h"
 #include "OStimBridge.h"
 
@@ -10,9 +9,6 @@ namespace OStimTogether
 {
     namespace
     {
-        // Wake faster than a rendered frame, but queue at most one refresh
-        // task. The game-thread task naturally coalesces this to one visual
-        // refresh per frame without building a backlog.
         constexpr auto kRefreshPollInterval =
             std::chrono::milliseconds(4);
     }
@@ -34,24 +30,6 @@ namespace OStimTogether
             return;
         }
 
-        // Safety hotfix: v0.35.2 attempted to deep-clone live NiSkinInstance
-        // objects for Body [OvlN]. CrashLogger confirmed an access violation in
-        // Skyrim's DeepCopyStream during climax while cloning an overlay skin.
-        // Keep that experimental code compiled but disabled. v0.35.5+ instead
-        // uses RaceMenu's own public RevertOverlay path to relink Body [OvlN]
-        // to the actor's current skin without direct NiSkinInstance writes.
-        SKSE::log::warn(
-            "OSTNET OCUM DIRECT SKIN DISABLED reason=unsafe-live-NiSkinInstance-deep-copy hotfix=0.35.3");
-
-        // Common authoritative RaceMenu repair for both physical-furniture and
-        // free/wall scenes. v0.35.6 deliberately leaves the old
-        // FreeSceneOverlayReplay fallback inactive: 0.35.5 testing showed that
-        // physical furniture rendered CumOverlays correctly with this relink
-        // path alone, while free scenes ran an additional direct replay that
-        // competed with/coalesced the relink material passes and remained
-        // invisible. Both scene classes now use the same pipeline.
-        OCumOverlayRelink::GetSingleton().Initialize();
-
         _refreshQueued.store(false);
 
         _worker = std::jthread(
@@ -60,7 +38,7 @@ namespace OStimTogether
             });
 
         SKSE::log::info(
-            "STR visual keepalive started: frame-coalesced poll={}ms",
+            "STR visual keepalive started: frame-coalesced poll={}ms OCumOverlayRepair=disabled mirrorOnly=1",
             kRefreshPollInterval.count());
     }
 
@@ -77,61 +55,36 @@ namespace OStimTogether
 
         _refreshQueued.store(false);
 
-        SKSE::log::info(
-            "STR visual keepalive stopped");
+        SKSE::log::info("STR visual keepalive stopped");
     }
 
     void VisualKeepAlive::WorkerLoop(
         std::stop_token stopToken)
     {
-        while (!stopToken.stop_requested() &&
-               _running.load()) {
-            std::this_thread::sleep_for(
-                kRefreshPollInterval);
+        while (!stopToken.stop_requested() && _running.load()) {
+            std::this_thread::sleep_for(kRefreshPollInterval);
 
-            if (stopToken.stop_requested() ||
-                !_running.load()) {
+            if (stopToken.stop_requested() || !_running.load()) {
                 break;
             }
 
-            // OStim data and RE scene-graph objects are only touched on
-            // Skyrim's game thread. Keep no more than one outstanding task so
-            // a slow frame cannot accumulate delayed corrections.
             if (!_refreshQueued.exchange(true)) {
-                if (auto* tasks =
-                        SKSE::GetTaskInterface()) {
+                if (auto* tasks = SKSE::GetTaskInterface()) {
                     tasks->AddTask(
                         []() {
                             OStimBridge::GetSingleton()
                                 .RefreshRemoteMirrors();
 
-                            // Historical root-translation probe. It remains
-                            // uninitialized/disabled in current runtime builds
-                            // and therefore performs no skeleton writes.
                             FreeSceneRootSync::GetSingleton()
                                 .Tick();
 
-                            // Keep only the remote STR proxy's logical origin
-                            // on the common free-scene center. The real local
-                            // PlayerCharacter and all rendered roots remain
-                            // OStim-owned.
                             FreeSceneSelfOriginLock::GetSingleton()
                                 .Tick();
 
-                            // Detect live OCum equip-object and RaceMenu overlay
-                            // state through the established non-destructive path.
+                            // OCumStateSync only mirrors equip-object state.
+                            // CumOverlays are owned/rendered locally by OCum and
+                            // copied to the remote proxy by AddonBridge.
                             OCumStateSync::GetSingleton()
-                                .Tick();
-
-                            // Single common Body [OvlN] repair path for free,
-                            // wall and physical-furniture scenes. When
-                            // CumOverlays changes (or persists into a new scene),
-                            // ask RaceMenu itself to RevertOverlay with
-                            // resetDiffuse=false so the overlay is rebound to the
-                            // CURRENT skin source, then reapply the OCum material
-                            // state at T100/T400. No second free-scene replay runs
-                            // behind it in v0.35.6.
-                            OCumOverlayRelink::GetSingleton()
                                 .Tick();
 
                             VisualKeepAlive::GetSingleton().
