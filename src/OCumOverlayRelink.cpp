@@ -13,11 +13,12 @@ namespace OStimTogether
     {
         constexpr std::string_view kMarker = "CumOverlays";
         constexpr std::string_view kChannel = "OCum";
-        constexpr std::string_view kCancelHardReason = "OCUM-BODY-RELINK";
+        constexpr std::string_view kCancelHardReason =
+            "OCUM-NATIVE-RELINK-CANCEL-HARD";
         constexpr auto kPollInterval = std::chrono::milliseconds(100);
-        constexpr auto kReapplyDelay1 = std::chrono::milliseconds(180);
-        constexpr auto kReapplyDelay2 = std::chrono::milliseconds(650);
-        constexpr std::string_view kBodyOverlay0 = "Body [Ovl0]";
+        constexpr auto kReapplyDelay1 = std::chrono::milliseconds(100);
+        constexpr auto kReapplyDelay2 = std::chrono::milliseconds(400);
+        constexpr std::uint32_t kBodyMask = 4;
 
         namespace SKEE
         {
@@ -46,32 +47,31 @@ namespace OStimTogether
                 IInterfaceMap* interfaceMap{ nullptr };
             };
 
-            class IAddonAttachmentInterface
+            class IOverlayInterface : public IPluginInterface
             {
             public:
-                virtual ~IAddonAttachmentInterface() = default;
-            };
-
-            class IActorUpdateManager : public IPluginInterface
-            {
-            public:
-                virtual void AddBodyUpdate(u32 formId) = 0;
-                virtual void AddTransformUpdate(u32 formId) = 0;
-                virtual void AddOverlayUpdate(u32 formId) = 0;
-                virtual void AddNodeOverrideUpdate(u32 formId) = 0;
-                virtual void AddWeaponOverrideUpdate(u32 formId) = 0;
-                virtual void AddAddonOverrideUpdate(u32 formId) = 0;
-                virtual void AddSkinOverrideUpdate(u32 formId) = 0;
-                virtual void Flush() = 0;
-                virtual void AddInterface(IAddonAttachmentInterface*) = 0;
-                virtual void RemoveInterface(IAddonAttachmentInterface*) = 0;
-                using FlushCallback = void (*)(u32*, u32);
-                virtual bool RegisterFlushCallback(const char*, FlushCallback) = 0;
-                virtual bool UnregisterFlushCallback(const char*) = 0;
+                virtual bool HasOverlays(RE::TESObjectREFR* reference) = 0;
+                virtual void AddOverlays(
+                    RE::TESObjectREFR* reference,
+                    bool immediate = false) = 0;
+                virtual void RemoveOverlays(
+                    RE::TESObjectREFR* reference,
+                    bool immediate = false) = 0;
+                virtual void RevertOverlays(
+                    RE::TESObjectREFR* reference,
+                    bool resetDiffuse,
+                    bool immediate = false) = 0;
+                virtual void RevertOverlay(
+                    RE::TESObjectREFR* reference,
+                    const char* nodeName,
+                    u32 armorMask,
+                    u32 addonMask,
+                    bool resetDiffuse,
+                    bool immediate = false) = 0;
             };
         }
 
-        SKEE::IActorUpdateManager* QueryActorUpdateManager()
+        SKEE::IOverlayInterface* QueryOverlayInterface()
         {
             auto* messaging = SKSE::GetMessagingInterface();
             if (!messaging) {
@@ -88,8 +88,88 @@ namespace OStimTogether
                 return nullptr;
             }
 
-            return static_cast<SKEE::IActorUpdateManager*>(
-                exchange.interfaceMap->QueryInterface("ActorUpdateManager"));
+            return static_cast<SKEE::IOverlayInterface*>(
+                exchange.interfaceMap->QueryInterface("Overlay"));
+        }
+
+        int HexNibble(char ch)
+        {
+            if (ch >= '0' && ch <= '9') return ch - '0';
+            if (ch >= 'a' && ch <= 'f') return 10 + ch - 'a';
+            if (ch >= 'A' && ch <= 'F') return 10 + ch - 'A';
+            return -1;
+        }
+
+        std::optional<std::string> HexDecode(std::string_view value)
+        {
+            if ((value.size() % 2) != 0) {
+                return std::nullopt;
+            }
+
+            std::string out;
+            out.reserve(value.size() / 2);
+            for (std::size_t i = 0; i < value.size(); i += 2) {
+                const int hi = HexNibble(value[i]);
+                const int lo = HexNibble(value[i + 1]);
+                if (hi < 0 || lo < 0) {
+                    return std::nullopt;
+                }
+                out.push_back(static_cast<char>((hi << 4) | lo));
+            }
+            return out;
+        }
+
+        std::vector<std::string_view> SplitView(
+            std::string_view text,
+            char delimiter)
+        {
+            std::vector<std::string_view> result;
+            std::size_t start = 0;
+            while (start <= text.size()) {
+                const auto pos = text.find(delimiter, start);
+                if (pos == std::string_view::npos) {
+                    result.push_back(text.substr(start));
+                    break;
+                }
+                result.push_back(text.substr(start, pos - start));
+                start = pos + 1;
+            }
+            return result;
+        }
+
+        bool IsBodyOverlayNode(std::string_view node)
+        {
+            return node.starts_with("Body [Ovl") ||
+                   node.starts_with("Body [SOvl");
+        }
+
+        std::vector<std::string> DecodeBodyOverlayNodes(
+            const std::vector<std::string>& chunks)
+        {
+            std::unordered_set<std::string> unique;
+
+            for (const auto& chunk : chunks) {
+                for (const auto token : SplitView(chunk, ';')) {
+                    if (token.empty()) {
+                        continue;
+                    }
+
+                    const auto fields = SplitView(token, ',');
+                    if (fields.size() < 2) {
+                        continue;
+                    }
+
+                    const auto decoded = HexDecode(fields[1]);
+                    if (!decoded || !IsBodyOverlayNode(*decoded)) {
+                        continue;
+                    }
+                    unique.insert(*decoded);
+                }
+            }
+
+            std::vector<std::string> nodes(unique.begin(), unique.end());
+            std::sort(nodes.begin(), nodes.end());
+            return nodes;
         }
 
         RE::NiAVObject* FindSceneObject(
@@ -110,7 +190,9 @@ namespace OStimTogether
                     if (!child) {
                         continue;
                     }
-                    if (auto* found = FindSceneObject(child.get(), wantedName)) {
+                    if (auto* found = FindSceneObject(
+                            child.get(),
+                            wantedName)) {
                         return found;
                     }
                 }
@@ -118,24 +200,26 @@ namespace OStimTogether
             return nullptr;
         }
 
-        void LogBodyOverlayBinding(
+        void LogBinding(
             RE::Actor* actor,
+            const std::vector<std::string>& nodes,
             std::string_view phase,
             std::uint64_t generation)
         {
-            if (!actor) {
+            if (!actor || nodes.empty()) {
                 return;
             }
 
             auto* root = actor->Get3D();
-            auto* object = root ? FindSceneObject(root, kBodyOverlay0) : nullptr;
+            auto* object = root ? FindSceneObject(root, nodes.front()) : nullptr;
             auto* geometry = object ? object->AsGeometry() : nullptr;
             if (!geometry) {
                 SKSE::log::info(
-                    "OSTNET OCUM BODY RELINK CHECK phase={} actor={:08X} player={} geometry=0 generation={}",
+                    "OSTNET OCUM NATIVE RELINK CHECK phase={} actor={:08X} player={} node=\"{}\" geometry=0 generation={}",
                     phase,
                     actor->GetFormID(),
                     actor->IsPlayerRef() ? 1 : 0,
+                    nodes.front(),
                     generation);
                 return;
             }
@@ -143,16 +227,15 @@ namespace OStimTogether
             auto& runtime = geometry->GetGeometryRuntimeData();
             auto* skin = runtime.skinInstance.get();
             auto* partition = skin ? skin->skinPartition.get() : nullptr;
-            const auto vertices = partition ? partition->vertexCount : 0;
-            const auto matrices = skin ? skin->numMatrices : 0;
 
             SKSE::log::info(
-                "OSTNET OCUM BODY RELINK CHECK phase={} actor={:08X} player={} geometry=1 vertices={} matrices={} skin={} generation={}",
+                "OSTNET OCUM NATIVE RELINK CHECK phase={} actor={:08X} player={} node=\"{}\" geometry=1 vertices={} matrices={} skin={} generation={}",
                 phase,
                 actor->GetFormID(),
                 actor->IsPlayerRef() ? 1 : 0,
-                vertices,
-                matrices,
+                nodes.front(),
+                partition ? partition->vertexCount : 0,
+                skin ? skin->numMatrices : 0,
                 skin ? 1 : 0,
                 generation);
         }
@@ -183,7 +266,13 @@ namespace OStimTogether
         auto* data = RE::TESDataHandler::GetSingleton();
         if (!data || !data->LookupModByName("OCum.esp")) {
             SKSE::log::info(
-                "OSTNET OCUM BODY RELINK disabled reason=OCum-not-installed");
+                "OSTNET OCUM NATIVE RELINK disabled reason=OCum-not-installed");
+            return false;
+        }
+
+        if (!QueryOverlayInterface()) {
+            SKSE::log::warn(
+                "OSTNET OCUM NATIVE RELINK unavailable reason=RaceMenu-Overlay-interface");
             return false;
         }
 
@@ -200,7 +289,7 @@ namespace OStimTogether
                 nullptr) ||
             !exchange.interfaceMap) {
             SKSE::log::warn(
-                "OSTNET OCUM BODY RELINK unavailable reason=OStim-interface-exchange");
+                "OSTNET OCUM NATIVE RELINK unavailable reason=OStim-interface-exchange");
             return false;
         }
 
@@ -208,13 +297,7 @@ namespace OStimTogether
             exchange.interfaceMap->queryInterface(OStim::ThreadInterface::NAME));
         if (!_threads) {
             SKSE::log::warn(
-                "OSTNET OCUM BODY RELINK unavailable reason=Threads-interface");
-            return false;
-        }
-
-        if (!QueryActorUpdateManager()) {
-            SKSE::log::warn(
-                "OSTNET OCUM BODY RELINK unavailable reason=RaceMenu-ActorUpdateManager");
+                "OSTNET OCUM NATIVE RELINK unavailable reason=Threads-interface");
             return false;
         }
 
@@ -222,8 +305,12 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET OCUM BODY RELINK READY pollMs={} pipeline=BodyUpdate+OverlayUpdate+NodeOverride scope=free+furniture hardProxySupersede=1",
-            kPollInterval.count());
+            "OSTNET OCUM NATIVE RELINK READY pollMs={} reapply={}+{} bodyMask={} addonMask={} resetDiffuse=0 deferred=1 scope=free+furniture",
+            kPollInterval.count(),
+            kReapplyDelay1.count(),
+            kReapplyDelay2.count(),
+            kBodyMask,
+            kBodyMask);
         return true;
     }
 
@@ -242,12 +329,16 @@ namespace OStimTogether
             if (!actor) {
                 continue;
             }
+
+            // Force a native relink even when an OCum overlay persists from a
+            // previous scene. The body source may have been rebuilt between
+            // scenes while RaceMenu kept the same serialized Body [OvlN].
             _overlaySignatures[actor->GetFormID()] = "0|";
             _actorGeneration.erase(actor->GetFormID());
         }
 
         SKSE::log::info(
-            "OSTNET OCUM BODY RELINK START thread={} actors={} baseline=empty",
+            "OSTNET OCUM NATIVE RELINK START thread={} actors={} baseline=empty",
             threadID,
             thread->getActorCount());
     }
@@ -299,41 +390,70 @@ namespace OStimTogether
             return;
         }
 
-        auto* updates = QueryActorUpdateManager();
-        if (!updates) {
+        auto* overlay = QueryOverlayInterface();
+        if (!overlay || !overlay->HasOverlays(actor)) {
+            return;
+        }
+
+        const auto nodes = DecodeBodyOverlayNodes(chunks);
+        if (nodes.empty()) {
+            SKSE::log::warn(
+                "OSTNET OCUM NATIVE RELINK skipped trigger={} thread={} actor={:08X} reason=no-body-nodes chunks={}",
+                trigger,
+                threadID,
+                actorID,
+                chunks.size());
             return;
         }
 
         const auto generation = _nextGeneration++;
         _actorGeneration[actorID] = generation;
 
-        LogBodyOverlayBinding(actor, "BEFORE", generation);
+        LogBinding(actor, nodes, "BEFORE", generation);
 
-        // RaceMenu's own ActorUpdateManager Flush order is Body -> Overlay ->
-        // NodeOverride. AddBodyUpdate is the missing step that forces existing
-        // Body [OvlN] meshes to relink against the body geometry currently
-        // attached by OStim, instead of retaining a prior scene's skin source.
-        updates->AddBodyUpdate(actorID);
-        updates->AddOverlayUpdate(actorID);
-        updates->AddNodeOverrideUpdate(actorID);
-        updates->Flush();
+        // Use RaceMenu's own public overlay repair path. RevertOverlay with
+        // resetDiffuse=false preserves the OCum diffuse while selecting the
+        // actor's CURRENT skin form and armor addon, then RaceMenu resets the
+        // existing Body [OvlN] against that live source. The call is deferred
+        // through RaceMenu's task system; unlike the retired 0.35.2 experiment,
+        // OStim Together never clones or writes NiSkinInstance directly.
+        for (const auto& node : nodes) {
+            overlay->RevertOverlay(
+                actor,
+                node.c_str(),
+                kBodyMask,
+                kBodyMask,
+                false,
+                false);
+        }
 
-        // OCumStateSync may have queued the historical proxy hard-reinstall a
-        // few milliseconds earlier. Queueing a non-hard SKEE generation here
-        // supersedes it before its 250 ms quiet window expires.
+        // OCumStateSync can queue the historical proxy hard reinstall in the
+        // same keepalive tick. Advance the SKEE generation immediately with a
+        // LIGHT reason so RemoveOverlays/AddOverlays cannot run afterward.
         SKEEOverlayRefresh::Queue(actor, kCancelHardReason);
 
-        ScheduleMaterialReapply(actorID, generation, kReapplyDelay1, "T180");
-        ScheduleMaterialReapply(actorID, generation, kReapplyDelay2, "T650");
+        ScheduleMaterialReapply(
+            actorID,
+            generation,
+            kReapplyDelay1,
+            "T100");
+        ScheduleMaterialReapply(
+            actorID,
+            generation,
+            kReapplyDelay2,
+            "T400");
 
         SKSE::log::info(
-            "OSTNET OCUM BODY RELINK trigger={} thread={} actor={:08X} player={} proxy={} chunks={} generation={} action=body+overlay+nodeoverride",
+            "OSTNET OCUM NATIVE RELINK trigger={} thread={} actor={:08X} player={} proxy={} chunks={} nodes={} bodyMask={} addonMask={} resetDiffuse=0 generation={} action=RaceMenu-RevertOverlay",
             trigger,
             threadID,
             actorID,
             isPlayer ? 1 : 0,
             isProxy ? 1 : 0,
             chunks.size(),
+            nodes.size(),
+            kBodyMask,
+            kBodyMask,
             generation);
     }
 
@@ -347,6 +467,7 @@ namespace OStimTogether
         std::thread(
             [actorID, generation, delay, phaseCopy]() {
                 std::this_thread::sleep_for(delay);
+
                 auto* tasks = SKSE::GetTaskInterface();
                 if (!tasks) {
                     return;
@@ -355,7 +476,8 @@ namespace OStimTogether
                 tasks->AddTask(
                     [actorID, generation, phaseCopy]() {
                         auto& self = OCumOverlayRelink::GetSingleton();
-                        const auto generationIt = self._actorGeneration.find(actorID);
+                        const auto generationIt =
+                            self._actorGeneration.find(actorID);
                         if (generationIt == self._actorGeneration.end() ||
                             generationIt->second != generation) {
                             return;
@@ -376,7 +498,7 @@ namespace OStimTogether
                             return;
                         }
 
-                        auto chunks =
+                        const auto chunks =
                             RaceMenuOverlayBridge::GetSingleton()
                                 .CaptureMarkedOverlayChunks(
                                     actor,
@@ -385,6 +507,8 @@ namespace OStimTogether
                         if (chunks.empty()) {
                             return;
                         }
+
+                        const auto nodes = DecodeBodyOverlayNodes(chunks);
 
                         if (isPlayer) {
                             RaceMenuOverlayBridge::GetSingleton()
@@ -402,14 +526,24 @@ namespace OStimTogether
                             }
                         }
 
-                        LogBodyOverlayBinding(actor, phaseCopy, generation);
+                        // Light ActorUpdateManager pass only. Because this
+                        // reason is not OCUM-OVERLAY-CHANGED, the proxy-specific
+                        // RemoveOverlays/AddOverlays branch is never selected.
+                        SKEEOverlayRefresh::Queue(
+                            actor,
+                            isPlayer ?
+                                "OCUM-NATIVE-RELINK-PLAYER" :
+                                "OCUM-NATIVE-RELINK-PROXY");
+
+                        LogBinding(actor, nodes, phaseCopy, generation);
                         SKSE::log::info(
-                            "OSTNET OCUM BODY RELINK REAPPLY phase={} actor={:08X} player={} proxy={} chunks={} generation={}",
+                            "OSTNET OCUM NATIVE RELINK REAPPLY phase={} actor={:08X} player={} proxy={} chunks={} nodes={} generation={}",
                             phaseCopy,
                             actorID,
                             isPlayer ? 1 : 0,
                             isProxy ? 1 : 0,
                             chunks.size(),
+                            nodes.size(),
                             generation);
                     });
             })
@@ -468,9 +602,18 @@ namespace OStimTogether
                 }
 
                 it->second = signature;
-                if (!chunks.empty()) {
-                    RelinkActor(actor, chunks, threadID, "SNAPSHOT-CHANGED");
+                if (chunks.empty()) {
+                    // Invalidate any delayed material pass from the previous
+                    // state when OCum clears its body overlays.
+                    _actorGeneration[actorID] = _nextGeneration++;
+                    continue;
                 }
+
+                RelinkActor(
+                    actor,
+                    chunks,
+                    threadID,
+                    inserted ? "INITIAL" : "CHANGED");
             }
         }
 
