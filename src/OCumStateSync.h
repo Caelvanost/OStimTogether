@@ -14,14 +14,13 @@ namespace OStimTogether
         bool Initialize();
         void Reset();
 
-        // Called on Skyrim's game thread by VisualKeepAlive. Polling is
-        // internally rate-limited; it only watches actors in active OStim
-        // threads and is a no-op when OCum.esp is absent.
+        // Watches only the real local player's OCum equip-object state while an
+        // OStim scene is active. RaceMenu CumOverlays are deliberately NOT
+        // rebuilt, relinked or refreshed here: OCum/RaceMenu own local rendering.
         void Tick();
 
-        // Sends the real local player's current OCum RaceMenu overlays and
-        // vaginal/anal equip-object state through the generic ADDON protocol.
-        // Safe no-op when OCum.esp is not installed.
+        // Publishes the local player's current CumOverlays snapshot and OCum
+        // equip-object state without modifying the local actor's 3D.
         void SendLocalSnapshot(std::string_view reason);
 
     private:
@@ -44,20 +43,6 @@ namespace OStimTogether
             bool initialized{ false };
             bool vaginal{ false };
             bool anal{ false };
-            std::chrono::steady_clock::time_point lastVisualRefresh{};
-
-            // RaceMenu overlay state is separate from OCum's worn mesh state.
-            // Start each OStim scene from an authoritative EMPTY overlay
-            // baseline (BuildOverlaySignature({}) == "0|"). This makes an
-            // already-present CumOverlays state at scene start a normal
-            // OCUM-OVERLAY-CHANGED transition instead of the weaker INITIAL
-            // path. Remote STR proxies therefore receive the exact same
-            // RemoveAdd+ActorUpdateManager + delayed spatial repair whether the
-            // scene is free-standing or uses physical furniture. An actually
-            // empty actor remains unchanged and causes no rebuild.
-            bool overlayInitialized{ true };
-            std::string overlaySignature{ "0|" };
-            std::chrono::steady_clock::time_point lastOverlayPoll{};
         };
 
         void HandleStart(OStim::Thread* thread);
@@ -69,8 +54,6 @@ namespace OStimTogether
             std::string_view reason);
 
         static std::string HexEncode(std::string_view value);
-        static std::string BuildOverlaySignature(
-            const std::vector<std::string>& chunks);
 
         OStim::ThreadInterface* _threads{ nullptr };
         StartListener _startListener;
