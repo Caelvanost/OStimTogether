@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.36.1</moduleName>
+  <moduleName>OStim Together 0.36.2</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -9,7 +9,7 @@
         <group name="OStim Together integrations" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="OCum Ascended synchronization">
-              <description>Synchronizes OCum Ascended CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.36.1 keeps the v0.36.0 mirror-only model: OCum/RaceMenu exclusively render the real local player, OStim Together only reads the resulting CumOverlays state and sends it when it changes, then applies that snapshot to the remote STR proxy. The 0.36.1 change is limited to free-scene alignment: virtual XMarkerHeading anchors no longer activate the physical-furniture proxy pose guard. Requires OCum Ascended on both clients.</description>
+              <description>Synchronizes OCum Ascended CumOverlays and its vaginal/anal OStim equip-object meshes between Skyrim Together players. v0.36.2 keeps the v0.36.0 mirror-only model: OCum/RaceMenu exclusively render the real local player, OStim Together only reads the resulting CumOverlays state and sends it when it changes, then applies that snapshot to the remote STR proxy. The 0.36.1 free-scene alignment fix is preserved, and 0.36.2 only restores build compatibility with the removed legacy SKEE overlay refresher through a no-op shim. Requires OCum Ascended on both clients.</description>
               <files>
                 <folder source="10 OCum Ascended" destination="" priority="0" />
               </files>
