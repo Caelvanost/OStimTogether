@@ -34,8 +34,13 @@ namespace OStimTogether
                 IInterfaceMap* interfaceMap{ nullptr };
             };
 
-            // Keep the exact public SKEE Overlay vtable prefix through
-            // RevertOverlay(). We only need that method for current-body relink.
+            // Exact public SKEE Overlay vtable prefix through AddOverlays().
+            // AddOverlays(reference, false) is deliberately used even when the
+            // proxy is already registered: RaceMenu keeps the registration and
+            // queues SKSETaskUpdateOverlays, which uninstalls/reinstalls each
+            // overlay mesh against the actor's CURRENT body/skin while applying
+            // the already-stored NodeOverrides. Unlike Remove+Add, this does not
+            // erase the holder or create an authority race with mirrored OCum.
             class IOverlayInterface : public IPluginInterface
             {
             public:
@@ -43,24 +48,9 @@ namespace OStimTogether
                 virtual void AddOverlays(
                     RE::TESObjectREFR* reference,
                     bool immediate = false) = 0;
-                virtual void RemoveOverlays(
-                    RE::TESObjectREFR* reference,
-                    bool immediate = false) = 0;
-                virtual void RevertOverlays(
-                    RE::TESObjectREFR* reference,
-                    bool resetDiffuse,
-                    bool immediate = false) = 0;
-                virtual void RevertOverlay(
-                    RE::TESObjectREFR* reference,
-                    const char* nodeName,
-                    u32 armorMask,
-                    u32 addonMask,
-                    bool resetDiffuse,
-                    bool immediate = false) = 0;
             };
         }
 
-        constexpr std::uint32_t kBodyMask = 1u << 2;  // Biped slot 32 / Body.
         constexpr auto kVisibilityDelay1 = std::chrono::milliseconds(170);
         constexpr auto kVisibilityDelay2 = std::chrono::milliseconds(570);
         constexpr auto kVisibilityDelay3 = std::chrono::milliseconds(1270);
@@ -448,25 +438,25 @@ namespace OStimTogether
             return;
         }
 
-        std::uint32_t relinkQueued = 0;
-        if (auto* overlay = QueryOverlayInterface()) {
-            for (const auto& entry : visibility) {
-                if (!entry.visible || !entry.node.starts_with("Body [")) {
-                    continue;
-                }
+        const bool hasVisibleBody = std::any_of(
+            visibility.begin(),
+            visibility.end(),
+            [](const OCumOverlayVisibilityEntry& entry) {
+                return entry.visible && entry.node.starts_with("Body [");
+            });
 
-                // RaceMenu's RevertOverlay(resetDiffuse=false) relinks the
-                // overlay BSTriShape to the actor's current skin/body while
-                // preserving the CumOverlays diffuse override. Queue it; the
-                // normal ADDON property reapply follows shortly afterwards.
-                overlay->RevertOverlay(
-                    actor,
-                    entry.node.c_str(),
-                    kBodyMask,
-                    kBodyMask,
-                    false,
-                    false);
-                ++relinkQueued;
+        std::uint32_t rebuildQueued = 0;
+        if (hasVisibleBody) {
+            if (auto* overlay = QueryOverlayInterface()) {
+                // This is RaceMenu's real public rebuild path. AddOverlays on
+                // an already-registered proxy keeps the holder entry and queues
+                // SKSETaskUpdateOverlays. That task uninstalls/reinstalls the
+                // overlay geometry using the CURRENT body source, copies its
+                // vertexDesc + NiSkinInstance, and reapplies stored overrides.
+                // Do NOT RemoveOverlays first: that erases holder registration
+                // and previously raced with mirrored OCum slot creation.
+                overlay->AddOverlays(actor, false);
+                rebuildQueued = 1;
             }
         }
 
@@ -508,18 +498,19 @@ namespace OStimTogether
                     }).detach();
             };
 
-        // RaceMenuOverlayBridge currently reapplies properties at T120/T500/
-        // T1200. Run just after those passes so their generic rendering repair
-        // cannot override OCum's owner-authored visibility decision.
+        // RaceMenuOverlayBridge reapplies properties at T120/T500/T1200.
+        // Run just after those passes; the Add-only rebuild itself also applies
+        // stored NodeOverrides during InstallOverlay, so these visibility passes
+        // land on the freshly body-bound Body [OvlN] rather than the stale mesh.
         schedule(kVisibilityDelay1, "T170");
         schedule(kVisibilityDelay2, "T570");
         schedule(kVisibilityDelay3, "T1270");
 
         SKSE::log::info(
-            "OSTNET OCUM VIS SYNC reason={} actor={:08X} entries={} relinkQueued={} ownerAuthoritative=1",
+            "OSTNET OCUM VIS SYNC reason={} actor={:08X} entries={} rebuildQueued={} rebuildMethod=add-only-current-body ownerAuthoritative=1",
             reason,
             actorID,
             visibility.size(),
-            relinkQueued);
+            rebuildQueued);
     }
 }
