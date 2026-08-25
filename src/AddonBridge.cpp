@@ -2,6 +2,7 @@
 #include "AddonBridge.h"
 
 #include "ActorResolver.h"
+#include "OCumOverlayVisibility.h"
 #include "PapyrusAnimationBridge.h"
 #include "RaceMenuOverlayBridge.h"
 #include "UdpTransport.h"
@@ -387,27 +388,37 @@ namespace OStimTogether
         }
 
         auto& bridge = RaceMenuOverlayBridge::GetSingleton();
+        const bool isOCum = EqualsInsensitive(channel, kOCumChannel);
+
+        OCumOverlayWireSnapshot wire{};
+        const std::vector<std::string>* propertyChunks = &chunks;
+        if (isOCum) {
+            wire = OCumOverlayVisibility::SplitIncomingSnapshot(chunks, 2200);
+            propertyChunks = &wire.propertyChunks;
+        }
+
         std::size_t clearedChunks = 0;
         std::size_t staleNodes = 0;
 
-        if (EqualsInsensitive(channel, kOCumChannel)) {
+        if (isOCum) {
             // The mirrored OStim scene runs OCum locally for the STR proxy too.
-            // That local simulation can create extra CumOverlays slots which
-            // coexist with the owner's synchronized slots. Reconcile only the
-            // stale CumOverlays nodes; never touch unrelated RaceMenu overlays.
+            // Reconcile stale CumOverlays using only real RaceMenu properties;
+            // the synthetic live-visibility metadata has already been stripped.
             const auto current = bridge.CaptureMarkedOverlayChunks(
                 actor,
                 kOCumTextureMarker,
                 2200);
             const auto currentNodes = CollectOverlayNodeKeys(current);
-            const auto authoritativeNodes = CollectOverlayNodeKeys(chunks);
+            const auto authoritativeNodes = CollectOverlayNodeKeys(*propertyChunks);
             for (const auto& node : currentNodes) {
                 if (!authoritativeNodes.contains(node)) {
                     ++staleNodes;
                 }
             }
 
-            const auto clearChunks = BuildStaleOverlayClearChunks(current, chunks);
+            const auto clearChunks = BuildStaleOverlayClearChunks(
+                current,
+                *propertyChunks);
             for (const auto& clear : clearChunks) {
                 if (clear.empty()) {
                     continue;
@@ -418,7 +429,7 @@ namespace OStimTogether
         }
 
         std::size_t appliedChunks = 0;
-        for (const auto& chunk : chunks) {
+        for (const auto& chunk : *propertyChunks) {
             if (chunk.empty()) {
                 continue;
             }
@@ -426,16 +437,36 @@ namespace OStimTogether
             ++appliedChunks;
         }
 
+        std::size_t visibleEntries = 0;
+        if (isOCum) {
+            visibleEntries = static_cast<std::size_t>(std::count_if(
+                wire.visibility.begin(),
+                wire.visibility.end(),
+                [](const OCumOverlayVisibilityEntry& entry) {
+                    return entry.visible;
+                }));
+
+            // Visibility is a live OCum decision, not a RaceMenu override.
+            // Apply it only after the normal property snapshot, and relink only
+            // owner-visible Body overlays to the proxy's current body geometry.
+            OCumOverlayVisibility::ApplyRemoteVisibility(
+                actor,
+                wire.visibility,
+                "owner-snapshot");
+        }
+
         SKSE::log::info(
-            "OSTNET ADDON OVR SNAPSHOT channel={} actor={:08X} authoritativeChunks={} appliedChunks={} staleNodes={} clearChunks={} mode={}",
+            "OSTNET ADDON OVR SNAPSHOT channel={} actor={:08X} wireChunks={} propertyChunks={} appliedChunks={} staleNodes={} clearChunks={} visibilityEntries={} visibleEntries={} mode={}",
             channel,
             actor->GetFormID(),
             chunks.size(),
+            propertyChunks->size(),
             appliedChunks,
             staleNodes,
             clearedChunks,
-            EqualsInsensitive(channel, kOCumChannel) ?
-                "owner-authoritative-cumoverlays" : "generic");
+            wire.visibility.size(),
+            visibleEntries,
+            isOCum ? "owner-authoritative-cumoverlays+live-visibility" : "generic");
     }
 
     void AddonBridge::HandleRemotePacket(
