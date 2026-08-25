@@ -63,6 +63,22 @@ string(REPLACE
     OSTIM_BRIDGE_COMPAT
     "${OSTIM_BRIDGE_COMPAT}")
 
+# OStim 7.5c's ThreadInterface::getVersion() returns the packed plugin
+# version (0x07050003), not the historical ABI ordinal. Normalize that token
+# to the interface ABI guaranteed by each explicitly supported runtime so
+# SupportsThreadFurniture() and the ABI guards retain their intended meaning.
+set(_thread_version_block
+"        _threadInterfaceVersion =\n            _threads->getVersion();\n\n        SKSE::log::info(\n            \"OStim Threads interface version={}\",\n            _threadInterfaceVersion);")
+string(FIND "${OSTIM_BRIDGE_COMPAT}" "${_thread_version_block}" _thread_version_block_pos)
+if(_thread_version_block_pos EQUAL -1)
+    message(FATAL_ERROR "OStimBridge.cpp no longer contains the expected Threads version block; revalidate version normalization before building.")
+endif()
+string(REPLACE
+    "        _threadInterfaceVersion =\n            _threads->getVersion();\n\n        SKSE::log::info(\n            \"OStim Threads interface version={}\",\n            _threadInterfaceVersion);"
+    "        const auto reportedThreadVersion =\n            _threads->getVersion();\n\n        _threadInterfaceVersion =\n            reportedThreadVersion;\n\n        if (reportedThreadVersion > 0xFFU) {\n            if (_graphLayout ==\n                OStimInternalProbe::GraphLayout::OStim75b) {\n                _threadInterfaceVersion = 3;\n            } else if (_graphLayout ==\n                       OStimInternalProbe::GraphLayout::OStim74c) {\n                _threadInterfaceVersion = 2;\n            }\n        }\n\n        SKSE::log::info(\n            \"OStim Threads interface reported={} normalizedABI={}\",\n            reportedThreadVersion,\n            _threadInterfaceVersion);"
+    OSTIM_BRIDGE_COMPAT
+    "${OSTIM_BRIDGE_COMPAT}")
+
 set(OSTIM_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${OSTIM_GENERATED_DIR}")
 set(OSTIM_BRIDGE_GENERATED "${OSTIM_GENERATED_DIR}/OStimBridge.cpp")
