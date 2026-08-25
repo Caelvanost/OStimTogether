@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.37.3</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.3 preserves the mirror-only OCum model and owner-authored live visibility, but fixes the remaining STR proxy rendering bug at the actual geometry binding layer. Owner-visible Body [OvlN] nodes now copy the vertex descriptor and current NiSkinInstance from the proxy's live FaceGenRGBTint body geometry before visibility is applied, replacing the ineffective RevertOverlay material-only repair. Local OCum rendering, PPA, scene anchors and alignment are unchanged.</Description>
+  <Version>0.37.4</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.4 is the final diagnostic build for OCum Ascended 3D equip-object meshes: it preserves supported RaceMenu CumOverlays synchronization and adds explicit OStim return-state diagnostics for ocumvagmesh/ocumanmesh. The log now records the bool returned by OActor.EquipObject plus OActor.IsObjectEquipped readback at T250 and T1250 on the remote STR proxy. OCum 3D meshes remain experimental and are not part of the supported feature set pending this final validation. Local OCum rendering, PPA, scene anchors and alignment are unchanged.</Description>
 </fomod>
