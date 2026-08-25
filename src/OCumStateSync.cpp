@@ -7,6 +7,12 @@
 #include "OStimAPI/InterfaceExchangeMessage.h"
 #include "OStimAPI/Thread.h"
 
+#include <RE/I/IFunctionArguments.h>
+#include <RE/I/IStackCallbackFunctor.h>
+#include <RE/P/PackUnpack.h>
+#include <RE/S/SkyrimVM.h>
+#include <RE/V/Variable.h>
+
 namespace OStimTogether
 {
     namespace
@@ -16,6 +22,7 @@ namespace OStimTogether
         constexpr std::string_view kVaginalObject = "ocumvagmesh";
         constexpr std::string_view kAnalObject = "ocumanmesh";
         constexpr auto kPollInterval = std::chrono::milliseconds(250);
+        constexpr auto k3DDiagnosticInterval = std::chrono::milliseconds(250);
         constexpr auto kStopSnapshotDelay = std::chrono::milliseconds(700);
 
         bool IsArmorWorn(RE::Actor* actor, RE::TESObjectARMO* armor)
@@ -29,6 +36,183 @@ namespace OStimTogether
             return it != inventory.end() &&
                    it->second.second &&
                    it->second.second->IsWorn();
+        }
+
+        std::string ActorDiagnosticRole(RE::Actor* actor)
+        {
+            if (!actor) {
+                return "missing";
+            }
+            if (actor->IsPlayerRef()) {
+                return "local-player";
+            }
+            if ((actor->GetFormID() & 0xFF000000u) == 0xFF000000u) {
+                return "dynamic-proxy-or-temp";
+            }
+            return "npc-or-scene-actor";
+        }
+
+        class ActorStringArguments final :
+            public RE::BSScript::IFunctionArguments
+        {
+        public:
+            ActorStringArguments(
+                RE::Actor* actor,
+                std::string_view text) :
+                _actor(actor),
+                _text(text)
+            {}
+
+            bool operator()(
+                RE::BSScrapArray<RE::BSScript::Variable>& dst)
+                const override
+            {
+                if (!_actor || _text.empty()) {
+                    return false;
+                }
+
+                auto actor = _actor;
+                auto text = _text;
+
+                RE::BSScript::Variable actorArg;
+                actorArg.Pack<RE::Actor*>(std::move(actor));
+
+                RE::BSScript::Variable textArg;
+                textArg.Pack<std::string>(std::move(text));
+
+                dst.push_back(std::move(actorArg));
+                dst.push_back(std::move(textArg));
+                return true;
+            }
+
+        private:
+            RE::Actor* _actor{ nullptr };
+            std::string _text;
+        };
+
+        class OCum3DQueryCallback final :
+            public RE::BSScript::IStackCallbackFunctor
+        {
+        public:
+            OCum3DQueryCallback(
+                std::int32_t threadID,
+                RE::FormID actorID,
+                std::string actorName,
+                std::string role,
+                std::string objectType,
+                bool backingArmorWorn,
+                std::string phase) :
+                _threadID(threadID),
+                _actorID(actorID),
+                _actorName(std::move(actorName)),
+                _role(std::move(role)),
+                _objectType(std::move(objectType)),
+                _backingArmorWorn(backingArmorWorn),
+                _phase(std::move(phase))
+            {}
+
+            void operator()(RE::BSScript::Variable result) override
+            {
+                if (!result.IsBool()) {
+                    SKSE::log::warn(
+                        "OSTNET OCUM 3D DIAG thread={} phase={} actor={:08X} name=\"{}\" role={} type={} backingArmorWorn={} ostimEquipped=non-bool",
+                        _threadID,
+                        _phase,
+                        _actorID,
+                        _actorName,
+                        _role,
+                        _objectType,
+                        _backingArmorWorn ? 1 : 0);
+                    return;
+                }
+
+                SKSE::log::info(
+                    "OSTNET OCUM 3D DIAG thread={} phase={} actor={:08X} name=\"{}\" role={} type={} backingArmorWorn={} ostimEquipped={}",
+                    _threadID,
+                    _phase,
+                    _actorID,
+                    _actorName,
+                    _role,
+                    _objectType,
+                    _backingArmorWorn ? 1 : 0,
+                    result.GetBool() ? 1 : 0);
+            }
+
+            bool CanSave() const override
+            {
+                return false;
+            }
+
+            void SetObject(
+                const RE::BSTSmartPointer<RE::BSScript::Object>&) override
+            {}
+
+        private:
+            std::int32_t _threadID{ -1 };
+            RE::FormID _actorID{ 0 };
+            std::string _actorName;
+            std::string _role;
+            std::string _objectType;
+            bool _backingArmorWorn{ false };
+            std::string _phase;
+        };
+
+        bool DispatchOCum3DQuery(
+            std::int32_t threadID,
+            RE::Actor* actor,
+            std::string_view objectType,
+            bool backingArmorWorn,
+            std::string_view phase)
+        {
+            if (!actor || objectType.empty()) {
+                return false;
+            }
+
+            auto* skyrimVM = RE::SkyrimVM::GetSingleton();
+            if (!skyrimVM || !skyrimVM->impl) {
+                SKSE::log::warn(
+                    "OSTNET OCUM 3D DIAG dispatch-failed thread={} phase={} actor={:08X} type={} reason=skyrim-vm-unavailable",
+                    threadID,
+                    phase,
+                    actor->GetFormID(),
+                    objectType);
+                return false;
+            }
+
+            const char* rawName = actor->GetName();
+            const std::string actorName = rawName ? rawName : "";
+            const auto role = ActorDiagnosticRole(actor);
+
+            ActorStringArguments args(actor, objectType);
+            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback(
+                new OCum3DQueryCallback(
+                    threadID,
+                    actor->GetFormID(),
+                    actorName,
+                    role,
+                    std::string(objectType),
+                    backingArmorWorn,
+                    std::string(phase)));
+
+            const bool dispatched = skyrimVM->impl->DispatchStaticCall(
+                RE::BSFixedString("OActor"),
+                RE::BSFixedString("IsObjectEquipped"),
+                &args,
+                callback);
+
+            if (!dispatched) {
+                SKSE::log::warn(
+                    "OSTNET OCUM 3D DIAG dispatch-failed thread={} phase={} actor={:08X} name=\"{}\" role={} type={} backingArmorWorn={} reason=papyrus-dispatch-rejected",
+                    threadID,
+                    phase,
+                    actor->GetFormID(),
+                    actorName,
+                    role,
+                    objectType,
+                    backingArmorWorn ? 1 : 0);
+            }
+
+            return dispatched;
         }
     }
 
@@ -83,8 +267,9 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET OCUM LIVE READY pollMs={} mode=mirror-only localOverlayWrites=0 localNiNodeRefresh=0 liveVisibilitySync=1 mesh3DSync=unsupported",
-            kPollInterval.count());
+            "OSTNET OCUM LIVE READY pollMs={} mode=mirror-only localOverlayWrites=0 localNiNodeRefresh=0 liveVisibilitySync=1 mesh3DSync=disabled diagnostic3D=read-only diagnosticMs={}",
+            kPollInterval.count(),
+            k3DDiagnosticInterval.count());
         return true;
     }
 
@@ -93,6 +278,7 @@ namespace OStimTogether
         _activeThreads.clear();
         _meshStates.clear();
         _nextPoll = {};
+        _next3DDiagnostic = {};
     }
 
     void OCumStateSync::HandleStart(OStim::Thread* thread)
@@ -117,9 +303,13 @@ namespace OStimTogether
         }
 
         SKSE::log::info(
-            "OSTNET OCUM LIVE START thread={} actors={} mode=mirror-only mesh3DSync=unsupported",
+            "OSTNET OCUM LIVE START thread={} actors={} mode=mirror-only mesh3DSync=disabled diagnostic3D=read-only",
             thread->getThreadID(),
             thread->getActorCount());
+
+        RunThread3DDiagnostics(thread, "start");
+        _next3DDiagnostic =
+            std::chrono::steady_clock::now() + k3DDiagnosticInterval;
     }
 
     void OCumStateSync::HandleStop(OStim::Thread* thread)
@@ -130,6 +320,9 @@ namespace OStimTogether
 
         const auto threadID = thread->getThreadID();
         bool hadLocalPlayer = false;
+
+        // Query one final time while OStim still hands us the thread object.
+        RunThread3DDiagnostics(thread, "stop");
 
         for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
             auto* ta = thread->getActor(i);
@@ -144,7 +337,7 @@ namespace OStimTogether
         _activeThreads.erase(threadID);
 
         SKSE::log::info(
-            "OSTNET OCUM LIVE STOP thread={} localPlayer={} delayedSnapshotMs={} mode=mirror-only mesh3DSync=unsupported",
+            "OSTNET OCUM LIVE STOP thread={} localPlayer={} delayedSnapshotMs={} mode=mirror-only mesh3DSync=disabled diagnostic3D=read-only",
             threadID,
             hadLocalPlayer ? 1 : 0,
             hadLocalPlayer ? kStopSnapshotDelay.count() : 0);
@@ -159,6 +352,52 @@ namespace OStimTogether
                     });
                 }
             }).detach();
+        }
+    }
+
+    void OCumStateSync::RunThread3DDiagnostics(
+        OStim::Thread* thread,
+        std::string_view phase)
+    {
+        if (!thread) {
+            return;
+        }
+
+        auto* data = RE::TESDataHandler::GetSingleton();
+        if (!data || !data->LookupModByName("OCum.esp")) {
+            return;
+        }
+
+        auto* vaginal = data->LookupForm<RE::TESObjectARMO>(
+            0x00000F37,
+            "OCum.esp");
+        auto* anal = data->LookupForm<RE::TESObjectARMO>(
+            0x00000F3B,
+            "OCum.esp");
+
+        const auto threadID = thread->getThreadID();
+        for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
+            auto* ta = thread->getActor(i);
+            auto* actor = ta ? static_cast<RE::Actor*>(ta->getGameActor()) : nullptr;
+            if (!actor) {
+                continue;
+            }
+
+            const bool vaginalWorn = IsArmorWorn(actor, vaginal);
+            const bool analWorn = IsArmorWorn(actor, anal);
+
+            DispatchOCum3DQuery(
+                threadID,
+                actor,
+                kVaginalObject,
+                vaginalWorn,
+                phase);
+            DispatchOCum3DQuery(
+                threadID,
+                actor,
+                kAnalObject,
+                analWorn,
+                phase);
         }
     }
 
@@ -195,15 +434,12 @@ namespace OStimTogether
             return;
         }
 
-        // v0.37.4 proved that the transport and OStim state path both work on
-        // the remote STR proxy: EquipObject() returned true and
-        // IsObjectEquipped() remained true at T250 and T1250, while the 3D
-        // mesh was still not rendered. v0.37.5 therefore treats OCum's
-        // ocumvagmesh / ocumanmesh equip objects as local-only and deliberately
-        // suppresses their network publication. RaceMenu CumOverlays continue
-        // through the supported ADDONOVR path below.
+        // Network publication remains deliberately disabled. v0.37.6 only
+        // observes local OStim/backing-armor state on all scene actors so we can
+        // determine whether OCum itself creates a hidden equip-object state on
+        // an STR proxy. CumOverlays continue through the supported ADDONOVR path.
         SKSE::log::trace(
-            "OSTNET OCUM LIVE OBJ SUPPRESSED reason={} actor={:08X} type={} equipped={} limitation=remote-str-proxy-3d-render",
+            "OSTNET OCUM LIVE OBJ SUPPRESSED reason={} actor={:08X} type={} equipped={} diagnostic3D=read-only",
             reason,
             player->GetFormID(),
             type,
@@ -234,6 +470,13 @@ namespace OStimTogether
             0x00000F3B,
             "OCum.esp");
 
+        const bool run3DDiagnostic =
+            _next3DDiagnostic.time_since_epoch().count() == 0 ||
+            now >= _next3DDiagnostic;
+        if (run3DDiagnostic) {
+            _next3DDiagnostic = now + k3DDiagnosticInterval;
+        }
+
         std::vector<std::int32_t> staleThreads;
         std::unordered_set<RE::FormID> seenLocalPlayers;
 
@@ -242,6 +485,10 @@ namespace OStimTogether
             if (!thread) {
                 staleThreads.push_back(threadID);
                 continue;
+            }
+
+            if (run3DDiagnostic) {
+                RunThread3DDiagnostics(thread, "poll");
             }
 
             for (std::uint32_t i = 0; i < thread->getActorCount(); ++i) {
@@ -288,8 +535,9 @@ namespace OStimTogether
                         chunks.empty() ? 1 : 0);
                 }
 
-                // Keep observing the local OCum mesh state for diagnostics only.
-                // It is never transmitted in v0.37.5.
+                // Keep observing the true local player's backing armor as an
+                // existing compact state-change signal. It remains diagnostic
+                // only and is never transmitted.
                 const bool vaginalWorn = IsArmorWorn(actor, vaginal);
                 const bool analWorn = IsArmorWorn(actor, anal);
                 const bool first = !state.initialized;
@@ -313,7 +561,7 @@ namespace OStimTogether
 
                 if (first || vaginalChanged || analChanged) {
                     SKSE::log::info(
-                        "OSTNET OCUM LIVE STATE thread={} actor={:08X} first={} localVagMesh={} localAnalMesh={} vagChanged={} analChanged={} localOverlayWrites=0 mesh3DSync=unsupported",
+                        "OSTNET OCUM LIVE STATE thread={} actor={:08X} first={} localVagMesh={} localAnalMesh={} vagChanged={} analChanged={} localOverlayWrites=0 mesh3DSync=disabled diagnostic3D=read-only",
                         threadID,
                         actorID,
                         first ? 1 : 0,
@@ -393,12 +641,12 @@ namespace OStimTogether
         const bool analEquipped = IsArmorWorn(player, anal);
 
         // Kept as local diagnostics only. SendLocalObjectState intentionally
-        // suppresses publication of these unsupported remote 3D meshes.
+        // suppresses publication of these 3D meshes.
         SendLocalObjectState(player, kVaginalObject, vaginalEquipped, reason);
         SendLocalObjectState(player, kAnalObject, analEquipped, reason);
 
         SKSE::log::info(
-            "OSTNET OCUM SNAPSHOT TX reason={} actor={:08X} name=\"{}\" overlayChunks={} emptySnapshot={} localVagMesh={} localAnalMesh={} localOverlayWrites=0 liveVisibilitySync=1 mesh3DSync=unsupported",
+            "OSTNET OCUM SNAPSHOT TX reason={} actor={:08X} name=\"{}\" overlayChunks={} emptySnapshot={} localVagMesh={} localAnalMesh={} localOverlayWrites=0 liveVisibilitySync=1 mesh3DSync=disabled diagnostic3D=read-only",
             reason,
             player->GetFormID(),
             name,
