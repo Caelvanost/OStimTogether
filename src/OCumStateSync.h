@@ -16,8 +16,9 @@ namespace OStimTogether
         void Tick();
 
         // Publishes the local player's current CumOverlays snapshot without
-        // modifying local OCum rendering. OCum 3D equip-object meshes are
-        // intentionally local-only / unsupported on remote STR proxies.
+        // modifying local OCum rendering. OCum 3D equip-object meshes remain
+        // excluded from network synchronization. v0.37.6 additionally observes
+        // their local OStim/backing-armor state on every scene actor read-only.
         void SendLocalSnapshot(std::string_view reason);
 
     private:
@@ -46,6 +47,9 @@ namespace OStimTogether
 
         void HandleStart(OStim::Thread* thread);
         void HandleStop(OStim::Thread* thread);
+        void RunThread3DDiagnostics(
+            OStim::Thread* thread,
+            std::string_view phase);
         void SendLocalObjectState(
             RE::PlayerCharacter* player,
             std::string_view type,
@@ -63,5 +67,6 @@ namespace OStimTogether
         std::unordered_set<std::int32_t> _activeThreads;
         std::unordered_map<RE::FormID, MeshState> _meshStates;
         std::chrono::steady_clock::time_point _nextPoll{};
+        std::chrono::steady_clock::time_point _next3DDiagnostic{};
     };
 }
