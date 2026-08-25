@@ -5,70 +5,6 @@ namespace OStimTogether
 {
     namespace
     {
-        namespace SKEE
-        {
-            using u32 = std::uint32_t;
-
-            class IPluginInterface
-            {
-            public:
-                virtual ~IPluginInterface() = default;
-                virtual u32 GetVersion() = 0;
-                virtual void Revert() = 0;
-            };
-
-            class IInterfaceMap
-            {
-            public:
-                virtual IPluginInterface* QueryInterface(const char* name) = 0;
-                virtual bool AddInterface(
-                    const char* name,
-                    IPluginInterface* pluginInterface) = 0;
-                virtual IPluginInterface* RemoveInterface(const char* name) = 0;
-            };
-
-            struct InterfaceExchangeMessage
-            {
-                static constexpr std::uint32_t kMessageExchangeInterface =
-                    0x9E3779B9;
-                IInterfaceMap* interfaceMap{ nullptr };
-            };
-
-            // Exact public SKEE Overlay vtable prefix through RevertOverlay().
-            // RevertOverlay(reference, node, bodyMask, bodyMask, false, false)
-            // is RaceMenu's targeted current-skin repair. Internally it resolves
-            // the actor's CURRENT skin armor/addon, finds its live body geometry
-            // and calls ResetOverlay() for the requested Body [OvlN]. Keeping
-            // resetDiffuse=false preserves the OCum diffuse while replacing the
-            // stale overlay skin/material relationship. This is materially
-            // different from AddOverlays(), whose InstallOverlay path can reuse
-            // an already-existing Body [OvlN] without relinking its skin.
-            class IOverlayInterface : public IPluginInterface
-            {
-            public:
-                virtual bool HasOverlays(RE::TESObjectREFR* reference) = 0;
-                virtual void AddOverlays(
-                    RE::TESObjectREFR* reference,
-                    bool immediate = false) = 0;
-                virtual void RemoveOverlays(
-                    RE::TESObjectREFR* reference,
-                    bool immediate = false) = 0;
-                virtual void RevertOverlays(
-                    RE::TESObjectREFR* reference,
-                    bool resetDiffuse,
-                    bool immediate = false) = 0;
-                virtual void RevertOverlay(
-                    RE::TESObjectREFR* reference,
-                    const char* nodeName,
-                    u32 armorMask,
-                    u32 addonMask,
-                    bool resetDiffuse,
-                    bool immediate = false) = 0;
-            };
-        }
-
-        // Skyrim biped slot 32 (Body) is bit 2 in RaceMenu's armor/addon masks.
-        constexpr std::uint32_t kBodyMask = 0x00000004u;
         constexpr auto kVisibilityDelay1 = std::chrono::milliseconds(170);
         constexpr auto kVisibilityDelay2 = std::chrono::milliseconds(570);
         constexpr auto kVisibilityDelay3 = std::chrono::milliseconds(1270);
@@ -92,25 +28,206 @@ namespace OStimTogether
                        }) != haystack.end();
         }
 
-        SKEE::IOverlayInterface* QueryOverlayInterface()
+        RE::NiAVObject* FindSceneObjectLocal(
+            RE::NiAVObject* object,
+            std::string_view wantedName)
         {
-            auto* messaging = SKSE::GetMessagingInterface();
-            if (!messaging) {
+            if (!object || wantedName.empty()) {
                 return nullptr;
             }
 
-            SKEE::InterfaceExchangeMessage exchange{};
-            if (!messaging->Dispatch(
-                    SKEE::InterfaceExchangeMessage::kMessageExchangeInterface,
-                    &exchange,
-                    sizeof(exchange),
-                    "skee") ||
-                !exchange.interfaceMap) {
-                return nullptr;
+            const char* rawName = object->name.c_str();
+            if (rawName && wantedName == rawName) {
+                return object;
             }
 
-            auto* base = exchange.interfaceMap->QueryInterface("Overlay");
-            return base ? static_cast<SKEE::IOverlayInterface*>(base) : nullptr;
+            if (auto* node = object->AsNode()) {
+                for (auto& child : node->GetChildren()) {
+                    if (!child) {
+                        continue;
+                    }
+                    if (auto* found = FindSceneObjectLocal(child.get(), wantedName)) {
+                        return found;
+                    }
+                }
+            }
+            return nullptr;
+        }
+
+        struct BodySourceCandidate
+        {
+            RE::BSGeometry* geometry{ nullptr };
+            std::int64_t score{ -1 };
+            std::string name;
+            std::string diffuse;
+            std::uint32_t matrices{ 0 };
+        };
+
+        void FindCurrentBodySource(
+            RE::NiAVObject* object,
+            BodySourceCandidate& best)
+        {
+            if (!object) {
+                return;
+            }
+
+            if (auto* geometry = object->AsGeometry()) {
+                const char* rawName = geometry->name.c_str();
+                const std::string_view name = rawName ? rawName : "";
+
+                // Never choose a RaceMenu overlay as the source geometry.
+                if (!ContainsInsensitive(name, "[Ovl") &&
+                    !ContainsInsensitive(name, "[SOvl")) {
+                    auto& runtime = geometry->GetGeometryRuntimeData();
+                    auto* skin = runtime.skinInstance.get();
+                    auto* shade = runtime.properties[1].get();
+
+                    if (skin && shade &&
+                        shade->GetType() == RE::NiShadeProperty::Type::kShade) {
+                        auto* shader =
+                            static_cast<RE::BSLightingShaderProperty*>(shade);
+                        auto* material = shader && shader->material ?
+                            static_cast<RE::BSLightingShaderMaterialBase*>(
+                                shader->material) :
+                            nullptr;
+
+                        if (material &&
+                            material->GetFeature() ==
+                                RE::BSShaderMaterial::Feature::kFaceGenRGBTint) {
+                            std::string diffuse;
+                            if (material->diffuseTexture) {
+                                diffuse = material->diffuseTexture->name.c_str();
+                            }
+
+                            // RaceMenu itself selects the first
+                            // FaceGenRGBTint geometry from the current body
+                            // armor addon. We cannot call its private
+                            // GetSkinForm/VisitArmorAddon helpers through the
+                            // public ABI, so select the equivalent live body
+                            // geometry from the proxy graph. Standard/modded
+                            // body textures and node names get a strong score;
+                            // matrix count is only a tie breaker.
+                            std::int64_t score = skin->numMatrices;
+                            if (ContainsInsensitive(diffuse, "femalebody") ||
+                                ContainsInsensitive(diffuse, "malebody")) {
+                                score += 1000000;
+                            } else if (ContainsInsensitive(diffuse, "body")) {
+                                score += 100000;
+                            }
+
+                            if (ContainsInsensitive(name, "body") ||
+                                ContainsInsensitive(name, "3ba") ||
+                                ContainsInsensitive(name, "3bbb")) {
+                                score += 10000;
+                            }
+                            if (ContainsInsensitive(name, "hand") ||
+                                ContainsInsensitive(name, "feet") ||
+                                ContainsInsensitive(name, "foot") ||
+                                ContainsInsensitive(name, "head") ||
+                                ContainsInsensitive(name, "face")) {
+                                score -= 5000;
+                            }
+
+                            if (score > best.score) {
+                                best.geometry = geometry;
+                                best.score = score;
+                                best.name.assign(name);
+                                best.diffuse = std::move(diffuse);
+                                best.matrices = skin->numMatrices;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (auto* node = object->AsNode()) {
+                for (auto& child : node->GetChildren()) {
+                    if (child) {
+                        FindCurrentBodySource(child.get(), best);
+                    }
+                }
+            }
+        }
+
+        std::uint32_t RelinkVisibleBodyOverlays(
+            RE::Actor* actor,
+            const std::vector<OCumOverlayVisibilityEntry>& visibility,
+            std::string_view phase,
+            std::string_view reason)
+        {
+            if (!actor || actor->IsPlayerRef() || visibility.empty()) {
+                return 0;
+            }
+
+            auto* root = actor->Get3D();
+            if (!root) {
+                return 0;
+            }
+
+            BodySourceCandidate source{};
+            FindCurrentBodySource(root, source);
+            if (!source.geometry) {
+                SKSE::log::warn(
+                    "OSTNET OCUM SKIN RELINK reason={} phase={} actor={:08X} source=none relinked=0",
+                    reason,
+                    phase,
+                    actor->GetFormID());
+                return 0;
+            }
+
+            auto& sourceRuntime = source.geometry->GetGeometryRuntimeData();
+            if (!sourceRuntime.skinInstance) {
+                return 0;
+            }
+
+            std::uint32_t relinked = 0;
+            std::uint32_t missing = 0;
+            for (const auto& entry : visibility) {
+                if (!entry.visible || !entry.node.starts_with("Body [")) {
+                    continue;
+                }
+
+                auto* object = FindSceneObjectLocal(root, entry.node);
+                auto* target = object ? object->AsGeometry() : nullptr;
+                if (!target || target == source.geometry) {
+                    ++missing;
+                    continue;
+                }
+
+                auto& targetRuntime = target->GetGeometryRuntimeData();
+
+                // This is the actual skin-binding operation missing from the
+                // old RevertOverlay() repair. RaceMenu::RelinkOverlay copies
+                // vertexDesc and a skin derived from the current source body.
+                // RaceMenu::InstallOverlay also safely shares the current
+                // source NiSkinInstance, so use that proven ownership model
+                // here. NiPointer keeps the skin alive and subsequent owner
+                // snapshots relink again if STR/OStim replaces the body.
+                targetRuntime.vertexDesc = sourceRuntime.vertexDesc;
+                targetRuntime.skinInstance = sourceRuntime.skinInstance;
+
+                target->SetAppCulled(false);
+                auto& flags = target->GetFlags();
+                flags.reset(RE::NiAVObject::Flag::kHidden);
+                flags.reset(RE::NiAVObject::Flag::kDisableSorting);
+                flags.set(RE::NiAVObject::Flag::kAlwaysDraw);
+                target->UpdateWorldBound();
+                ++relinked;
+            }
+
+            SKSE::log::info(
+                "OSTNET OCUM SKIN RELINK reason={} phase={} actor={:08X} source=\"{}\" sourceDiffuse=\"{}\" sourceMatrices={} entries={} relinked={} missing={} method=vertexDesc+currentBodySkin",
+                reason,
+                phase,
+                actor->GetFormID(),
+                source.name,
+                source.diffuse,
+                source.matrices,
+                visibility.size(),
+                relinked,
+                missing);
+
+            return relinked;
         }
 
         std::vector<std::string> Rechunk(
@@ -198,26 +315,7 @@ namespace OStimTogether
         RE::NiAVObject* object,
         std::string_view wantedName)
     {
-        if (!object || wantedName.empty()) {
-            return nullptr;
-        }
-
-        const char* rawName = object->name.c_str();
-        if (rawName && wantedName == rawName) {
-            return object;
-        }
-
-        if (auto* node = object->AsNode()) {
-            for (auto& child : node->GetChildren()) {
-                if (!child) {
-                    continue;
-                }
-                if (auto* found = FindSceneObject(child.get(), wantedName)) {
-                    return found;
-                }
-            }
-        }
-        return nullptr;
+        return FindSceneObjectLocal(object, wantedName);
     }
 
     bool OCumOverlayVisibility::IsLiveVisible(RE::NiAVObject* object)
@@ -454,30 +552,11 @@ namespace OStimTogether
             return;
         }
 
-        std::uint32_t rebindQueued = 0;
-        if (auto* overlay = QueryOverlayInterface()) {
-            for (const auto& entry : visibility) {
-                if (!entry.visible || !entry.node.starts_with("Body [")) {
-                    continue;
-                }
-
-                // Queue RaceMenu's targeted ResetOverlay path. It resolves the
-                // proxy's CURRENT body armor/addon and replaces the stale
-                // Body [OvlN] skin/material relationship while preserving the
-                // OCum diffuse texture (resetDiffuse=false). Property reapply
-                // passes at T120/T500/T1200 then restore the authoritative
-                // owner values on the newly rebound geometry.
-                overlay->RevertOverlay(
-                    actor,
-                    entry.node.c_str(),
-                    kBodyMask,
-                    kBodyMask,
-                    false,
-                    false);
-                ++rebindQueued;
-            }
-        }
-
+        const auto immediateRelinked = RelinkVisibleBodyOverlays(
+            actor,
+            visibility,
+            "IMMEDIATE",
+            reason);
         ApplyVisibilityNow(actor, visibility, "IMMEDIATE", reason);
 
         const auto actorID = actor->GetFormID();
@@ -506,6 +585,11 @@ namespace OStimTogether
                                     if (!actor2 || actor2->IsPlayerRef()) {
                                         return;
                                     }
+                                    RelinkVisibleBodyOverlays(
+                                        actor2,
+                                        visibilityCopy,
+                                        phase,
+                                        reasonCopy);
                                     ApplyVisibilityNow(
                                         actor2,
                                         visibilityCopy,
@@ -521,10 +605,10 @@ namespace OStimTogether
         schedule(kVisibilityDelay3, "T1270");
 
         SKSE::log::info(
-            "OSTNET OCUM VIS SYNC reason={} actor={:08X} entries={} rebindQueued={} rebindMethod=revert-overlay-current-skin resetDiffuse=0 ownerAuthoritative=1",
+            "OSTNET OCUM VIS SYNC reason={} actor={:08X} entries={} immediateRelinked={} rebindMethod=vertexDesc+current-body-skin ownerAuthoritative=1",
             reason,
             actorID,
             visibility.size(),
-            rebindQueued);
+            immediateRelinked);
     }
 }
