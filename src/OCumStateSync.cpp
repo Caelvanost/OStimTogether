@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "OCumStateSync.h"
 
+#include "OCumOverlayVisibility.h"
 #include "RaceMenuOverlayBridge.h"
 #include "STRPMTransport.h"
 #include "OStimAPI/InterfaceExchangeMessage.h"
@@ -82,7 +83,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET OCUM LIVE READY pollMs={} mode=mirror-only localOverlayWrites=0 localNiNodeRefresh=0",
+            "OSTNET OCUM LIVE READY pollMs={} mode=mirror-only localOverlayWrites=0 localNiNodeRefresh=0 liveVisibilitySync=1",
             kPollInterval.count());
         return true;
     }
@@ -265,10 +266,16 @@ namespace OStimTogether
                 auto* player = static_cast<RE::PlayerCharacter*>(actor);
                 auto& state = _meshStates[actorID];
 
-                // Read-only overlay mirroring. Capture the state OCum/RaceMenu
-                // already owns locally; never rebuild/relink/materialize it here.
-                const auto chunks = RaceMenuOverlayBridge::GetSingleton()
+                // Read-only mirroring: capture the overrides OCum owns and add
+                // wire-only metadata describing whether each live Body [OvlN]
+                // is actually rendered. This lets visibility changes trigger a
+                // snapshot even when texture/alpha overrides do not change.
+                auto chunks = RaceMenuOverlayBridge::GetSingleton()
                     .CaptureMarkedOverlayChunks(player, kMarker, 2200);
+                OCumOverlayVisibility::DecorateOutgoingSnapshot(
+                    player,
+                    chunks,
+                    2200);
                 const auto overlaySignature = BuildOverlaySignature(chunks);
                 const bool overlayChanged =
                     !state.overlayInitialized ||
@@ -281,7 +288,7 @@ namespace OStimTogether
                         state.initialized ? "overlay-change" : "active-start");
 
                     SKSE::log::info(
-                        "OSTNET OCUM OVERLAY MIRROR thread={} actor={:08X} chunks={} empty={} action=send-only localOverlayWrites=0",
+                        "OSTNET OCUM OVERLAY MIRROR thread={} actor={:08X} chunks={} empty={} action=send-only localOverlayWrites=0 liveVisibilitySync=1",
                         threadID,
                         actorID,
                         chunks.size(),
@@ -354,8 +361,12 @@ namespace OStimTogether
             return;
         }
 
-        const auto chunks = RaceMenuOverlayBridge::GetSingleton()
+        auto chunks = RaceMenuOverlayBridge::GetSingleton()
             .CaptureMarkedOverlayChunks(player, kMarker, 2200);
+        OCumOverlayVisibility::DecorateOutgoingSnapshot(
+            player,
+            chunks,
+            2200);
 
         if (chunks.empty()) {
             STRPMTransport::GetSingleton().Send(
@@ -390,7 +401,7 @@ namespace OStimTogether
         SendLocalObjectState(player, kAnalObject, analEquipped, reason);
 
         SKSE::log::info(
-            "OSTNET OCUM SNAPSHOT TX reason={} actor={:08X} name=\"{}\" overlayChunks={} emptySnapshot={} vagMesh={} analMesh={} localOverlayWrites=0",
+            "OSTNET OCUM SNAPSHOT TX reason={} actor={:08X} name=\"{}\" overlayChunks={} emptySnapshot={} vagMesh={} analMesh={} localOverlayWrites=0 liveVisibilitySync=1",
             reason,
             player->GetFormID(),
             name,
