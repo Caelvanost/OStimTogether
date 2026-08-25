@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.37.5</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.5 finalizes OCum Ascended support after the v0.37.4 proxy diagnostic: RaceMenu CumOverlays remain synchronized between players, but OCum's 3D vaginal and anal equip-object meshes are intentionally not synchronized because OStim reports them as equipped on the remote STR proxy while the proxy never renders the mesh. The unsupported 3D object traffic is suppressed; local OCum rendering, texture overlays, PPA, scene anchors and alignment are unchanged.</Description>
+  <Version>0.37.6</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.6 adds compatibility with OStim Standalone 7.5c / OStim.dll 7.5.0.3 after verifying that its GraphActor prefix remains compatible with the validated OStim 7.5b layout used by OStim Together's read-only graph probes. Core scene synchronization, Threads ABI v3 handling, PPA support and OCum RaceMenu overlay support are unchanged. OCum's 3D vaginal and anal equip-object meshes remain intentionally unsupported on remote STR player proxies.</Description>
 </fomod>
