@@ -27,6 +27,8 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/CoopSessionManager.h
         src/OCumStateSync.cpp
         src/OCumStateSync.h
+        src/OCumOverlayVisibility.cpp
+        src/OCumOverlayVisibility.h
         src/AccuratePenetrationAPI.h
         src/PPAIntegration.cpp
         src/PPAAbsoluteHooks.cpp
