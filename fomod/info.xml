@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.36.1</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.36.1 keeps the v0.36.0 mirror-only OCum model unchanged and fixes a free-scene alignment regression on remote mirror threads: the temporary XMarkerHeading scene anchor is now recognized as a virtual anchor rather than physical furniture, so the continuous STR proxy pose guard is disabled and OStim root motion remains authoritative. Physical furniture and wall scene guards remain unchanged.</Description>
+  <Version>0.36.2</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.36.2 keeps the v0.36.1 mirror-only OCum model and free-scene alignment fix unchanged, and restores build compatibility after the legacy native SKEEOverlayRefresh implementation was removed: the remaining PapyrusAnimationBridge reference now resolves to a no-op compatibility shim, so no deprecated RaceMenu rebuild path is reintroduced.</Description>
 </fomod>
