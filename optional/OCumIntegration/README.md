@@ -1,45 +1,40 @@
 # Optional OCum Ascended Integration
 
-This component is intentionally outside the OStimTogether core.
+This component enables the supported OCum Ascended appearance synchronization for OStim Together.
 
-## Source of truth
+## Supported in v0.37.5
 
-Appearance authority belongs to the true local PlayerCharacter. Remote STR
-proxies are ignored as senders.
+OStim Together mirrors the true local PlayerCharacter's RaceMenu `CumOverlays` to the corresponding remote Skyrim Together player proxy. The local player remains fully owned by OCum/RaceMenu; OStim Together reads and transports the resulting overlay state without taking over local rendering.
 
-0.31.5 uses two complementary triggers:
+Supported appearance data includes OCum RaceMenu texture/decal overlays on the body and other RaceMenu overlay areas handled by the native overlay bridge.
 
-- OCum Ascended's `ocum_applied_cum` custom ModEvent keeps the existing bounded
-  low-latency snapshots after a cum event;
-- OStim's reliable thread-0 `ostim_start` / `ostim_end` events arm a 0.5-second
-  scene poll for the true local player. This fallback is necessary because the
-  0.31.4 multiplayer test showed that `ocum_applied_cum` can fail to produce a
-  live synchronization callback even though OCum has already changed the local
-  scene state.
+## Known limitation: OCum 3D meshes
 
-Every live poll:
+OCum's OStim equip-object meshes:
 
-- sends `OVR|ocum|CumOverlays`, asking Core to capture all RaceMenu
-  Face/Body/Hands/Feet slots whose current texture contains `CumOverlays` and to
-  refresh that same geometry locally;
-- reads `OActor.IsObjectEquipped(..., "ocumvagmesh")` and
-  `OActor.IsObjectEquipped(..., "ocumanmesh")` as the primary mesh source;
-- ORs those values with the validated OCum F37/F3B armor equipped state as a
-  fallback;
-- sends the actual `OBJ|ocum|...` state to the remote client.
+- `ocumvagmesh`
+- `ocumanmesh`
 
-The OStim equip-object query is essential: an OCum mesh can be visibly active
-while ordinary Skyrim inventory `IsWorn()` still reports its backing armor as
-not worn.
+are **not synchronized to remote Skyrim Together player proxies**.
+
+The v0.37.4 diagnostic established that the complete network and OStim state path succeeds on the receiving client: the remote proxy resolves correctly, `OActor.EquipObject()` returns `true`, and `OActor.IsObjectEquipped()` remains `true` at both 250 ms and 1.25 s. Despite that, the 3D mesh is not rendered on the STR proxy.
+
+Because further retries cannot fix a renderer/proxy materialization failure, v0.37.5 intentionally treats these meshes as local-only and suppresses their synchronization. This limitation does **not** disable OCum RaceMenu texture overlays.
 
 ## Build
 
-0.31.5 changes this Papyrus source, so recompile it before building the FOMOD:
+v0.37.5 changes `OStimTogetherOCum.psc`, so recompile it before building the FOMOD:
 
 ```powershell
 .\optional\OCumIntegration\compile-ocum-integration.ps1 `
   -SkyrimDir "C:\Games\Steam\steamapps\common\Skyrim Special Edition"
 ```
 
-Then run `build-fomod.ps1`. The FOMOD build intentionally refuses to package a
-PEX older than this source.
+Then build normally:
+
+```powershell
+$env:VCPKG_ROOT="C:\dev\vcpkg"
+.\build-fomod.ps1
+```
+
+The FOMOD build intentionally refuses to package a PEX older than the current source.

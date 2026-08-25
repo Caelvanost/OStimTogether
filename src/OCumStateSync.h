@@ -15,8 +15,9 @@ namespace OStimTogether
         void Reset();
         void Tick();
 
-        // Publishes the local player's current CumOverlays snapshot and OCum
-        // equip-object state without modifying the local actor's 3D.
+        // Publishes the local player's current CumOverlays snapshot without
+        // modifying local OCum rendering. OCum 3D equip-object meshes are
+        // intentionally local-only / unsupported on remote STR proxies.
         void SendLocalSnapshot(std::string_view reason);
 
     private:

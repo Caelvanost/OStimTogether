@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.37.4</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.4 is the final diagnostic build for OCum Ascended 3D equip-object meshes: it preserves supported RaceMenu CumOverlays synchronization and adds explicit OStim return-state diagnostics for ocumvagmesh/ocumanmesh. The log now records the bool returned by OActor.EquipObject plus OActor.IsObjectEquipped readback at T250 and T1250 on the remote STR proxy. OCum 3D meshes remain experimental and are not part of the supported feature set pending this final validation. Local OCum rendering, PPA, scene anchors and alignment are unchanged.</Description>
+  <Version>0.37.5</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.5 finalizes OCum Ascended support after the v0.37.4 proxy diagnostic: RaceMenu CumOverlays remain synchronized between players, but OCum's 3D vaginal and anal equip-object meshes are intentionally not synchronized because OStim reports them as equipped on the remote STR proxy while the proxy never renders the mesh. The unsupported 3D object traffic is suppressed; local OCum rendering, texture overlays, PPA, scene anchors and alignment are unchanged.</Description>
 </fomod>

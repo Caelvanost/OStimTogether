@@ -83,7 +83,7 @@ namespace OStimTogether
         _threads->registerThreadStopListener(&_stopListener);
 
         SKSE::log::info(
-            "OSTNET OCUM LIVE READY pollMs={} mode=mirror-only localOverlayWrites=0 localNiNodeRefresh=0 liveVisibilitySync=1",
+            "OSTNET OCUM LIVE READY pollMs={} mode=mirror-only localOverlayWrites=0 localNiNodeRefresh=0 liveVisibilitySync=1 mesh3DSync=unsupported",
             kPollInterval.count());
         return true;
     }
@@ -117,7 +117,7 @@ namespace OStimTogether
         }
 
         SKSE::log::info(
-            "OSTNET OCUM LIVE START thread={} actors={} mode=mirror-only",
+            "OSTNET OCUM LIVE START thread={} actors={} mode=mirror-only mesh3DSync=unsupported",
             thread->getThreadID(),
             thread->getActorCount());
     }
@@ -144,7 +144,7 @@ namespace OStimTogether
         _activeThreads.erase(threadID);
 
         SKSE::log::info(
-            "OSTNET OCUM LIVE STOP thread={} localPlayer={} delayedSnapshotMs={} mode=mirror-only",
+            "OSTNET OCUM LIVE STOP thread={} localPlayer={} delayedSnapshotMs={} mode=mirror-only mesh3DSync=unsupported",
             threadID,
             hadLocalPlayer ? 1 : 0,
             hadLocalPlayer ? kStopSnapshotDelay.count() : 0);
@@ -195,22 +195,15 @@ namespace OStimTogether
             return;
         }
 
-        const char* rawName = player->GetName();
-        const std::string name = rawName ? rawName : "";
-        if (name.empty()) {
-            return;
-        }
-
-        STRPMTransport::GetSingleton().Send(
-            fmt::format(
-                "ADDONOBJ|channel={}|name={}|type={}|equipped={}",
-                HexEncode(kChannel),
-                HexEncode(name),
-                HexEncode(type),
-                equipped ? 1 : 0));
-
-        SKSE::log::info(
-            "OSTNET OCUM LIVE OBJ TX reason={} actor={:08X} type={} equipped={}",
+        // v0.37.4 proved that the transport and OStim state path both work on
+        // the remote STR proxy: EquipObject() returned true and
+        // IsObjectEquipped() remained true at T250 and T1250, while the 3D
+        // mesh was still not rendered. v0.37.5 therefore treats OCum's
+        // ocumvagmesh / ocumanmesh equip objects as local-only and deliberately
+        // suppresses their network publication. RaceMenu CumOverlays continue
+        // through the supported ADDONOVR path below.
+        SKSE::log::trace(
+            "OSTNET OCUM LIVE OBJ SUPPRESSED reason={} actor={:08X} type={} equipped={} limitation=remote-str-proxy-3d-render",
             reason,
             player->GetFormID(),
             type,
@@ -295,6 +288,8 @@ namespace OStimTogether
                         chunks.empty() ? 1 : 0);
                 }
 
+                // Keep observing the local OCum mesh state for diagnostics only.
+                // It is never transmitted in v0.37.5.
                 const bool vaginalWorn = IsArmorWorn(actor, vaginal);
                 const bool analWorn = IsArmorWorn(actor, anal);
                 const bool first = !state.initialized;
@@ -318,7 +313,7 @@ namespace OStimTogether
 
                 if (first || vaginalChanged || analChanged) {
                     SKSE::log::info(
-                        "OSTNET OCUM LIVE STATE thread={} actor={:08X} first={} vagMesh={} analMesh={} vagChanged={} analChanged={} localOverlayWrites=0",
+                        "OSTNET OCUM LIVE STATE thread={} actor={:08X} first={} localVagMesh={} localAnalMesh={} vagChanged={} analChanged={} localOverlayWrites=0 mesh3DSync=unsupported",
                         threadID,
                         actorID,
                         first ? 1 : 0,
@@ -397,11 +392,13 @@ namespace OStimTogether
         const bool vaginalEquipped = IsArmorWorn(player, vaginal);
         const bool analEquipped = IsArmorWorn(player, anal);
 
+        // Kept as local diagnostics only. SendLocalObjectState intentionally
+        // suppresses publication of these unsupported remote 3D meshes.
         SendLocalObjectState(player, kVaginalObject, vaginalEquipped, reason);
         SendLocalObjectState(player, kAnalObject, analEquipped, reason);
 
         SKSE::log::info(
-            "OSTNET OCUM SNAPSHOT TX reason={} actor={:08X} name=\"{}\" overlayChunks={} emptySnapshot={} vagMesh={} analMesh={} localOverlayWrites=0 liveVisibilitySync=1",
+            "OSTNET OCUM SNAPSHOT TX reason={} actor={:08X} name=\"{}\" overlayChunks={} emptySnapshot={} localVagMesh={} localAnalMesh={} localOverlayWrites=0 liveVisibilitySync=1 mesh3DSync=unsupported",
             reason,
             player->GetFormID(),
             name,
