@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.37.5**.
+Current development version: **0.37.6**.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
 
@@ -8,7 +8,11 @@ The root `VERSION` file is the single source of truth for CMake, DLL startup log
 
 ## Current status
 
-v0.37.5 is the release candidate following the final OCum 3D-mesh diagnostic.
+v0.37.6 is the OStim Standalone 7.5c compatibility release candidate.
+
+The first 7.5c multiplayer test showed that OStim Together v0.37.5 rejected the new `OStim.dll` runtime version `7.5.0.3` before the Threads interface exchange. This left STR networking alive but prevented creation of the remote OStim mirror thread, so the remote proxy continued following ordinary Skyrim Together movement and did not enter the synchronized undress/animation path.
+
+v0.37.6 accepts `7.5.0.3` and reuses the validated OStim 7.5 graph layout. The current OStim 7.5c `GraphActor` prefix retains the same `animationIndex`, `singleSpeed`, expression strings and `offset` ordering used by OStim 7.5b, so OStim Together's read-only graph probes remain on the same verified layout. OStim 7.5c continues to use Threads ABI v3 for the interfaces required here.
 
 ### Core synchronization
 
@@ -62,7 +66,7 @@ ADDONOBJ received
 
 The same mesh remains visible on the true local player. This means OStim accepts and retains the equip-object state, but the remote STR proxy does not materialize/render that 3D equip object.
 
-v0.37.5 therefore intentionally treats `ocumvagmesh` and `ocumanmesh` as **local-only** and suppresses their network synchronization. Repeated retries are not performed for these OCum meshes in the supported release path.
+v0.37.5 and later therefore intentionally treat `ocumvagmesh` and `ocumanmesh` as **local-only** and suppress their network synchronization. Repeated retries are not performed for these OCum meshes in the supported release path.
 
 This limitation does **not** affect OCum RaceMenu texture overlays.
 
@@ -84,14 +88,15 @@ This limitation does **not** affect OCum RaceMenu texture overlays.
 
 ## Compatibility
 
-Validated OStim runtime layouts:
+Validated / explicitly supported OStim runtime layouts:
 
 - OStim 7.4c — `7.4.0.3`;
-- OStim 7.5b — `7.5.0.2`.
+- OStim 7.5b — `7.5.0.2`;
+- OStim 7.5c — `7.5.0.3`.
 
-The free-scene phase/alignment specialization targets the validated OStim 7.5b Threads API v3 path. Furniture and wall handling retain their dedicated paths.
+OStim 7.5b and 7.5c use the same graph-prefix layout required by OStim Together's read-only animation/alignment probes. The free-scene phase/alignment specialization targets Threads API v3. Furniture and wall handling retain their dedicated paths.
 
-The mandatory Add Actor gate `OSKSE.pex` compatibility patch is based on the validated OStim 7.5b interface and must win its file conflict against OStim's original script.
+The mandatory Add Actor gate `OSKSE.pex` compatibility patch matches the current OStim 7.5c `OSKSE.psc` public function surface and must win its file conflict against OStim's original script.
 
 For multiplayer testing and release use, both Skyrim Together clients should run the same OStim Together version and compatible OStim/OCum/PPA versions.
 
@@ -107,14 +112,9 @@ The optional PPA integration synchronizes runtime penetration target information
 
 ## Build
 
-v0.37.5 changes `OStimTogetherOCum.psc`, so compile the optional OCum integration first:
+v0.37.6 changes the native OStim runtime compatibility path only. It does **not** change `OStimTogetherOCum.psc`, so an already-current compiled optional OCum integration does not need to be recompiled solely for 0.37.6.
 
-```powershell
-.\optional\OCumIntegration\compile-ocum-integration.ps1 `
-  -SkyrimDir "C:\Games\Steam\steamapps\common\Skyrim Special Edition"
-```
-
-Then build the release FOMOD:
+Build the release FOMOD with:
 
 ```powershell
 $env:VCPKG_ROOT="C:\dev\vcpkg"
@@ -124,7 +124,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.37.5-FOMOD.zip
+dist\OStimTogether-v0.37.6-FOMOD.zip
 ```
 
 FOMOD layout:
@@ -137,4 +137,4 @@ The FOMOD build checks that compiled Papyrus files are not older than their sour
 
 ## Development note
 
-The v0.37.4 OCum 3D-object diagnostics remain useful as historical evidence in Git history, but v0.37.5 no longer presents those meshes as a supported feature. Future work may revisit them only if Skyrim Together or OStim changes how equip-object geometry is materialized on remote player proxies.
+The v0.37.4 OCum 3D-object diagnostics remain useful as historical evidence in Git history, but v0.37.5+ no longer presents those meshes as a supported feature. Future work may revisit them only if Skyrim Together or OStim changes how equip-object geometry is materialized on remote player proxies.
