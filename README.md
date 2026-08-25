@@ -1,6 +1,6 @@
 # OStim Together
 
-Current development version: **0.37.6**.
+Current development version: **0.37.7**.
 
 OStim Together synchronizes OStim Standalone scenes between Skyrim Together Reborn players. The `strpm` branch uses **STRPluginMessagingAPI only**; there is no UDP fallback.
 
@@ -8,11 +8,13 @@ The root `VERSION` file is the single source of truth for CMake, DLL startup log
 
 ## Current status
 
-v0.37.6 is the OStim Standalone 7.5c compatibility release candidate.
+v0.37.7 is the OStim Standalone 7.5c release candidate with corrected Threads interface version handling.
 
 The first 7.5c multiplayer test showed that OStim Together v0.37.5 rejected the new `OStim.dll` runtime version `7.5.0.3` before the Threads interface exchange. This left STR networking alive but prevented creation of the remote OStim mirror thread, so the remote proxy continued following ordinary Skyrim Together movement and did not enter the synchronized undress/animation path.
 
-v0.37.6 accepts `7.5.0.3` and reuses the validated OStim 7.5 graph layout. The current OStim 7.5c `GraphActor` prefix retains the same `animationIndex`, `singleSpeed`, expression strings and `offset` ordering used by OStim 7.5b, so OStim Together's read-only graph probes remain on the same verified layout. OStim 7.5c continues to use Threads ABI v3 for the interfaces required here.
+v0.37.6 added support for `7.5.0.3` after verifying that the current OStim 7.5c `GraphActor` prefix retains the same `animationIndex`, `singleSpeed`, expression strings and `offset` ordering used by OStim 7.5b. The multiplayer regression test then confirmed remote mirror creation, node changes, speed changes, STOP handling and undress/animation synchronization on 7.5c.
+
+That test also exposed a version-reporting semantic change: current OStim 7.5c `ThreadInterface::getVersion()` returns the packed OStim plugin version (`0x07050003`, decimal `117768195`) rather than the historical raw Threads ABI ordinal. v0.37.7 therefore normalizes packed interface-version tokens to the ABI guaranteed by each explicitly supported OStim runtime before capability checks are applied. OStim 7.5b/7.5c normalize to Threads ABI v3; OStim 7.4c retains the conservative ABI v2 fallback path.
 
 ### Core synchronization
 
@@ -96,6 +98,8 @@ Validated / explicitly supported OStim runtime layouts:
 
 OStim 7.5b and 7.5c use the same graph-prefix layout required by OStim Together's read-only animation/alignment probes. The free-scene phase/alignment specialization targets Threads API v3. Furniture and wall handling retain their dedicated paths.
 
+For interface-version reporting, OStim Together accepts both legacy raw ABI ordinals and current packed OStim version tokens. Packed 7.5b/7.5c tokens are normalized to Threads ABI v3 before capability checks; 7.4c uses the conservative ABI v2 fallback.
+
 The mandatory Add Actor gate `OSKSE.pex` compatibility patch matches the current OStim 7.5c `OSKSE.psc` public function surface and must win its file conflict against OStim's original script.
 
 For multiplayer testing and release use, both Skyrim Together clients should run the same OStim Together version and compatible OStim/OCum/PPA versions.
@@ -112,7 +116,7 @@ The optional PPA integration synchronizes runtime penetration target information
 
 ## Build
 
-v0.37.6 changes the native OStim runtime compatibility path only. It does **not** change `OStimTogetherOCum.psc`, so an already-current compiled optional OCum integration does not need to be recompiled solely for 0.37.6.
+v0.37.7 changes the native OStim Threads version-normalization path only. It does **not** change `OStimTogetherOCum.psc`, so an already-current compiled optional OCum integration does not need to be recompiled solely for 0.37.7.
 
 Build the release FOMOD with:
 
@@ -124,7 +128,7 @@ $env:VCPKG_ROOT="C:\dev\vcpkg"
 Expected output:
 
 ```text
-dist\OStimTogether-v0.37.6-FOMOD.zip
+dist\OStimTogether-v0.37.7-FOMOD.zip
 ```
 
 FOMOD layout:
