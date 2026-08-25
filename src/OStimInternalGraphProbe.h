@@ -27,11 +27,13 @@ namespace OStimTogether::OStimInternalProbe
     // IMPORTANT: these layouts are pinned specifically to:
     //   - OStim 7.4c / OStim.dll 7.4.0.3
     //   - OStim 7.5b / OStim.dll 7.5.0.2
+    //   - OStim 7.5c / OStim.dll 7.5.0.3 (same prefix as 7.5b)
     //
     // OStim 7.5 inserted GraphActor::singleSpeed before the two expression
-    // strings, shifting GraphActor::offset from 0x64 to 0x6C.  Select the
-    // layout from the loaded DLL version and reject unknown versions rather
-    // than reading an unverified concrete object.
+    // strings, shifting GraphActor::offset from 0x64 to 0x6C. OStim 7.5c
+    // retains that same prefix ordering through offset, so the validated
+    // OStim75b layout is shared by 7.5b and 7.5c. Unknown versions are still
+    // rejected rather than reading an unverified concrete object.
     //
     // We mirror only the initial data layout required for read-only probes:
     //
