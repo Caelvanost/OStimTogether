@@ -1,6 +1,6 @@
 <fomod>
   <Name>OStim Together</Name>
   <Author>OStim Together project</Author>
-  <Version>0.37.1</Version>
-  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.1 preserves the mirror-only OCum model and owner-authored live visibility from v0.37.0, but fixes remote Body [OvlN] materialization: when an OCum body overlay is visible on its owner, the STR proxy now queues RaceMenu's real Add-only overlay rebuild so the mesh is reinstalled against the proxy's current body/skin before owner visibility is reapplied. This replaces the ineffective RevertOverlay pseudo-relink without changing the local player, PPA, scene anchors or alignment.</Description>
+  <Version>0.37.2</Version>
+  <Description>Synchronizes OStim Standalone scenes through Skyrim Together Reborn. v0.37.2 preserves the mirror-only OCum model and owner-authored live visibility, but replaces the ineffective add-only remote overlay rebuild with RaceMenu's targeted RevertOverlay current-skin path. Each owner-visible Body [OvlN] on the STR proxy is rebound to the proxy's current body/skin with resetDiffuse=false, preserving the OCum texture while fixing stale overlay geometry across OStim body/scene transitions. Local OCum rendering, PPA, scene anchors and alignment are unchanged.</Description>
 </fomod>
