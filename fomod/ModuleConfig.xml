@@ -1,5 +1,5 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>OStim Together 0.37.5</moduleName>
+  <moduleName>OStim Together 0.37.6</moduleName>
   <requiredInstallFiles>
     <folder source="00 Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -9,7 +9,7 @@
         <group name="OStim Together integrations" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="OCum Ascended synchronization">
-              <description>Synchronizes OCum Ascended RaceMenu CumOverlays between Skyrim Together players while keeping the true local PlayerCharacter authoritative for local rendering. Known limitation: OCum's 3D vaginal and anal OStim equip-object meshes (ocumvagmesh / ocumanmesh) are local-only and are not supported on remote STR player proxies. v0.37.5 intentionally suppresses those unsupported 3D object sync attempts. Requires OCum Ascended on both clients.</description>
+              <description>Synchronizes OCum Ascended RaceMenu CumOverlays between Skyrim Together players while keeping the true local PlayerCharacter authoritative for local rendering. v0.37.6 is a read-only diagnostic build for OCum's vaginal/anal 3D equip objects: ocumvagmesh and ocumanmesh remain excluded from OStim Together network synchronization, while their local OStim/backing-armor state is logged for every scene actor, including STR proxies, every 250 ms. Requires OCum Ascended on both clients.</description>
               <files>
                 <folder source="10 OCum Ascended" destination="" priority="0" />
               </files>
